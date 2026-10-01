@@ -1,0 +1,28 @@
+enum ShareScope { Device, Person, Public }
+enum SessionState { Hello, KeyExchange, Ready, Transferring, Done, Failed }
+
+record Device(String id, String pubKey, String label, String lastSeenIso)
+record Person(String id, String label)
+record Share(String id, String deviceId, String pathDigest, String label,
+             ShareScope scope, String token, String? expiresAt, Boolean allowResume)
+record Link(String id, String shareId, String url, String createdAtIso)
+record PeerSession(String id, String shareId, String peerDeviceId, SessionState state,
+                   String cipherSuite, String keyHash)
+record Transfer(String id, String shareId, String peerDeviceId, SessionState state,
+                Int offset, Int totalBytes, String sha256)
+record Chunk(Int index, Int offset, Int length, String digest)
+
+String shareUrl(Link l) {
+  return "kofshare://" + l.url
+}
+
+Boolean isoBefore(String a, String b) {
+  return a.compareTo(b) < 0
+}
+
+Boolean shareActive(Share s, String nowIso) {
+  if (s.expiresAt == null) { return true }
+  var exp = s.expiresAt
+  if (exp == null) { return true }
+  return isoBefore(nowIso, exp)
+}
