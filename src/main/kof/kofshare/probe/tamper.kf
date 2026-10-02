@@ -1,7 +1,9 @@
 package kofshare.probe
 
 import kofshare.transfer
+import kofshare.handshake
 import kof.security
+import kof.crypto
 
 // Tamper proof (pure, deterministic): flipping ONE payload bit must change
 // the tag, and the fetch-side verification loop must refuse by name.
@@ -43,5 +45,84 @@ main() {
     }
     println("refused=" + refused)
     println("constantTime=" + security.constantTimeEquals(good, bad))
+
+    // ── SECURE envelope tamper — D-KOF-X25519 session envelope ──
+    var encKeyTest = crypto.sha256("kofshare-probe-enc")
+    var macKeyTest = crypto.sha256("kofshare-probe-mac")
+    var plain = new Byte[5]
+    plain[0] = 104
+    plain[1] = 101
+    plain[2] = 108
+    plain[3] = 108
+    plain[4] = 111
+    var cipher = wrapChunk(encKeyTest, plain)
+    var goodTagSec = tagHex(macKeyTest, 7, cipher)
+    var tampered = new Byte[cipher.length]
+    var i2 = 0
+    while (i2 < cipher.length) {
+        tampered[i2] = cipher[i2]
+        i2 = i2 + 1
+    }
+    tampered[0] = cipher[0] + 1
+    var plain2 = new Byte[5]
+    var j2 = 0
+    while (j2 < 5) {
+        plain2[j2] = plain[j2]
+        j2 = j2 + 1
+    }
+    plain2[2] = 119
+    var cipher2 = wrapChunk(encKeyTest, plain2)
+    var same = true
+    var k2 = 0
+    while (k2 < cipher.length) {
+        if (cipher[k2] != cipher2[k2]) {
+            same = false
+            k2 = cipher.length
+        }
+        k2 = k2 + 1
+    }
+    println("envelopeDiverges=" + (same == false))
+    println("envelopeTagDiffer=" + (goodTagSec != tagHex(macKeyTest, 7, tampered)))
+    var refusedVerify = false
+    try {
+        var sentTag = asciiBytes(goodTagSec)
+        var expected = tagHex(macKeyTest, 7, tampered)
+        var w = 0
+        while (w < tagLen()) {
+            if (sentTag[w] != expected.charAt(w)) {
+                throw "kofshare: chunk tag mismatch (envelope)"
+            }
+            w = w + 1
+        }
+    } catch (String e) {
+        refusedVerify = e == "kofshare: chunk tag mismatch (envelope)"
+    }
+    println("envelopeRefusedVerify=" + refusedVerify)
+    var refusedDecrypt = false
+    var outPlain = ""
+    try {
+        var pPlain = unwrapChunk(encKeyTest, tampered)
+        outPlain = asciiOfProbe(pPlain)
+    } catch (String e) {
+        refusedDecrypt = true
+    }
+    println("envelopeRefusedDecrypt=" + refusedDecrypt)
+    println("envelopeNoPlaintext=" + (outPlain == ""))
+
     println("TAMPER-OK")
 }
+
+String asciiOfProbe(Byte[] bs) {
+    var out = ""
+    var i = 0
+    while (i < bs.length) {
+        var v = bs[i]
+        if (v < 0) {
+            v = v + 256
+        }
+        out = out + (v as Char)
+        i = i + 1
+    }
+    return out
+}
+

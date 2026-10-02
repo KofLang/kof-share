@@ -3,11 +3,32 @@
 
 `src/main/kof/kofshare/transfer.kf` — 100% Kof over `kof.net` (D-KOF-NET):
 frame `len(4 BE) | index(4 BE) | payload`, offset-idempotent resume
-(`serveFile` from `resumeOffset`, `fetchFile` appends the `.part`). The
-AES-GCM envelope rides the separate `SECN005` key-exchange decision.
-Oracle: `e2e.kf` (200000 bytes TCP loopback + spawn worker + resume@100000)
+(`serveFile` from `resumeOffset`, `fetchFile` appends the `.part`).
+
+## Session envelope (landed 02/10)
+
+`src/main/kof/kofshare/handshake.kf` — over the now-real `keyExchange`
+face (D-KOF-X25519, Kof4j `02/10`): ephemeral X25519 each side, HELLO
+frame (index `1073741822`) carries the 64-hex public value + the server's
+random salt (private scalars never leave `Secret` — R8), HKDF-SHA256
+derives per-direction keys (`enc`/`mac` × `c2s`/`s2c`, RFC 5869), and the
+transfer framing rides **encrypt-then-MAC**: chunk → hex → AES-GCM → the
+64-hex HMAC tag is recomputed over the CIPHER bytes (`crypto.hmacSha256`).
+A flipped byte — head, payload or tag — refuses before any plaintext
+reaches the file, and the tag check alone already kills a MITM (no mac
+key, no valid first chunk). Targets: `--target jvm` and `--target script`
+(the face is real there); `kof.net`/`keyExchange` stay refused on JS
+(`NETN001`/`SECN012`) — out of KofShare's v1 scope.
+
+Oracle: `e2e.kf` runs BOTH legs — plain (resume@100000) and secure
+(resume@123456) — and `probe/tamper.kf` now also proves the envelope
+refusal (diverges / tag-differ / refused-before-decrypt / no-plaintext).
 
 ```
-bin/kof run --target script src/main/kof/kofshare/e2e.kf   # E2E-OK
-bin/kof run --target jvm    src/main/kof/kofshare/e2e.kf   # E2E-OK
+java --enable-native-access=ALL-UNNAMED -jar <Kof4j>/kof-cli/target/kof-cli-0.5.0-beta.jar \
+     run --target script src/main/kof/kofshare/e2e.kf   # E2E-OK + SEC-E2E-OK
+java --enable-native-access=ALL-UNNAMED -jar <Kof4j>/kof-cli/target/kof-cli-0.5.0-beta.jar \
+     run --target jvm    src/main/kof/kofshare/e2e.kf   # E2E-OK + SEC-E2E-OK
+java --enable-native-access=ALL-UNNAMED -jar <Kof4j>/kof-cli/target/kof-cli-0.5.0-beta.jar \
+     run --target jvm    src/main/kof/kofshare/probe/tamper.kf   # TAMPER-OK
 ```

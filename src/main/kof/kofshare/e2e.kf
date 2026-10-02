@@ -1,8 +1,12 @@
 package kofshare
 
 import kofshare.transfer
+import kofshare.handshake
 import kofshare.domain
 import kofshare.domain
+import kof.keyExchange
+import kof.secrets
+import kof.security
 
 // E2E oracle for the transfer core: 200000 deterministic bytes, real TCP
 // over loopback (D-KOF-NET), RESUME simulates a partial download — only
@@ -15,6 +19,10 @@ Int portOf() {
 
 Int resumeOffsetOf() {
     return 100000
+}
+
+Int securePortOf() {
+    return 19322
 }
 
 Int[] prefix(Int[] src, Int n) {
@@ -55,6 +63,41 @@ main() {
     c.close()
     await worker
     l.close()
+
+    // ── SECURE leg — D-KOF-X25519 session envelope over the same core ──
+    var d2 = "tdst.sec.part"
+    var resume2 = 123456
+    File(d2).writeBytes(prefix(data, resume2))
+    var l2 = net.listen(securePortOf())
+    var worker2 = spawn {
+        var sv = l2.accept()
+        var privS = keyExchange.privateKey()
+        serveFileSecure(sv, src, resume2, privS, security.randomHex(16))
+        sv.close()
+    }
+    var c2 = net.connect("127.0.0.1", securePortOf())
+    var privC = keyExchange.privateKey()
+    var hs = fetchHandshake(c2, privC)
+    var t2 = fetchFileSecure(c2, d2, resume2, "share-sec", "devB", hs.get(4), hs.get(5))
+    c2.close()
+    var out2 = File(d2).readBytes()
+    var ok2 = true
+    var q2 = 0
+    while (q2 < data.size) {
+        if (out2[q2] != data[q2]) {
+            ok2 = false
+            q2 = data.size
+        }
+        q2 = q2 + 1
+    }
+    println("sec=" + (hs.get(2) != hs.get(4)) + "/" + (hs.get(3) != hs.get(5)))
+    println("secLen=" + out2.size + "/" + data.size + " secDone=" + (t2.state == SessionState.Done))
+    if (ok2 & out2.size == data.size & t2.state == SessionState.Done) {
+        println("SEC-E2E-OK")
+    }
+    await worker2
+    l2.close()
+    File(d2).delete()
     var a = File(src).readBytes()
     var b = File(dst).readBytes()
     println("len=" + a.size + "/" + b.size)

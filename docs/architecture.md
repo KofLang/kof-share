@@ -50,7 +50,7 @@ record Chunk(Int index, Int offset, Int length, String digest)
 * A device generates an **Ed25519** keypair; the private key never leaves the device (`security`/`secrets` storage face).
 * Device registration: `control` stores `Device{id, pubKey}` after an ownership proof (challenge → sign → verify).
 * Peer trust is the *link/token*, not the transport: whoever presents a valid token for an unexpired `Share` is authorized. TLS/Noise-level channel encryption is still required and is provided by the data-plane session (§5), never assumed from the network.
-* Key exchange: **X25519** ECDH → HKDF session key → **AES-GCM** chunk framing (all faces catalogued as stdlib requirements in §9; probe semantics measured green via interop 01/10 — semantics transfer to the stdlib front as-is).
+* Key exchange: **X25519** ECDH → HKDF session keys → **AES-GCM** chunk framing — LANDED 02/10 over the stdlib `keyExchange` face (D-KOF-X25519): `handshake.kf` with HELLO frames (pub 64-hex + server salt), per-direction HKDF keys (enc/mac × c2s/s2c) and encrypt-then-MAC on the transfer framing (§10 of `docs/stdlib/security.md` in Kof4j; the interop probe of 01/10 became the real face).
 
 ## 4. Control-plane contract (HTTP, Kof `web`/`http` stdlib)
 
@@ -73,9 +73,9 @@ GET  /v1/sessions/{id}           -> PeerSession
 Session (device↔device, or device↔relay↔device):
 
 1. `HELLO` — plaintext framing: protocol version + device ids + share token.
-2. `KEY_EXCHANGE` — X25519 public values, both directions; derive session key (HKDF); confirm via key-confirmation MAC.
+2. `KEY_EXCHANGE` — X25519 public values both directions over HELLO frames; per-direction session keys derived by HKDF-SHA256; the first tagged chunk is the key confirmation (v1 transcript binding — `handshake.kf`, landed 02/10).
 3. `READY` — authorized + encrypted channel; exchange `Transfer{totalBytes, sha256, chunkSize, resumeOffset}`.
-4. `TRANSFER` — chunks: `len(4) | index(4) | AES-GCM(nonce|ct|tag)`; per-chunk SHA-256 digest in AAD; receiver writes `file.part`.
+4. `TRANSFER` — chunks: `len(4) | index(4) | cipher(hex-ASCII AES-GCM) | tag(64 hex HMAC-SHA256 over the CIPHER bytes)` — encrypt-then-MAC, receiver verifies the tag BEFORE unwrapping and writes `file.part`.
 5. finalize: whole-file SHA-256 verified → atomic `moveTo` `file.part` → `<name>`; session `DONE`.
 6. `FAILED` — resume is safe: the protocol is offset-idempotent; re-download only missing chunks.
 
@@ -112,8 +112,8 @@ kofshare shares [--mine]                                        -> Share list + 
 Product code may not start its network layer until these exist in Kof itself (no interop, no shim):
 
 1. **TCP sockets** in the network namespace: listen / accept / connect / send / receive (+close).
-2. **X25519 key agreement + Ed25519 sign/verify** in the security namespace (`SECN005` family).
-3. AES-GCM already exists (`crypto`); `hkdf` face required (measured as absent).
+2. **X25519 key agreement** LANDED as the `keyExchange` namespace (D-KOF-X25519, 02/10 — SECN005 unblocked for KofShare); Ed25519 sign/verify remains a separate future face (out of envelope v1).
+3. AES-GCM already exists (`crypto`); the `hkdfSha256` face landed with `keyExchange` (02/10).
 4. Open naming/blocking questions shared with `D-UDP` (namespace `kof.net` vs extension, blocking model, message types) — **rule 6, maintainer decides**; `D-KOFSHARE-100KOF` records the decision *that the front is (a) stdlib*, the surface still awaits its answers.
 
 ## 10. Module layout of the product (future tree)

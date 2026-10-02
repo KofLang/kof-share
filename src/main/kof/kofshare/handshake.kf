@@ -1,0 +1,255 @@
+package kofshare
+
+import kofshare.domain
+import kof.security
+import kof.crypto
+import kof.keyExchange
+import kof.secrets
+
+// KofShare session envelope — the D-KOF-X25519 face on top of the proven
+// transfer.kf framing. Per transfer each side holds an EPHEMERAL X25519
+// pair; HELLO frames carry the 64-hex public value + the server's random
+// salt (the ONLY exportable material — private scalars live in `Secret`,
+// R8), and four 32-byte keys come out of HKDF-SHA256 (RFC 5869) with
+// direction tags (enc-c2s / enc-s2c / mac-c2c / mac-s2c). Encrypt-then-
+// MAC: a chunk is hex-ASCII'd, AES-GCM'd under the direction's enc key,
+// and the transfer.kf HMAC tag is recomputed over the CIPHER bytes under
+// the mac key — a flipped byte (head, payload or tag) refuses BEFORE any
+// plaintext reaches the file, and the tag check alone already kills a
+// MITM: without the mac key the attacker cannot produce a valid tag for
+// the first chunk. v1 binds the transcript through the first tagged chunk
+// (no separate AUTH frame) — documented, not silent.
+
+Int helloIndex() {
+    return 1073741822
+}
+
+String HEXD() {
+    return "0123456789abcdef"
+}
+
+Byte[] asciiBytes(String s) {
+    var out = new Byte[s.length]
+    var i = 0
+    while (i < s.length) {
+        out[i] = s.charAt(i)
+        i = i + 1
+    }
+    return out
+}
+
+String asciiOf(Byte[] bs) {
+    var out = ""
+    var i = 0
+    while (i < bs.length) {
+        var v = bs[i]
+        if (v < 0) {
+            v = v + 256
+        }
+        out = out + (v as Char)
+        i = i + 1
+    }
+    return out
+}
+
+// info strings ("enc-c2s"...) become hex so HKDF sees a pure-hex face
+String hexAscii(String s) {
+    var out = ""
+    var i = 0
+    while (i < s.length) {
+        var v = s.charAt(i)
+        if (v < 0) {
+            v = v + 256
+        }
+        out = out + HEXD().charAt(v / 16) + HEXD().charAt(v % 16)
+        i = i + 1
+    }
+    return out
+}
+
+Int hexVal(Int c) {
+    if (c >= '0' & c <= '9') {
+        return c - '0'
+    }
+    return 10 + (c - 'a')
+}
+
+Byte[] bytesFromHex(String h) {
+    var out = new Byte[h.length / 2]
+    var i = 0
+    while (i < out.length) {
+        out[i] = hexVal(h.charAt(i * 2)) * 16 + hexVal(h.charAt(i * 2 + 1))
+        i = i + 1
+    }
+    return out
+}
+
+Byte[] sliceBytes(Byte[] src, Int from, Int len) {
+    var out = new Byte[len]
+    var i = 0
+    while (i < len) {
+        out[i] = src[from + i]
+        i = i + 1
+    }
+    return out
+}
+
+Byte[] helloFrame(String pubHex, String saltHex) {
+    var body = pubHex + ":" + saltHex
+    var bytes = asciiBytes(body)
+    return concatBytes(headFrame(bytes.length, helloIndex()), bytes)
+}
+
+// returns [peerPubHex, peerSaltHex]; the client's HELLO carries an empty
+// salt (the SERVER's salt is the HKDF salt) — malformed bodies refuse.
+List<String> helloBody(Byte[] frame) {
+    if (be32(frame, 4) != helloIndex()) {
+        throw "kofshare: expected HELLO frame"
+    }
+    var len = be32(frame, 0)
+    var body = asciiOf(sliceBytes(frame, 8, len))
+    var sep = 0
+    while (sep < body.length) {
+        if (body.charAt(sep) == ':') {
+            break
+        }
+        sep = sep + 1
+    }
+    if (sep != 64) {
+        throw "kofshare: malformed HELLO body"
+    }
+    var out = listOf()
+    out.add(body.substring(0, 64))
+    out.add(body.substring(65, body.length))
+    return out
+}
+
+// Four direction-tagged HKDF-SHA256 keys from the shared Secret + the
+// server's salt. Returns [encTx, macTx, encRx, macRx] for the CALLER's
+// role; the peer derives the mirrored pair from the same secret.
+List<String> sessionKeys(Secret shared, String saltHex, Bool weAreServer) {
+    var out = listOf()
+    if (weAreServer) {
+        out.add(keyExchange.hkdfSha256(shared, saltHex, hexAscii("enc-s2c"), 32))
+        out.add(keyExchange.hkdfSha256(shared, saltHex, hexAscii("mac-s2c"), 32))
+        out.add(keyExchange.hkdfSha256(shared, saltHex, hexAscii("enc-c2s"), 32))
+        out.add(keyExchange.hkdfSha256(shared, saltHex, hexAscii("mac-c2s"), 32))
+    } else {
+        out.add(keyExchange.hkdfSha256(shared, saltHex, hexAscii("enc-c2s"), 32))
+        out.add(keyExchange.hkdfSha256(shared, saltHex, hexAscii("mac-c2s"), 32))
+        out.add(keyExchange.hkdfSha256(shared, saltHex, hexAscii("enc-s2c"), 32))
+        out.add(keyExchange.hkdfSha256(shared, saltHex, hexAscii("mac-s2c"), 32))
+    }
+    return out
+}
+
+Byte[] wrapChunk(String encKeyHex, Byte[] plain) {
+    return asciiBytes(crypto.encryptAesGcm(hexOf(plain), encKeyHex))
+}
+
+Byte[] unwrapChunk(String encKeyHex, Byte[] cipherBytes) {
+    return bytesFromHex(crypto.decryptAesGcm(asciiOf(cipherBytes), encKeyHex))
+}
+
+Byte[] tagBytes(String macKey, Int index, Byte[] payload) {
+    return asciiBytes(tagHex(macKey, index, payload))
+}
+
+List<String> readHello(Conn c) {
+    var head = recvRaw(c, 8)
+    if (be32(head, 4) != helloIndex()) {
+        throw "kofshare: expected HELLO frame"
+    }
+    return helloBody(concatBytes(head, recvRaw(c, be32(head, 0))))
+}
+
+// Server: send HELLO, read the client's HELLO, then stream META + the
+// encrypted-and-tagged chunks (resume offset-idempotent, like the plain
+// core). Returns the byte count served.
+Int serveFileSecure(Conn c, String path, Int resumeOffset, Secret myPriv, String saltHex) {
+    var hello = helloFrame(keyExchange.publicKey(myPriv), saltHex)
+    c.send(hello)
+    var peer = readHello(c)
+    var shared = keyExchange.shared(myPriv, secrets.of(peer.get(0)))
+    var keys = sessionKeys(shared, saltHex, true)
+    return serveLoopEncrypted(c, path, resumeOffset, keys.get(0), keys.get(1))
+}
+
+// Client: read the server HELLO, answer with ours, derive the four keys.
+// Returns [serverPub, serverSalt, encTx, macTx, encRx, macRx].
+List<String> fetchHandshake(Conn c, Secret myPriv) {
+    var serverHello = readHello(c)
+    c.send(helloFrame(keyExchange.publicKey(myPriv), ""))
+    var shared = keyExchange.shared(myPriv, secrets.of(serverHello.get(0)))
+    var keys = sessionKeys(shared, serverHello.get(1), false)
+    var out = listOf()
+    out.add(serverHello.get(0))
+    out.add(serverHello.get(1))
+    out.add(keys.get(0))
+    out.add(keys.get(1))
+    out.add(keys.get(2))
+    out.add(keys.get(3))
+    return out
+}
+
+Int serveLoopEncrypted(Conn c, String path, Int resumeOffset, String encKey, String macKey) {
+    var data = File(path).readBytes()
+    var total = data.size
+    c.send(headFrame(total, metaIndex()))
+    var pos = resumeOffset
+    var sent = 0
+    var index = 0
+    while (pos < total) {
+        var len = total - pos
+        if (len > chunkSize()) {
+            len = chunkSize()
+        }
+        var frame = new Byte[len]
+        var i = 0
+        while (i < len) {
+            frame[i] = data[pos + i]
+            i = i + 1
+        }
+        var cipher = wrapChunk(encKey, frame)
+        c.send(headFrame(cipher.length, index))
+        c.send(cipher)
+        c.send(tagBytes(macKey, index, cipher))
+        pos = pos + len
+        sent = sent + len
+        index = index + 1
+    }
+    return sent
+}
+
+Transfer fetchFileSecure(Conn c, String dst, Int resumeOffset, String shareId, String peerId, String encKeyRx, String macKeyRx) {
+    var meta = recvRaw(c, 8)
+    if (be32(meta, 4) != metaIndex()) {
+        throw "kofshare: first frame must be META"
+    }
+    var total = be32(meta, 0)
+    var got = resumeOffset
+    var index = 0
+    while (got < total) {
+        var head = recvRaw(c, 8)
+        var len = be32(head, 0)
+        var idx = be32(head, 4)
+        if (idx != index) {
+            throw "kofshare: chunk out of order"
+        }
+        var cipher = recvRaw(c, len)
+        var tag = recvRaw(c, tagLen())
+        var expected = tagHex(macKeyRx, idx, cipher)
+        var j = 0
+        while (j < tagLen()) {
+            if (tag[j] != expected.charAt(j)) {
+                throw "kofshare: chunk tag mismatch (envelope)"
+            }
+            j = j + 1
+        }
+        var plain = unwrapChunk(encKeyRx, cipher)
+        File(dst).appendBytes(bytesToInts(plain))
+        got = got + plain.length
+        index = index + 1
+    }
+    return Transfer("t" + shareId, shareId, peerId, SessionState.Done, got, total, "")
+}
