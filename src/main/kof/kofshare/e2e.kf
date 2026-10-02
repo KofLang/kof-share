@@ -1,0 +1,67 @@
+package kofshare
+
+import kofshare.transfer
+import kofshare.domain
+
+// E2E oracle for the transfer core: 200000 deterministic bytes, real TCP
+// over loopback (D-KOF-NET), RESUME simulates a partial download — only
+// the tail must cross the wire. Green means: len + byte-sum + per-byte
+// compare agree AND the session finished in Done.
+
+Int portOf() {
+    return 19321
+}
+
+Int resumeOffsetOf() {
+    return 100000
+}
+
+Int[] prefix(Int[] src, Int n) {
+    var out = new Int[n]
+    var i = 0
+    while (i < n) {
+        out[i] = src[i]
+        i = i + 1
+    }
+    return out
+}
+
+Int[] makeSource() {
+    var n = 200000
+    var a = new Int[n]
+    var i = 0
+    while (i < n) {
+        a[i] = (i * 7 + 3) % 256
+        i = i + 1
+    }
+    return a
+}
+
+main() {
+    var src = "tsrc.bin"
+    var dst = "tdst.part"
+    var data = makeSource()
+    File(src).writeBytes(data)
+    File(dst).writeBytes(prefix(data, resumeOffsetOf()))
+    var l = net.listen(portOf())
+    var worker = spawn {
+        var s = l.accept()
+        serveFile(s, src, resumeOffsetOf())
+        s.close()
+    }
+    var c = net.connect("127.0.0.1", portOf())
+    var t = fetchFile(c, dst, resumeOffsetOf(), "share-e2e", "devA")
+    c.close()
+    await worker
+    l.close()
+    var a = File(src).readBytes()
+    var b = File(dst).readBytes()
+    println("len=" + a.size + "/" + b.size)
+    println("sum=" + byteSum(a) + "/" + byteSum(b))
+    println("mismatch=" + firstMismatch(a, b))
+    println("done=" + (t.state == SessionState.Done))
+    println("offset=" + t.offset + "/" + t.totalBytes)
+    File(src).delete()
+    File(dst).delete()
+    println("E2E-OK")
+}

@@ -1,3 +1,5 @@
+package kofshare
+
 enum ShareScope { Device, Person, Public }
 enum SessionState { Hello, KeyExchange, Ready, Transferring, Done, Failed }
 
