@@ -1,23 +1,33 @@
 package kofshare
 
 import kofshare.domain
+import kof.security
+import kof.crypto
 
 // KofShare transfer core — D-KOFSHARE-100KOF: 100% Kof over the kof.net
-// front (D-KOF-NET). Frame = len(4 BE) | index(4 BE) | payload — the
-// architecture.md §TRANSFER shape minus the AES-GCM envelope (that face
-// rides the SECN005 key-exchange decision, a separate call). Binary-safe
-// end to end: files move as Int[] (bytes 0..255, the io face), the wire
-// uses Byte[] (the net face), and the wrap/unwrap lives HERE, never in
-// the transport. Offset-idempotent: the sender starts at `resumeOffset`,
-// the receiver appends; a restart asks only for what is missing.
+// front (D-KOF-NET). Frame = len(4 BE) | index(4 BE) | payload, each
+// payload followed by a 64-ASCII-hex HMAC-SHA256 tag over
+// (key | len | index | payload) — the architecture.md §TRANSFER shape with
+// the per-chunk integrity digest; the AES-GCM encryption envelope rides
+// the separate SECN005 key-exchange decision (the tag framing is the part
+// SECN005 does not block). Binary-safe end to end: files move as Int[]
+// (bytes 0..255, the io face), the wire uses Byte[] (the net face), and
+// the wrap/unwrap lives HERE, never in the transport. Offset-idempotent:
+// the sender starts at `resumeOffset`, the receiver appends; a restart
+// asks only for what is missing. A tampered chunk (or a chunk delivered
+// out of order) refuses before the bytes reach the file.
 
 Int metaIndex() {
-    // 0x3FFFFFFF — maior sentinel 32-bit que cabe no Int assinado do Kof
+    // 0x3FFFFFFF — largest 32-bit sentinel that fits Kof's signed Int
     return 1073741823
 }
 
 Int chunkSize() {
     return 65536
+}
+
+Int tagLen() {
+    return 64
 }
 
 Byte[] headFrame(Int totalLen, Int index) {
@@ -81,11 +91,38 @@ Int[] bytesToInts(Byte[] src) {
     return out
 }
 
-// Server side: stream `path` over an accepted conn, starting at
-// resumeOffset. META frame carries the total size; payload frames carry
-// (index, bytes). In-order by construction — resume is an OFFSET, not a
-// chunk table (offset-idempotent rule of the architecture).
-Int serveFile(Conn c, String path, Int resumeOffset) {
+String HEX() {
+    return "0123456789abcdef"
+}
+
+String hexOf(Byte[] bs) {
+    var h = HEX()
+    var out = ""
+    var i = 0
+    while (i < bs.length) {
+        var v = bs[i]
+        if (v < 0) {
+            v = v + 256
+        }
+        out = out + h.charAt(v / 16) + h.charAt(v % 16)
+        i = i + 1
+    }
+    return out
+}
+
+// tag = HMAC-SHA256 over a STRING AAD (key | index | len | payload-hex).
+// The crypto face digests Strings; feeding it raw Byte[] is a MEASURED
+// no-go (silent identity digest on Script, VerifyError on JVM — the §563
+// candidate), so the chunk is hex-pinned into the AAD deterministically.
+String tagHex(String key, Int index, Byte[] payload) {
+    return crypto.hmacSha256(key, "" + index + "|" + payload.length + "|" + hexOf(payload))
+}
+
+// Server side: stream `path` over an accepted conn starting at
+// resumeOffset. META frame carries the total size; every payload frame is
+// followed by its HMAC tag. In-order by construction — resume is an
+// OFFSET, not a chunk table (the architecture's offset-idempotent rule).
+Int serveFile(Conn c, String path, Int resumeOffset, String key) {
     var data = File(path).readBytes()
     var total = data.size
     c.send(headFrame(total, metaIndex()))
@@ -105,6 +142,14 @@ Int serveFile(Conn c, String path, Int resumeOffset) {
         }
         c.send(headFrame(len, index))
         c.send(frame)
+        var th = tagHex(key, index, frame)
+        var tb = new Byte[tagLen()]
+        var k = 0
+        while (k < tagLen()) {
+            tb[k] = th.charAt(k)
+            k = k + 1
+        }
+        c.send(tb)
         pos = pos + len
         sent = sent + len
         index = index + 1
@@ -113,8 +158,10 @@ Int serveFile(Conn c, String path, Int resumeOffset) {
 }
 
 // Client side: pull into `dst` assuming `resumeOffset` bytes are already
-// present (append semantics — the .part file of the architecture).
-Transfer fetchFile(Conn c, String dst, Int resumeOffset, String shareId, String peerId) {
+// present (append semantics — the .part of the architecture). The tag is
+// verified against the digest recomputed from the chunk BEFORE anything
+// reaches the file; mismatch refuses by name.
+Transfer fetchFile(Conn c, String dst, Int resumeOffset, String shareId, String peerId, String key) {
     var meta = recvRaw(c, 8)
     if (be32(meta, 4) != metaIndex()) {
         throw "kofshare: first frame must be META"
@@ -129,8 +176,17 @@ Transfer fetchFile(Conn c, String dst, Int resumeOffset, String shareId, String 
         if (idx != index) {
             throw "kofshare: chunk out of order"
         }
-        var payload = bytesToInts(recvRaw(c, len))
-        File(dst).appendBytes(payload)
+        var payload = recvRaw(c, len)
+        var tag = recvRaw(c, tagLen())
+        var expected = tagHex(key, idx, payload)
+        var j = 0
+        while (j < tagLen()) {
+            if (tag[j] != expected.charAt(j)) {
+                throw "kofshare: chunk tag mismatch"
+            }
+            j = j + 1
+        }
+        File(dst).appendBytes(bytesToInts(payload))
         got = got + len
         index = index + 1
     }

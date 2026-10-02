@@ -47,11 +47,11 @@ main() {
     var l = net.listen(portOf())
     var worker = spawn {
         var s = l.accept()
-        serveFile(s, src, resumeOffsetOf())
+        serveFile(s, src, resumeOffsetOf(), "k0")
         s.close()
     }
     var c = net.connect("127.0.0.1", portOf())
-    var t = fetchFile(c, dst, resumeOffsetOf(), "share-e2e", "devA")
+    var t = fetchFile(c, dst, resumeOffsetOf(), "share-e2e", "devA", "k0")
     c.close()
     await worker
     l.close()

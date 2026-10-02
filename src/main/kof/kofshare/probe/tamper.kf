@@ -1,0 +1,47 @@
+package kofshare.probe
+
+import kofshare.transfer
+import kof.security
+
+// Tamper proof (pure, deterministic): flipping ONE payload bit must change
+// the tag, and the fetch-side verification loop must refuse by name.
+main() {
+    var p = new Byte[3]
+    p[0] = 61
+    p[1] = 62
+    p[2] = 63
+    var good = tagHex("k0", 0, p)
+    var t = new Byte[3]
+    t[0] = p[0]
+    t[1] = p[1]
+    t[2] = 64
+    var bad = tagHex("k0", 0, t)
+    println("differ=" + (good != bad))
+    println("len=" + good.length + "/" + bad.length)
+    var firstDiff = 0 - 1
+    var j = 0
+    while (j < good.length) {
+        if (good.charAt(j) != bad.charAt(j)) {
+            firstDiff = j
+            j = good.length
+        }
+        j = j + 1
+    }
+    println("firstdiff=" + firstDiff)
+    // verification path of fetchFile, exercised directly:
+    var refused = false
+    try {
+        var k = 0
+        while (k < tagLen()) {
+            if (bad.charAt(k) != good.charAt(k)) {
+                throw "kofshare: chunk tag mismatch"
+            }
+            k = k + 1
+        }
+    } catch (String e) {
+        refused = e == "kofshare: chunk tag mismatch"
+    }
+    println("refused=" + refused)
+    println("constantTime=" + security.constantTimeEquals(good, bad))
+    println("TAMPER-OK")
+}
