@@ -3,6 +3,7 @@
 # KofShare — plano de implementação (o que falta, em fatias)
 
 **Dona:** `192.168.15.15:9092` (lane security/connectors; `D-PLAN-ONE-OWNER` vale para este arquivo também — ele vive no repo do produto, não em `Kof4j/docs/development/`).
+**STATUS:** ✅ COMPLETO 03/10 — as seis fatias pousaram (`e8b6e5d`,`c97f91a`,`917e0e0`,`145648f`,`b99e7a5`,`943236f`); o único item restante é regra-6 (#6 abaixo). Clone novo: `java -jar kof-cli.jar run --target jvm src/main/kof/kofshare/cli/cli.kf --check` → `CHECK-OK` (medido 03/10; também `--target script`).
 **Base:** tip `c7a7946` (transfer core + envelope de sessão, medido `E2E-OK`/`SEC-E2E-OK` JVM+Script, `TAMPER-OK`).
 **Lei de escopo:** o produto continua 100% Kof (`D-KOFSHARE-100KOF`) — sem interop, sem shim, sem face inventada do stdlib. Tudo abaixo só pisa em superfícies MEDIDAS do stdlib (âncoras por fatia). O que exigir face nova da linguagem é rule-6 → mantenedora, nunca decisão de agente.
 
@@ -15,12 +16,12 @@ PRONTO (na árvore da base, reverificado com o jar do tip):
 * `probe/tamper.kf` — tamper antigo + as 5 asserções de envelope.
 * `domain.kf` — records + round-trip JSON.
 
-FALTANDO (o control plane inteiro, CLI, divisão de módulos, relay, empacotamento):
-1. `control/` — registro de dispositivos + offers sobre HTTP (`architecture.md` §4). Zero código.
-2. `cli.kf` — `server` / `offer` / `fetch` com goldens `--check` / `--dry` (§6).
+FALTANDO NA ÉPOCA DA ESCRITA (tudo pousado até 03/10; a lista fica como registro histórico da lacuna):
+1. ~~`control/` — registro de dispositivos + offers sobre HTTP (`architecture.md` §4). Zero código.~~ **POUSADA 02/10** (`e8b6e5d`, `c97f91a`; REGCHECK-OK/HTTPCHECK-OK JVM+Script).
+2. ~~`cli.kf` — `server` / `offer` / `fetch` com goldens `--check` / `--dry` (§6).~~ **POUSADA 03/10** (`917e0e0`; `CHECK-OK` nos dois alvos).
 3. ~~`session.kf` / `protocol.kf` — a máquina de estados hoje mora inline em `transfer.kf`/`handshake.kf`; split por responsabilidade (§10).~~ **FEITO 03/10** (ver Fatia 4 POUSADA).
 4. ~~Relay fallback — LAN direto funciona no e2e; relay-via-control (ciphertext only, posição MVP do §7) não tem handler.~~ **FEITO 03/10** (ver Fatia 5 POUSADA; `relay.kf` + `relaycheck/checkrelay.kf`).
-5. Empacotamento — sem `kof.toml`, sem árvore de produto, sem script de execução.
+5. ~~Empacotamento — sem `kof.toml`, sem árvore de produto, sem script de execução.~~ **POUSADA 03/10** (`943236f`; manifesto medido, `--check` verde com ele presente).
 6. Identidade/confiança de dispositivo — assinatura Ed25519 NÃO é face Kof (só orientação interop-over-JDK) → **rule-6, fora do v1**, registrado como limitação honesta (MITM passivo está morto; MITM ATIVO da troca de chaves não é recusado — posição do envelope v1, dita com todas as letras).
 
 ## 1. Âncoras medidas do stdlib (o plano não pode assumir nada além disso)

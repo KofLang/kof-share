@@ -3,6 +3,7 @@
 # KofShare — implementation plan (what is missing, as slices)
 
 **Owner:** `192.168.15.15:9092` (lane security/connectors; `D-PLAN-ONE-OWNER` applies to this file too — it lives in the product repo, not in `Kof4j/docs/development/`).
+**STATUS:** ✅ COMPLETE 03/10 — all six slices landed (`e8b6e5d`,`c97f91a`,`917e0e0`,`145648f`,`b99e7a5`,`943236f`); the one remaining item is rule-6 (#6 below). Fresh clone: `java -jar kof-cli.jar run --target jvm src/main/kof/kofshare/cli/cli.kf --check` → `CHECK-OK` (measured 03/10; also `--target script`).
 **Base:** tip `c7a7946` (transfer core + session envelope, measured `E2E-OK`/`SEC-E2E-OK` JVM+Script, `TAMPER-OK`).
 **Scope law:** the product stays 100% Kof (`D-KOFSHARE-100KOF`) — no interop, no shims, no invented stdlib faces. Everything below rides ONLY on measured stdlib surfaces (anchors listed per slice). Anything requiring a new language surface is rule-6 → maintainer, never an agent decision.
 
@@ -15,12 +16,12 @@ READY (in-tree at base, green re-measured with the tip jar):
 * `probe/tamper.kf` — legacy tamper + the 5 envelope assertions.
 * `domain.kf` — records + JSON round-trip.
 
-MISSING (the whole control plane, CLI, module split, relay, packaging):
-1. `control/` — device registry + offers over HTTP (`architecture.md` §4). No code exists.
-2. `cli.kf` — `server` / `offer` / `fetch` with `--check` / `--dry` goldens (§6).
+MISSING AT TIME OF WRITING (all landed by 03/10; keep this list as the historical gap record):
+1. ~~`control/` — device registry + offers over HTTP (`architecture.md` §4). No code exists.~~ **LANDED 02/10** (`e8b6e5d`, `c97f91a`; REGCHECK-OK/HTTPCHECK-OK JVM+Script).
+2. ~~`cli.kf` — `server` / `offer` / `fetch` with `--check` / `--dry` goldens (§6).~~ **LANDED 03/10** (`917e0e0`; `CHECK-OK` both targets).
 3. ~~`session.kf` / `protocol.kf` — the state machine is inline in `transfer.kf`/`handshake.kf`; one-responsibility split (§10).~~ **DONE 03/10** (see Slice 4 LANDED).
 4. ~~Relay fallback — direct LAN works in the e2e; relay-via-control (ciphertext only, §7 MVP position) has no handler.~~ **DONE 03/10** (see Slice 5 LANDED; `relay.kf` + `relaycheck/checkrelay.kf`).
-5. Packaging — no `kof.toml`, no product tree, no run script.
+5. ~~Packaging — no `kof.toml`, no product tree, no run script.~~ **LANDED 03/10** (`943236f`; manifest measured, `--check` green with it present).
 6. Device identity/trust — Ed25519 signing is NOT a Kof face (interop-over-JDK guidance only) → **rule-6, out of v1**, recorded as an honest limitation (passive-MITM is dead; active MITM of the key exchange is NOT refused — the envelope v1 position, stated plainly).
 
 ## 1. Measured stdlib anchors (the plan may not assume anything else)
