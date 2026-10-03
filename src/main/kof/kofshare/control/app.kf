@@ -8,8 +8,9 @@ import kof.json
 // slice 1 stays the domain authority and this file is transport sugar.
 // listen() blocks — the server main runs it; stop = process lifecycle
 // (v1 is a LAN daemon). NOTE: lambdas here capture ONLY the registry maps —
-// capturing the app handle in a closure hits Kof4j §575 (phantom kof/web/App
-// descriptor in the lambda field, NoClassDefFoundError at LOAD on JVM).
+// capture of the app handle became LEGAL on JVM after Kof4j §575 was fixed
+// (JvmTypeMapper erases the phantom descriptor); we still choose NOT to
+// capture — daemon lifecycle = process lifecycle.
 
 void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferInfo> offers) {
     var app = web.app()
