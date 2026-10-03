@@ -1,5 +1,7 @@
 # KofShare — architecture (100% Kof)
 
+> O trabalho faltante está fatiado, ancorado e ordenado em [`implementation-plan.md`](implementation-plan.md) / [`implementation-plan.pt_BR.md`](implementation-plan.pt_BR.md) (02/10).
+
 status: SPEC (domain model compile-validated on the Kof tip 01/10; implementation blocked on stdlib front — see §9)
 last: decision `D-KOFSHARE-100KOF` (Kof repo, 01/10/2026): KofShare is a 100% Kof application; JVM interop is NOT a product route.
 location: repository

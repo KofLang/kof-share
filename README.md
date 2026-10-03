@@ -32,3 +32,6 @@ java --enable-native-access=ALL-UNNAMED -jar <Kof4j>/kof-cli/target/kof-cli-0.5.
 java --enable-native-access=ALL-UNNAMED -jar <Kof4j>/kof-cli/target/kof-cli-0.5.0-beta.jar \
      run --target jvm    src/main/kof/kofshare/probe/tamper.kf   # TAMPER-OK
 ```
+
+## O que falta / próximo
+Fatias em 02/10 em [`docs/implementation-plan.md`](docs/implementation-plan.md) (EN) / [`docs/implementation-plan.pt_BR.md`](docs/implementation-plan.pt_BR.md) (PT): control plane (registro + HTTP), CLI (`--check`/`--dry`), extração `session.kf`/`protocol.kf`, relay fallback, empacotamento. As âncoras do stdlib estão medidas (D-KOF-NET, D-KOF-X25519, `web.app`+`http` verdes em `KofHttpE2ETest`); identidade/confiança continua rule-6 (sem face Ed25519).

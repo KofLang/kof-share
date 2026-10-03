@@ -57,3 +57,11 @@ Mover a máquina de estados do envelope (HELLO/chaves/frames) de `transfer.kf`/`
 * Identidade & confiança de dispositivo (face Ed25519, certificados, TOFU) — nenhuma face no stdlib; o envelope v1 segue com a limitação documentada.
 * Hole-punching / NAT traversal além do relay — §7 pós-MVP.
 * Alvos JS/Native do produto — bloqueados por `SECN012`/`NETN001` (faces decididas fora do v1; medição, não suposição).
+
+## 3.1 Continuação do fora de escopo
+
+* Qualquer face nova da linguagem descoberta no meio de uma fatia → PARE + pergunta rule-6 (como `D-INTEROP-ERR-TYPE` foi), nunca contorno local no produto.
+
+## 4. Disciplina de verificação (toda fatia)
+
+RED-first (teste antes do código); goldens JVM+Script para faces reais; recusas nomeadas para todo o resto; `probe/tamper.kf` e as duas pernas do e2e re-rodadas ao fim de cada fatia (piso de regressão); commit por fatia com números medidos; nenhuma afirmação sobre alvo que não foi executado.
