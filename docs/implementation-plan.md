@@ -1,0 +1,64 @@
+[English](implementation-plan.md) | [Português](implementation-plan.pt_BR.md)
+
+# KofShare — implementation plan (what is missing, as slices)
+
+**Owner:** `192.168.15.15:9092` (lane security/connectors; `D-PLAN-ONE-OWNER` applies to this file too — it lives in the product repo, not in `Kof4j/docs/development/`).
+**Base:** tip `c7a7946` (transfer core + session envelope, measured `E2E-OK`/`SEC-E2E-OK` JVM+Script, `TAMPER-OK`).
+**Scope law:** the product stays 100% Kof (`D-KOFSHARE-100KOF`) — no interop, no shims, no invented stdlib faces. Everything below rides ONLY on measured stdlib surfaces (anchors listed per slice). Anything requiring a new language surface is rule-6 → maintainer, never an agent decision.
+
+## 0. Ready vs missing (measured, not remembered)
+
+READY (in-tree at base, green re-measured with the tip jar):
+* `transfer.kf` — framing `len|index|payload`, offset-idempotent resume, per-chunk HMAC-SHA256 over hex AAD.
+* `handshake.kf` — ephemeral X25519, HELLO (index `1073741822`, 64-hex pub + server salt), HKDF-SHA256 directional keys, encrypt-then-MAC over the cipher.
+* `e2e.kf` — plain leg (resume@100000) + secure leg (resume@123456), 200000 B, both targets.
+* `probe/tamper.kf` — legacy tamper + the 5 envelope assertions.
+* `domain.kf` — records + JSON round-trip.
+
+MISSING (the whole control plane, CLI, module split, relay, packaging):
+1. `control/` — device registry + offers over HTTP (`architecture.md` §4). No code exists.
+2. `cli.kf` — `server` / `offer` / `fetch` with `--check` / `--dry` goldens (§6).
+3. `session.kf` / `protocol.kf` — the state machine is inline in `transfer.kf`/`handshake.kf`; one-responsibility split (§10).
+4. Relay fallback — direct LAN works in the e2e; relay-via-control (ciphertext only, §7 MVP position) has no handler.
+5. Packaging — no `kof.toml`, no product tree, no run script.
+6. Device identity/trust — Ed25519 signing is NOT a Kof face (interop-over-JDK guidance only) → **rule-6, out of v1**, recorded as an honest limitation (passive-MITM is dead; active MITM of the key exchange is NOT refused — the envelope v1 position, stated plainly).
+
+## 1. Measured stdlib anchors (the plan may not assume anything else)
+
+* `web.app()` → `app.get("/p") { ... }`, `app.post(...)`, `param("id")`, `body()`, `status(code, text)`, `app.listen(port)` — live subprocess server + `http` client over loopback is GREEN in `KofHttpE2ETest` (JVM; server compiled+forked as a subprocess, client in-process).
+* `http.get/post/put/delete/patch/options/status(url, headers...) -> String` — stable JVM + JS (byte-parity, `learn/stdlib/http.md`); Native has partial (`HTTP002` on the missing pieces). **Script leg: NOT yet measured — slice 2 proves or refuses it first.**
+* `json.encode` / `json.decode<T>` — golden-proven in `domain.kf` (JVM+Script).
+* `kof.net` TCP (`listen/accept/connect/send/receive/close`) — real on JVM, Native x86-64, riscv64/aarch64, JS-host, Script (D-KOF-NET slices 1–5 + 4b).
+* `random.hex(n)`, `crypto.*`, `keyExchange.*` — landed (envelope base).
+* Honest refusals already encoded at the typer: `NETN001` (net on JS), `SECN012` (keyExchange on JS/Native), `INTEROP009/010` (foreign faces/failures).
+
+## 2. Slices (dependency order; each is one committable unit, RED-first)
+
+**Slice 1 — `control/registry.kf` (pure domain, zero IO).**
+Registry model: devices (`id → {name, addresses, lastSeen}`), offers (`id → {device, path, size, sha256Hex, resumeOffsetHint}`), `register/resolve/listOffers/revoke` as pure functions over in-memory maps + JSON encoders. Proof: `RegistryE2ETest` — same source, JVM + Script, golden (register 2 devices, offer, resolve, revoke, malformed JSON refused by name via `catch`). DoD: green both targets, no stdlib invention, `json.decode<T>` invariants tested.
+
+**Slice 2 — `control/app.kf` (HTTP surface over registry).**
+`web.app()` with the §4 contract routes: `POST /devices` (register, body = signed-by-envelope nothing — v1 is LAN-trust), `GET /devices/:id`, `GET /offers?device=`, `POST /offers`, `DELETE /offers/:id`, `GET /health`. Handlers mutate ONLY an in-memory registry (one process; persistence = slice 5 keystore or refused honestly). Proof: `ControlPlaneE2ETest` cloning the `KofHttpE2ETest` harness (server subprocess + `http.get/post` client over loopback, JVM) **plus a first measurement of `http`+`web` under `--target script`** — if Script refuses, the refusal is recorded here by name and the Script leg is dropped honestly (R6: measured, not assumed). DoD: golden register→offer→resolve→fetch-metadata round-trip; 404/400 refused by name.
+
+**Slice 3 — `cli.kf` (product entry).**
+`main(args)`: `server` (control+registry + serves offers), `offer <file>`, `fetch <offerId|url> <dest> [--resume]`, `--check` (full golden: spin registry in-process, register/offer/resolve, run the e2e envelope legs over `kof.net` loopback, print `CHECK-OK`), `--dry` (print the resolved plan, no IO). Args via `String[] args`; JSON bodies via `json`. Proof: golden CLI transcript test (same pattern as `e2e.kf` run instructions; output byte-identical JVM+Script where faces are real). DoD: `--check` is the one command the maintainer can run to see the whole product green; refusals named.
+
+**Slice 4 — `session.kf`/`protocol.kf` extraction (no behavior change).**
+Move the envelope state machine (HELLO/keys/frames) out of `transfer.kf`/`handshake.kf` into `protocol.kf` (framing + codec) and `session.kf` (handshake + keys + sealed send/receive), per §10 one-responsibility; `e2e.kf`/`probe/tamper.kf` stay the SAME goldens byte-for-byte — that is the proof of the refactor. DoD: all existing goldens green on both targets + refactor diff contains zero new semantic faces.
+
+**Slice 5 — relay fallback (LAN-direct first, relay ciphertext-only).**
+`fetch` tries `connect(deviceAddr)`; on refusal falls back to the control host relay: opaque chunk frames forwarded byte-for-byte between the two peers' TCP connections (control never sees plaintext — the envelope already encrypts the transport). Proof: `RelayE2ETest` — two peers + relay, all three sockets on loopback with distinct ports, golden equal to the direct path output; tamper-at-relay refused (relay flipping a byte = envelope tag death, reuse `probe/tamper.kf` assertions on the relayed leg). DoD: honest statement that traversal ≠ hole-punching (STUN/ICE = post-MVP, architecture §7).
+
+**Slice 6 — packaging + docs.**
+`kof.toml` (module entry points for `server`/`cli`), `README` run instructions updated to the CLI, `architecture.md` §10 tree marked LANDED per slice with the measured refusals, this plan gets a STATUS line per slice. DoD: fresh clone → `java -jar kof-cli.jar run cli.kf -- --check` green; docs-lang style parity EN+PT for this repo's docs.
+
+## 3. Out of scope / rule-6 (do not implement without a decision)
+
+* Device identity & active-MITM trust (Ed25519 face, certificates, TOFU) — no stdlib face exists; the envelope v1 ships with the documented limitation.
+* Hole-punching / NAT traversal beyond relay — §7 post-MVP.
+* JS/Native product targets — blocked upstream by `NETN001`/`SECN012` (out of v1 scope, recorded).
+* Any new language surface discovered mid-slice → STOP + rule-6 question (like `D-INTEROP-ERR-TYPE` was), never a local workaround in the product.
+
+## 4. Verification discipline (every slice)
+
+RED-first (test before code); JVM+Script goldens for real faces; named refusals for everything else; `probe/tamper.kf` and both e2e legs re-run at the end of every slice (regression floor); commit per slice with measured numbers; no claims about targets that were not run.
