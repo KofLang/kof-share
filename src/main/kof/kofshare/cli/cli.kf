@@ -5,6 +5,7 @@ import kofshare.domain
 import kofshare.control.registry
 import kofshare.control.app
 import kofshare.session
+import kofshare.relay
 import kof.json
 import kof.crypto
 import kof.keyExchange
@@ -14,8 +15,11 @@ import kof.security
 // KofShare product entry (implementation-plan.md §2 slice 3). Commands:
 //   server [port] [--key <hex>]  control plane: serves offers over web.app()
 //   offer <file>                 digest a file into an OfferInfo JSON record
-//   fetch <host> <port> <dest> [--resume <n>] [--key <hex>]
+//   fetch <host> <port> <dest> [--resume <n>] [--key <hex>] [--secure]
+//                                [--relay <rhost> <rport>]
 //                                pull an offer over kof.net into <dest>
+//   relay <port> <peerHost> <peerPort> [--tamper]
+//                                ciphertext-only relay for one session
 //   --check                      full product golden (registry + plain +
 //                                secure envelope legs), prints CHECK-OK
 //   --dry                        resolve the transfer PLAN only, no sockets
@@ -196,7 +200,8 @@ Int runDry() {
     println("DRY-PLAN commands:")
     println("  server [port] [--key <hex>]  -> control plane web.app() on port " + defaultControlPort())
     println("  offer <file>                 -> OfferInfo JSON (sha256Bytes over the file)")
-    println("  fetch <host> <port> <dest> [--resume <n>] [--key <hex>] -> kof.net pull")
+    println("  fetch <host> <port> <dest> [--resume <n>] [--key <hex>] [--secure] [--relay <rhost> <rport>] -> kof.net pull")
+    println("  relay <port> <peerHost> <peerPort> [--tamper] -> ciphertext-only relay")
     println("  --check                      -> registry + plain port=" + checkPortPlain()
         + " resume=" + checkResumePlain() + " + secure port=" + checkPortSecure()
         + " resume=" + checkResumeSecure())
@@ -205,12 +210,14 @@ Int runDry() {
 }
 
 // `fetch` — real transfer from a serving peer. `--resume <n>` appends to a
-// partial file; `--key <hex>` must match the peer's key. Direct LAN only
-// (relay fallback = slice 5).
+// partial file; `--key <hex>` must match the peer's key; `--secure` uses the
+// X25519/HKDF envelope; `--relay <host> <port>` routes through the
+// ciphertext-only relay (slice 5). Without `--relay` the client connects
+// directly to the peer.
 Int runFetch(List<String> args) {
     var rest = tail(args, 1)
     if (rest.size < 3) {
-        println("FETCH-ERR: usage: fetch <host> <port> <dest> [--resume <n>] [--key <hex>]")
+        println("FETCH-ERR: usage: fetch <host> <port> <dest> [--resume <n>] [--key <hex>] [--secure] [--relay <rhost> <rport>]")
         return 1
     }
     var host = argAt(rest, 0)
@@ -218,6 +225,10 @@ Int runFetch(List<String> args) {
     var dest = argAt(rest, 2)
     var resume = 0
     var key = defaultKey()
+    var secure = false
+    var relayed = false
+    var relayHost = ""
+    var relayPort = 0
     var i = 3
     while (i < rest.size) {
         var a = argAt(rest, i)
@@ -238,19 +249,67 @@ Int runFetch(List<String> args) {
                 key = argAt(rest, i + 1)
                 i = i + 2
             } else {
-                i = i + 1
+                if (a == "--secure") {
+                    secure = true
+                    i = i + 1
+                } else {
+                    if (a == "--relay") {
+                        relayed = true
+                        relayHost = argAt(rest, i + 1)
+                        relayPort = math.parseInt(argAt(rest, i + 2))
+                        i = i + 3
+                    } else {
+                        i = i + 1
+                    }
+                }
             }
         }
     }
-    var c = net.connect(host, port)
-    var t = fetchFile(c, dest, resume, "cli-fetch", "peer", key)
+    var hostToUse = host
+    var portToUse = port
+    if (relayed) {
+        hostToUse = relayHost
+        portToUse = relayPort
+    }
+    var c = net.connect(hostToUse, portToUse)
+    var t: Transfer
+    if (secure) {
+        var privC = keyExchange.privateKey()
+        var hs = fetchHandshake(c, privC)
+        t = fetchFileSecure(c, dest, resume, "cli-fetch", "peer", hs.get(4), hs.get(5))
+    } else {
+        t = fetchFile(c, dest, resume, "cli-fetch", "peer", key)
+    }
     c.close()
-    println("FETCH-DONE state=" + t.state + " offset=" + t.offset + "/" + t.totalBytes)
+    println("FETCH-DONE state=" + t.state + " offset=" + t.offset + "/" + t.totalBytes
+        + " relay=" + relayed + " secure=" + secure)
     if (t.state == SessionState.Done) {
         println("FETCH-OK")
         return 0
     }
     return 1
+}
+
+// `relay <port> <peerHost> <peerPort> [--tamper]` — serve one ciphertext-only
+// relayed session. `--tamper` flips one ciphertext byte (probe only).
+Int runRelay(List<String> args) {
+    var rest = tail(args, 1)
+    if (rest.size < 3) {
+        println("RELAY-ERR: usage: relay <port> <peerHost> <peerPort> [--tamper]")
+        return 1
+    }
+    var port = math.parseInt(argAt(rest, 0))
+    var peerHost = argAt(rest, 1)
+    var peerPort = math.parseInt(argAt(rest, 2))
+    var tamper = argAt(rest, 3) == "--tamper"
+    println("RELAY-READY port=" + port + " peer=" + peerHost + ":" + peerPort + " tamper=" + tamper)
+    if (tamper) {
+        var l = net.listen(port)
+        relayServeTamperOn(l, peerHost, peerPort)
+    } else {
+        relayServe(port, peerHost, peerPort)
+    }
+    return 0
 }
 
 // `server` — the control plane daemon (listen blocks; stop = process).
@@ -332,7 +391,7 @@ main(args: List<String>) {
         start = 1
     }
     if (args.size <= start) {
-        println("USAGE: kofshare server [port] [--key <hex>] | offer <file> | fetch <host> <port> <dest> [--resume <n>] [--key <hex>] | --check | --dry")
+        println("USAGE: kofshare server [port] [--key <hex>] | offer <file> | fetch <host> <port> <dest> [--resume <n>] [--key <hex>] [--secure] [--relay <rhost> <rport>] | relay <port> <peerHost> <peerPort> [--tamper] | --check | --dry")
         return
     }
     var cmd = args.get(start)
@@ -362,6 +421,13 @@ main(args: List<String>) {
         var rc = runFetch(tail(args, start))
         if (rc != 0) {
             throw "kofshare: FETCH-ERR"
+        }
+        return
+    }
+    if (cmd == "relay") {
+        var rc = runRelay(tail(args, start))
+        if (rc != 0) {
+            throw "kofshare: RELAY-ERR"
         }
         return
     }

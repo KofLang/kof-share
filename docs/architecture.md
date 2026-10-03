@@ -96,7 +96,7 @@ kofshare shares [--mine]                                        -> Share list + 
 
 ## 7. NAT traversal (MVP position, honest)
 
-* MVP: direct connect on LAN + relay fallback through the `control` host (ciphertext only).
+* MVP: direct connect on LAN + relay fallback through the `control` host (ciphertext only). **LANDED 03/10** — `relay.kf` is a framing-agnostic byte pump that forwards opaque bytes between the two peers and never parses the wire format, so the relay is untrusted for content by construction; `fetch --relay` and the `relay` command drive it, proven `RELAY-OK` on JVM+Script (direct == relayed; a tampering relay is refused by the envelope tag with nothing appended).
 * STUN/ICE-grade traversal is an explicit post-MVP extension point (`resolve` already returns candidate addresses). No hole-punching is claimed.
 
 ## 8. Test plan (RED-first)

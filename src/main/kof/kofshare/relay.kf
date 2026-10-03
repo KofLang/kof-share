@@ -1,0 +1,136 @@
+package kofshare
+
+import kofshare.protocol
+
+// KofShare relay fallback (slice 5) — architecture.md §7: direct LAN first,
+// relay through the control host as a ciphertext-only fallback. The relay is
+// a byte pump: it forwards opaque frames between the two peers' TCP
+// connections and NEVER sees plaintext (the session envelope in session.kf
+// already encrypts the transport). It is deliberately framing-agnostic — it
+// does not parse protocol.kf headers, so it cannot inspect or rewrite the
+// payload. Closing the destination on source EOF propagates the half-close;
+// a read/send failure on a socket the peer direction already closed is
+// treated as end-of-stream (a relay must not die when one side hangs up).
+// No hole-punching is claimed (STUN/ICE = post-MVP).
+
+// Read one chunk: `[chunk]` on data, `[]` on EOF or a socket already closed
+// by the sibling direction.
+List<Byte[]> relayRead(Conn c) {
+    var out = listOf()
+    try {
+        var chunk = c.receive(65536)
+        if (chunk.length > 0) {
+            out.add(chunk)
+        }
+    } catch (String e) {
+        // closed by the sibling direction — end of stream
+    }
+    return out
+}
+
+Int relayPump(Conn src, Conn dst) {
+    var total = 0
+    var open = true
+    while (open) {
+        var r = relayRead(src)
+        if (r.size == 0) {
+            open = false
+        } else {
+            var chunk = r.get(0)
+            var sent = true
+            try {
+                dst.send(chunk)
+            } catch (String e) {
+                sent = false
+            }
+            if (!sent) {
+                open = false
+            } else {
+                total = total + chunk.length
+            }
+        }
+    }
+    try {
+        dst.close()
+    } catch (String e) {
+        // already closed by the sibling direction — not an error
+    }
+    return total
+}
+
+// Tamper variant: flip the byte at absolute offset 300 of the peer→client
+// stream. Offsets 0..104 are the server HELLO, 105..112 the META frame, and
+// the first data chunk starts at 113 — so offset 300 is a ciphertext byte,
+// which the client's envelope tag must refuse. A real relay never does this.
+Int relayPumpTamper(Conn src, Conn dst) {
+    var total = 0
+    var open = true
+    var tampered = false
+    while (open) {
+        var r = relayRead(src)
+        if (r.size == 0) {
+            open = false
+        } else {
+            var chunk = r.get(0)
+            if (!tampered && total + chunk.length > 300) {
+                var at = 300 - total
+                var v = chunk[at]
+                if (v < 0) {
+                    v = v + 256
+                }
+                chunk[at] = (v + 1) % 256
+                tampered = true
+            }
+            var sent = true
+            try {
+                dst.send(chunk)
+            } catch (String e) {
+                sent = false
+            }
+            if (!sent) {
+                open = false
+            } else {
+                total = total + chunk.length
+            }
+        }
+    }
+    try {
+        dst.close()
+    } catch (String e) {
+        // already closed by the sibling direction — not an error
+    }
+    return total
+}
+
+// Serve one relayed session on an already-bound listener: accept the client,
+// connect to the peer, then pump BOTH directions concurrently (the session
+// is request/response — the server sends HELLO first, the client answers,
+// the server streams). Returns after both directions reach EOF. Taking the
+// Listener avoids a bind/connect race in the caller.
+Int relayServeOn(Listener l, String peerHost, Int peerPort) {
+    var client = l.accept()
+    var peer = net.connect(peerHost, peerPort)
+    var up = spawn { relayPump(client, peer) }
+    var down = spawn { relayPump(peer, client) }
+    await up
+    await down
+    l.close()
+    return 0
+}
+
+Int relayServeTamperOn(Listener l, String peerHost, Int peerPort) {
+    var client = l.accept()
+    var peer = net.connect(peerHost, peerPort)
+    var up = spawn { relayPump(client, peer) }
+    var down = spawn { relayPumpTamper(peer, client) }
+    await up
+    await down
+    l.close()
+    return 0
+}
+
+// Convenience for the CLI `relay` command: own the listener.
+Int relayServe(Int port, String peerHost, Int peerPort) {
+    var l = net.listen(port)
+    return relayServeOn(l, peerHost, peerPort)
+}

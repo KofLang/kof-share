@@ -1,0 +1,174 @@
+package kofshare.relaycheck
+
+import kofshare.relay
+import kofshare.session
+import kofshare.domain
+import kof.keyExchange
+import kof.secrets
+import kof.security
+
+// Slice-5 oracle: the relay fallback must be byte-identical to the direct
+// secure path, and a relay that tampers with the ciphertext must be refused
+// by the end-to-end envelope tag BEFORE any plaintext reaches the file. All
+// sockets are loopback on distinct ports. `RELAY-OK` is the green marker.
+
+Int directPeerPort() {
+    return 19421
+}
+
+Int relayPort() {
+    return 19422
+}
+
+Int tamperPeerPort() {
+    return 19423
+}
+
+Int tamperRelayPort() {
+    return 19424
+}
+
+Int[] prefix(Int[] src, Int n) {
+    var out = new Int[n]
+    var i = 0
+    while (i < n) {
+        out[i] = src[i]
+        i = i + 1
+    }
+    return out
+}
+
+Int[] makeSource() {
+    var n = 200000
+    var a = new Int[n]
+    var i = 0
+    while (i < n) {
+        a[i] = (i * 7 + 3) % 256
+        i = i + 1
+    }
+    return a
+}
+
+Int firstMismatch(Int[] a, Int[] b) {
+    if (a.size != b.size) {
+        return 0 - 1
+    }
+    var i = 0
+    while (i < a.size) {
+        if (a[i] != b[i]) {
+            return i
+        }
+        i = i + 1
+    }
+    return 0 - 1
+}
+
+// Direct secure leg — the baseline the relay must reproduce.
+Boolean directLeg(String src, Int resume, Int[] data) {
+    var dst = "relaycheck-direct.part"
+    File(dst).writeBytes(prefix(data, resume))
+    var l = net.listen(directPeerPort())
+    var worker = spawn {
+        var sv = l.accept()
+        var privS = keyExchange.privateKey()
+        serveFileSecure(sv, src, resume, privS, security.randomHex(16))
+        sv.close()
+    }
+    var c = net.connect("127.0.0.1", directPeerPort())
+    var privC = keyExchange.privateKey()
+    var hs = fetchHandshake(c, privC)
+    var t = fetchFileSecure(c, dst, resume, "relay-direct", "devC", hs.get(4), hs.get(5))
+    c.close()
+    await worker
+    l.close()
+    var out = File(dst).readBytes()
+    var ok = (t.state == SessionState.Done) && (out.size == data.size) && (firstMismatch(out, data) < 0)
+    File(dst).delete()
+    return ok
+}
+
+// Relayed secure leg — the client talks to the relay, the relay connects to
+// the peer. The bytes on the wire are the SAME envelope the direct path uses.
+Boolean relayedLeg(String src, Int resume, Int[] data) {
+    var dst = "relaycheck-relayed.part"
+    File(dst).writeBytes(prefix(data, resume))
+    var peerL = net.listen(directPeerPort())
+    var relayL = net.listen(relayPort())
+    var peerWorker = spawn {
+        var sv = peerL.accept()
+        var privS = keyExchange.privateKey()
+        serveFileSecure(sv, src, resume, privS, security.randomHex(16))
+        sv.close()
+        peerL.close()
+    }
+    var relayWorker = spawn {
+        relayServeOn(relayL, "127.0.0.1", directPeerPort())
+    }
+    var c = net.connect("127.0.0.1", relayPort())
+    var privC = keyExchange.privateKey()
+    var hs = fetchHandshake(c, privC)
+    var t = fetchFileSecure(c, dst, resume, "relay-relayed", "devD", hs.get(4), hs.get(5))
+    c.close()
+    await relayWorker
+    await peerWorker
+    var out = File(dst).readBytes()
+    var ok = (t.state == SessionState.Done) && (out.size == data.size) && (firstMismatch(out, data) < 0)
+    File(dst).delete()
+    return ok
+}
+
+// Tampered relay leg — the relay flips one ciphertext byte; the client's
+// envelope tag must refuse it and no plaintext may reach the file.
+Boolean tamperLeg(String src, Int resume, Int[] data) {
+    var dst = "relaycheck-tamper.part"
+    File(dst).writeBytes(prefix(data, resume))
+    var peerL = net.listen(tamperPeerPort())
+    var relayL = net.listen(tamperRelayPort())
+    var peerWorker = spawn {
+        var sv = peerL.accept()
+        var privS = keyExchange.privateKey()
+        serveFileSecure(sv, src, resume, privS, security.randomHex(16))
+        sv.close()
+        peerL.close()
+    }
+    var relayWorker = spawn {
+        relayServeTamperOn(relayL, "127.0.0.1", tamperPeerPort())
+    }
+    var c = net.connect("127.0.0.1", tamperRelayPort())
+    var privC = keyExchange.privateKey()
+    var hs = fetchHandshake(c, privC)
+    var refused = false
+    try {
+        fetchFileSecure(c, dst, resume, "relay-tamper", "devE", hs.get(4), hs.get(5))
+    } catch (String e) {
+        refused = true
+    }
+    c.close()
+    await relayWorker
+    await peerWorker
+    var out = File(dst).readBytes()
+    var ok = refused && (out.size == resume)
+    File(dst).delete()
+    return ok
+}
+
+main() {
+    var src = "relaycheck-src.bin"
+    var resume = 100000
+    var data = makeSource()
+    File(src).writeBytes(data)
+
+    var direct = directLeg(src, resume, data)
+    println("direct=" + direct)
+    var relayed = relayedLeg(src, resume, data)
+    println("relayed=" + relayed)
+    var tamper = tamperLeg(src, resume, data)
+    println("tamperRefused=" + tamper)
+    File(src).delete()
+
+    if (direct && relayed && tamper) {
+        println("RELAY-OK")
+    } else {
+        println("RELAY-FAIL")
+    }
+}
