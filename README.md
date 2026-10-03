@@ -5,6 +5,26 @@
 frame `len(4 BE) | index(4 BE) | payload`, offset-idempotent resume
 (`serveFile` from `resumeOffset`, `fetchFile` appends the `.part`).
 
+## CLI entry (landed 03/10)
+
+`src/main/kof/kofshare/cli/cli.kf` (`package kofshare.cli`) — the product
+entry, JVM+Script:
+
+```
+kof run .../cli/cli.kf --target jvm --check   # registry + plain + secure, prints CHECK-OK
+kof run .../cli/cli.kf --target script --check
+kof run .../cli/cli.kf --target jvm --dry     # print the resolved plan, no IO
+kof run .../cli/cli.kf --target jvm offer <file>       # OfferInfo JSON, real content digest
+kof run .../cli/cli.kf --target jvm fetch <host> <port> <dest> [--resume] [--key <hex>]
+kof run .../cli/cli.kf --target jvm server [port] [--key <hex>]
+```
+
+`--check` is the one command that shows the whole product green: pure
+registry golden + the plain transfer leg (resume@100000) + the secure
+X25519/HKDF envelope leg (resume@123456), real `kof.net` loopback. The
+entry lives in its own subpackage because the module enforces ONE `main()`
+per package (`e2e.kf` already owns the `kofshare` one).
+
 ## Session envelope (landed 02/10)
 
 `src/main/kof/kofshare/handshake.kf` — over the now-real `keyExchange`
@@ -34,4 +54,4 @@ java --enable-native-access=ALL-UNNAMED -jar <Kof4j>/kof-cli/target/kof-cli-0.5.
 ```
 
 ## O que falta / próximo
-Fatias em 02/10 em [`docs/implementation-plan.md`](docs/implementation-plan.md) (EN) / [`docs/implementation-plan.pt_BR.md`](docs/implementation-plan.pt_BR.md) (PT): control plane (registro + HTTP), CLI (`--check`/`--dry`), extração `session.kf`/`protocol.kf`, relay fallback, empacotamento. As âncoras do stdlib estão medidas (D-KOF-NET, D-KOF-X25519, `web.app`+`http` verdes em `KofHttpE2ETest`); identidade/confiança continua rule-6 (sem face Ed25519).
+Fatias em 02/10 em [`docs/implementation-plan.md`](docs/implementation-plan.md) (EN) / [`docs/implementation-plan.pt_BR.md`](docs/implementation-plan.pt_BR.md) (PT): **fatia 3 (`cli.kf`) POUSADA 03/10**; restam extração `session.kf`/`protocol.kf` (fatia 4), relay fallback (fatia 5), empacotamento `kof.toml` (fatia 6). As âncoras do stdlib estão medidas (D-KOF-NET, D-KOF-X25519, `web.app`+`http` verdes em `KofHttpE2ETest`); identidade/confiança continua rule-6 (sem face Ed25519).

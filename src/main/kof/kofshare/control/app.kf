@@ -65,9 +65,5 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
         return "OK"
     }
 
-    app.get("/health") {
-        return "OK"
-    }
-
     app.listen(port)
 }
