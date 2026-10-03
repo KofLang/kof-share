@@ -60,6 +60,10 @@ Move the envelope state machine (HELLO/keys/frames) out of `transfer.kf`/`handsh
 **Slice 6 — packaging + docs.**
 `kof.toml` (module entry points for `server`/`cli`), `README` run instructions updated to the CLI, `architecture.md` §10 tree marked LANDED per slice with the measured refusals, this plan gets a STATUS line per slice. DoD: fresh clone → `java -jar kof-cli.jar run cli.kf -- --check` green; docs-lang style parity EN+PT for this repo's docs.
 
+**LANDED 03/10 (`kof.toml` + docs).** `kof.toml` declares `[project] name = "kof-share"`, `[backend] target = "jvm"` and `[sources] app = "src/main/kof"` — the manifest the CLI's `ProjectLocator` reads; the explicit `--target` on the command line still overrides the backend target, and `--check` stays green on JVM and Script with the manifest present. `architecture.md` §10 now shows the real landed tree (one responsibility per file; the `PKG002` one-`main()`-per-package note), and §3/§5/§7 carry the slice-5 relay. The README run instructions cover the CLI, the relay and the manifest.
+
+**STATUS per slice:** 1 registry LANDED · 2 control plane LANDED · 3 CLI LANDED · 4 protocol/session split LANDED · 5 relay LANDED · 6 packaging LANDED. All six slices of the authorized KofShare plan are landed; the remaining rule-6 items are listed in §3 (identity/Ed25519, hole-punching, JS/Native product targets).
+
 ## 3. Out of scope / rule-6 (do not implement without a decision)
 
 * Device identity & active-MITM trust (Ed25519 face, certificates, TOFU) — no stdlib face exists; the envelope v1 ships with the documented limitation.

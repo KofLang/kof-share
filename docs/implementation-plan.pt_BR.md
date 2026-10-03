@@ -60,6 +60,10 @@ Mover a máquina de estados do envelope (HELLO/chaves/frames) de `transfer.kf`/`
 **Fatia 6 — empacotamento + docs.**
 `kof.toml` (entradas de módulo `server`/`cli`), instruções de execução do `README` atualizadas para a CLI, árvore do §10 da `architecture.md` marcada LANDED por fatia com as recusas medidas, esta linha STATUS por fatia neste plano. DoD: clone novo → `java -jar kof-cli.jar run cli.kf -- --check` verde; paridade EN+PT estilo docs-lang nos docs deste repo.
 
+**POUSADA 03/10 (`kof.toml` + docs).** O `kof.toml` declara `[project] name = "kof-share"`, `[backend] target = "jvm"` e `[sources] app = "src/main/kof"` — o manifesto que o `ProjectLocator` da CLI lê; o `--target` explícito na linha de comando ainda sobrepõe o backend target, e o `--check` segue verde em JVM e Script com o manifesto presente. A `architecture.md` §10 agora mostra a árvore real pousada (uma responsabilidade por arquivo; a nota `PKG002` de um-`main()`-por-pacote), e §3/§5/§7 carregam o relay da fatia 5. As instruções de execução do README cobrem a CLI, o relay e o manifesto.
+
+**STATUS por fatia:** 1 registro POUSADA · 2 control plane POUSADA · 3 CLI POUSADA · 4 split protocol/session POUSADA · 5 relay POUSADA · 6 empacotamento POUSADA. Todas as seis fatias do plano KofShare autorizado estão pousadas; os itens rule-6 restantes estão no §3 (identidade/Ed25519, hole-punching, alvos de produto JS/Native).
+
 ## 3. Fora de escopo / rule-6 (não implementar sem decisão)
 
 * Identidade & confiança de dispositivo (face Ed25519, certificados, TOFU) — nenhuma face no stdlib; o envelope v1 segue com a limitação documentada.

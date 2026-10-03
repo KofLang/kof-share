@@ -72,5 +72,12 @@ java --enable-native-access=ALL-UNNAMED -jar <Kof4j>/kof-cli/target/kof-cli-0.5.
      run --target jvm    src/main/kof/kofshare/relaycheck/checkrelay.kf   # RELAY-OK
 ```
 
+## Packaging (landed 03/10)
+
+`kof.toml` declares `[project] name = "kof-share"`, `[backend] target =
+"jvm"` and `[sources] app = "src/main/kof"`. An explicit `--target` still
+overrides the backend target, and `--check` is green on JVM and Script with
+the manifest present.
+
 ## O que falta / próximo
-Fatias em 02/10 em [`docs/implementation-plan.md`](docs/implementation-plan.md) (EN) / [`docs/implementation-plan.pt_BR.md`](docs/implementation-plan.pt_BR.md) (PT): **fatias 3 (`cli.kf`), 4 (`protocol.kf`/`session.kf`) e 5 (relay) POUSADAS 03/10**; resta o empacotamento `kof.toml` (fatia 6). As âncoras do stdlib estão medidas (D-KOF-NET, D-KOF-X25519, `web.app`+`http` verdes em `KofHttpE2ETest`); identidade/confiança continua rule-6 (sem face Ed25519).
+Todas as seis fatias do plano autorizado estão POUSADAS 03/10 em [`docs/implementation-plan.md`](docs/implementation-plan.md) (EN) / [`docs/implementation-plan.pt_BR.md`](docs/implementation-plan.pt_BR.md) (PT): 1 registro, 2 control plane, 3 CLI, 4 split `protocol.kf`/`session.kf`, 5 relay, 6 empacotamento. Restam apenas os itens rule-6 do §3 (identidade/Ed25519, hole-punching/STUN-ICE, alvos de produto JS/Native). As âncoras do stdlib estão medidas (D-KOF-NET, D-KOF-X25519, `web.app`+`http` verdes em `KofHttpE2ETest`).

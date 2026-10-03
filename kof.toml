@@ -1,0 +1,8 @@
+[project]
+name = "kof-share"
+
+[backend]
+target = "jvm"
+
+[sources]
+app = "src/main/kof"

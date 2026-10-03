@@ -118,15 +118,27 @@ Product code may not start its network layer until these exist in Kof itself (no
 3. AES-GCM already exists (`crypto`); the `hkdfSha256` face landed with `keyExchange` (02/10).
 4. Open naming/blocking questions shared with `D-UDP` (namespace `kof.net` vs extension, blocking model, message types) — **rule 6, maintainer decides**; `D-KOFSHARE-100KOF` records the decision *that the front is (a) stdlib*, the surface still awaits its answers.
 
-## 10. Module layout of the product (future tree)
+## 10. Module layout of the product (LANDED 03/10)
 
 ```
-src/main/kof/
-  kofshare/
-    cli.kf          domain.kf        session.kf
-    framing.kf      protocol.kf      keystore.kf
-  control/
-    app.kf          handlers.kf      registry.kf
+kof.toml                       [project] kof-share / [backend] jvm / [sources] app
+src/main/kof/kofshare/
+  domain.kf                    records (Device/OfferInfo/Transfer) + JSON
+  protocol.kf                  framing + codec (slice 4)
+  transfer.kf                  plain state machine (serveFile/fetchFile)
+  session.kf                   X25519/HKDF sealed state machine (slice 4)
+  relay.kf                     ciphertext-only relay pump (slice 5)
+  e2e.kf                       plain + secure end-to-end oracle
+  cli/cli.kf                   product entry (slice 3)
+  server/server.kf             control daemon entry
+  control/registry.kf          pure device/offer registry
+  control/app.kf               HTTP surface over the registry
+  control/check.kf             registry golden
+  httpcheck/checkhttp.kf       HTTP client golden
+  relaycheck/checkrelay.kf     relay oracle (slice 5)
+  probe/tamper.kf              tamper refusal probe
 ```
 
-(one responsibility per file, Kof philosophy: names describe responsibility)
+(one responsibility per file, Kof philosophy: names describe responsibility;
+the entry lives in its own subpackage because the module enforces ONE
+`main()` per package, `PKG002`)
