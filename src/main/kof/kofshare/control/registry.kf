@@ -90,3 +90,53 @@ String controlDecodeDevice(String body) {
     var d = json.decode<DeviceInfo>(body)
     return "decoded=" + d.id()
 }
+
+// A1 (next-plan §1): registry persistence. Two files (devices + offers), each a
+// sorted JSON list — the SAME format the HTTP routes serve, so save/load and
+// the wire agree by construction. Quasi-atomic write: temp + moveTo (rename).
+// Corrupt JSON refuses by name (REG009), never a silent empty load.
+
+String controlSaveList(String path, String text) {
+    var tmp = path + ".tmp"
+    var f = File(tmp)
+    if (!f.writeText(text)) {
+        return "REG011: cannot write " + tmp
+    }
+    var old = File(path)
+    if (old.exists()) {
+        old.delete()
+    }
+    if (!f.moveTo(path)) {
+        return "REG011: cannot finalize " + path
+    }
+    return "OK"
+}
+
+String controlLoadList(String path, Map<String, DeviceInfo> devices, Map<String, OfferInfo> offers) {
+    var f = File(path)
+    if (!f.exists()) {
+        return "OK"  // fresh registry, not an error
+    }
+    var txt = f.readText()
+    if (txt == null) {
+        return "REG009: unreadable registry " + path
+    }
+    var dlist = new List<DeviceInfo>()
+    var olist = new List<OfferInfo>()
+    try {
+        if (devices != null) {
+            var ds: List<DeviceInfo> = json.decode<List<DeviceInfo>>(txt)
+            for (var d in ds) {
+                devices.put(d.id, d)
+            }
+        } else {
+            var os: List<OfferInfo> = json.decode<List<OfferInfo>>(txt)
+            for (var o in os) {
+                offers.put(o.id, o)
+            }
+        }
+    } catch (String e) {
+        return "REG009: corrupt registry " + path + ": " + e
+    }
+    return "OK"
+}

@@ -16,7 +16,7 @@
 ## 1. Track A — decision-free (Kof faces already exist)
 
 **Slice A1 — registry persistence (crash-doesn't-forget).**
-`control/registry.kf` gains `saveRegistry(path)` / `loadRegistry(path)`: `json.encode` of the devices+offers maps (sorted keys keep goldens stable), atomic-ish write via temp file + rename using only measured `file`/`path` faces; corrupt file → named `REG009` refusal, never silent empty. `server.kf` and `cli.kf server` load at boot and save after every successful mutation. Proof: golden `checkpersist.kf` (JVM+Script): register 2 devices + 2 offers → save → fresh load → byte-identical listings + `RESOLVE-SAME` assertions; tamper the file by 1 byte → `REG009`. DoD: `--check` extended with a persistence leg (`persist=true`).
+`control/registry.kf` gains `saveRegistry(path)` / `loadRegistry(path)`: `json.encode` of the devices+offers maps (sorted keys keep goldens stable), atomic-ish write via temp file + rename using only measured `file`/`path` faces; corrupt file → named `REG009` refusal, never silent empty. `server.kf` and `cli.kf server` load at boot and save after every successful mutation. Proof: golden `checkpersist.kf` (JVM+Script): register 2 devices + 2 offers → save → fresh load → byte-identical listings + `RESOLVE-SAME` assertions; tamper the file by 1 byte → `REG009`. DoD: `--check` extended with a persistence leg (`persist=true`). **LANDED 03/10:** `persistcheck/checkpersist.kf` → `PERSIST-OK` 9/9 on JVM AND Script (save/reload byte-identical listings, `REG009` on corrupt, empty on missing); server + `cli server` load at boot and save after every successful mutation (`SERVER-READY … devices=N`); restart probe measured: fresh process serves the 2 devices from disk. The `--check` leg is the remaining DoD half (tracked below).
 
 **Slice A2 — Script SSE/WS bridge (§574 residual).**
 Kof4j-side (compiler lane): `InterpretedCallable` gains the handler shapes the runtime reflects for SSE (`invoke(SseConnection)`) and WS messages, delegating to `invokeLambda` exactly like the HTTP arms; interpreted handlers receive the connection object the same way compiled ones do. Proof: RED-first sibling of `ScriptWebRouteE2ETest` (SSE send-through + WS echo over loopback under `--target script`). DoD: §574's "SSE/WS not covered" scope note retired; no KofShare code required (the product gains the capability by target parity). **Boundary:** if WS handshake under interpretation hits a deeper interpreter gap, record the refusal by name (R6) instead of forcing — the HTTP/SSE split is one committable unit.
@@ -27,15 +27,15 @@ Server (`serveFile` path) already answers a client-chosen offset; make it explic
 **Slice A4 — offer expiry + registry hygiene (cheap, pure).**
 `OfferInfo` unchanged; registry gains a `purgeExpired(nowMs, ttlMs)` pure function + `/offers` listing already sorted; server calls it at boot and after mutations. Proof: pure golden lines in `check.kf` (JVM+Script). DoD: named `REG010` refusal only where needed (never silent behavior).
 
-## 2. Track B — rule-6 (needs the maintainer's vote BEFORE code)
+## 2. Track B — maintainer VOTED 03/10 (chat): D1=A · D2=A · D3=B · D4=A · D5=A · D6=A
 
-**B1 — Device identity + offer signing (Ed25519).**
-The trust hole of v1: anyone can register a device and claim any path. Landed stdlib has X25519 key exchange (`D-KOF-X25519`) but NO signing face (measured: zero Ed25519 anywhere). A 100%-Kof signature needs a new stdlib face (proposal: `crypto.sign`/`crypto.verify` over `Byte[]` + `KeyPair` handling on `Secret`, JVM first; JS/Native honest refusals per `SECN012` family). **Decision asked:** (i) approve the new face (name it, freeze the contract), (ii) defer identity to post-1.0 and document v1 = LAN-trust-only, or (iii) route through interop (`java.security` via `interop`, touches `D-KOFSHARE-100KOF`). NOT started without the vote.
+**B1 → C1 — Device identity + offer signing (Ed25519). VOTED A — face approved.**
+The trust hole of v1: anyone can register a device and claim any path. Landed stdlib has X25519 key exchange (`D-KOF-X25519`) but NO signing face (measured: zero Ed25519 anywhere). A 100%-Kof signature needs a new stdlib face (proposal: `crypto.sign`/`crypto.verify` over `Byte[]` + `KeyPair` handling on `Secret`, JVM first; JS/Native honest refusals per `SECN012` family). **Recorded:** the vote landed Kof4j `D-KOF-SIGN` (DECISIONS EN+PT) — proposed contract frozen for implementation: `sign(Secret, Byte[]) -> Byte[]`, `verify(Secret, Byte[], Byte[]) -> Bool`, pubkey raw-32-hex export, JS/Native named `SECN013`. Slice C1 lives in the Kof4j compiler lane (RED-first like every face).
 
-**B2 — NAT traversal (STUN/ICE, hole-punching).**
+**B2 — NAT traversal. VOTED A — relay stays manual `--relay` in v1; ICE-lite deferred.**
 The relay covers "both peers reachable by the control host"; it does NOT cover two peers behind separate NATs with no inbound ports. Pure-hole-punching needs UDP rendezvous + timed simultaneous open + the relay as fallback-of-fallback — all `kof.net` UDP faces EXIST and are measured (slice 5 of the network plan). No stdlib decision needed to TRY a Kof-level ICE-lite, but the architecture calls hole-punching post-MVP (architecture §7), so it is listed here as the maintainer's call on scope, not on faces. **Decision asked:** schedule an ICE-lite slice (pure Kof, no new stdlib face) or keep traversal = relay-only.
 
-**B3 — JS/Native product targets.**
+**B3 — JS/Native product targets. VOTED A — recipient stays CLI in v1; browser deferred.**
 `kof.net` on JS refused at compile (`NETN001`, `D-KOF-NET` amendment), `keyExchange` JS/Native refused (`SECN012`); both are honest, pinned refusals. The v1 product = JVM server + Script/JVM peers. **Decision asked:** none required to stay as-is; reopen only if the maintainer wants browser peers (needs both refusals fixed first) or a Native headless appliance.
 
 ## 3. Not in this plan (explicitly)
@@ -46,4 +46,4 @@ The relay covers "both peers reachable by the control host"; it does NOT cover t
 
 ## 4. Order and cadence
 
-A1 → A3 → A4 (product-side, JVM+Script goldens, each = one committable unit, RED-first) · A2 (compiler lane, independent, can interleave) · B1/B2/B3 stay blocked until the maintainer answers. The `--check` command accumulates a leg per landed slice — the single-command proof of the product stays true.
+Landed: **A1 persistence** (`PERSIST-OK` ×2 + restart probe). Next, in order: **C1** Ed25519 face (Kof4j compiler lane, `D-KOF-SIGN` — unblocks signed shares/`whoami`) ∥ **A2** SSE/WS bridge (compiler lane, independent) → **C2** `share.kf` full model (token = `security.randomHex(32)`, `expiresAt`/`maxUses`/`readOnly`/revocation + `/s/<token>` route; **folds A4 expiry in**; signature fields activate when C1 lands) → **C3** bearer auth (`security.apiKeyGenerate`) → **A3** resume negotiation. `--check` accumulates a leg per landed slice (next: `persist=true`). B2/B3 stay voted-A (manual relay, CLI recipient).

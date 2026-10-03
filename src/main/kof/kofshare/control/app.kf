@@ -12,7 +12,7 @@ import kof.json
 // (JvmTypeMapper erases the phantom descriptor); we still choose NOT to
 // capture — daemon lifecycle = process lifecycle.
 
-void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferInfo> offers) {
+void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferInfo> offers, String dpath, String opath) {
     var app = web.app()
 
     app.get("/devices") {
@@ -33,6 +33,9 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
         if (r != "OK") {
             return r
         }
+        if (dpath.length() > 0) {
+            controlSaveList(dpath, controlDevicesJson(devices))
+        }
         return "REGISTERED: " + d.id()
     }
 
@@ -51,6 +54,9 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
         if (r != "OK") {
             return r
         }
+        if (opath.length() > 0) {
+            controlSaveList(opath, controlOffersJson(offers, ""))
+        }
         return "OFFERED: " + o.id()
     }
 
@@ -58,6 +64,9 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
         var r = controlRevoke(offers, param("id"))
         if (r != "OK") {
             return r
+        }
+        if (opath.length() > 0) {
+            controlSaveList(opath, controlOffersJson(offers, ""))
         }
         return "REVOKED: " + param("id")
     }

@@ -32,13 +32,13 @@ $J ... run --target jvm src/main/kof/kofshare/cli/cli.kf fetch <host> <porta> <d
 
 ## Lacunas vs. o spec original (honesto, sem gloss)
 
-1. **Identidade criptográfica de dispositivo (§6, §12)** — NÃO existe face de assinatura (Ed25519: zero no compilador, medido 03/10). Hoje: LAN-trust, id de dispositivo é string auto-declarada. → decisão D1.
+1. **Identidade criptográfica de dispositivo (§6, §12)** — VOTADO D1=A 03/10: face `crypto.sign/verify` aprovada, registrada como `D-KOF-SIGN` no Kof4j; fatia C1 (compilador) a implementar. Até lá: LAN-trust.
 2. **Link de autorização `/s/<token>` (§8)** — o produto hoje expõe `/offers/:id` com id fraco; não há token de alta entropia, `expiresAt`, `maxUses`, `read-only`, revogação por share. As peças existem (`security.randomHex` medido fresco JVM+Script; `web.app` rotas; `json` records) — falta o modelo `Share` e a rota. → decisão D2/D3.
 3. **Contas / login (§4, §15)** — não implementado; v1 não tem authN no control plane. (Face `security.apiKeyGenerate/csrfToken` existe se optar por bearer-token local.) → decisão D3.
 4. **Descoberta automática de caminho (local → ICE → relay) (§13, §17)** — relay funciona mas é escolha explícita `--relay`; sem detecção automática de conectividade recusada e sem presença online/offline. → decisão D4.
 5. **Destinatário abre o link no browser (§1, §25)** — exige cliente JS: `kof.net` no JS recusado no compile (`NETN001`) e `keyExchange` recusado (`SECN012`). Hoje o destinatário usa CLI. → decisão D5.
 6. **Pastas (§18)** — só arquivos; diretório como coleção lógica de recursos não implementado. → decisão D6.
-7. **Persistência do registro (§17, crash-doesn't-forget)** — maps em memória; faces medidas para resolver (file/json), zero decisão. → fatia A1 do next-plan.
+7. ~~**Persistência do registro (§17, crash-doesn't-forget)**~~ — **FEITA 03/10 (A1):** `PERSIST-OK` 9/9 JVM+Script; servidor salva após cada mutação e recarrega no boot (sonda de restart medida: 2 devices voltam do disco). Falta só a perna `persist=true` no `--check`.
 8. **Negociação de resume (§10)** — offset coordenado fora-de-faixa; sem verificação servidor↔cliente. → fatia A3.
 
 ## Próximo passo técnico

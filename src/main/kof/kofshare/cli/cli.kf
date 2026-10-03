@@ -105,6 +105,34 @@ String offerJson(String path) {
 }
 
 // `--check` leg 1 — the pure registry golden (no IO).
+Boolean persistLeg() {
+    var dp = "check-persist.devices.json"
+    var op = "check-persist.offers.json"
+    persistClean(dp)
+    persistClean(op)
+    var devices = new Map<String, DeviceInfo>()
+    var offers = new Map<String, OfferInfo>()
+    var ok = controlRegister(devices, DeviceInfo("d9", "persist", "127.0.0.1:8021")) == "OK"
+    ok = ok && (controlSaveList(dp, controlDevicesJson(devices)) == "OK")
+    var reload = new Map<String, DeviceInfo>()
+    ok = ok && (controlLoadList(dp, reload, null) == "OK")
+    ok = ok && (controlDevicesJson(reload) == controlDevicesJson(devices))
+    var junk = "check-persist.junk.json"
+    File(junk).writeText("nope")
+    ok = ok && controlLoadList(junk, new Map<String, DeviceInfo>(), null).startsWith("REG009:")
+    persistClean(junk)
+    persistClean(dp)
+    persistClean(op)
+    return ok
+}
+
+void persistClean(String path) {
+    var f = File(path)
+    if (f.exists()) {
+        f.delete()
+    }
+}
+
 Boolean registryLeg() {
     var devices = new Map<String, DeviceInfo>()
     var offers = new Map<String, OfferInfo>()
@@ -185,6 +213,7 @@ Int runCheck() {
     var plain = plainLeg()
     var secure = secureLeg()
     println("registry=" + reg)
+    println("persist=" + persistLeg())
     println("plain=" + plain)
     println("secure=" + secure)
     if (reg && plain && secure) {
@@ -330,8 +359,11 @@ Int runServer(List<String> args) {
     }
     var devices = new Map<String, DeviceInfo>()
     var offers = new Map<String, OfferInfo>()
-    println("SERVER-READY port=" + port + " key=" + key)
-    controlServe(port, devices, offers)
+    controlLoadList("server-registry.devices.json", devices, null)
+    controlLoadList("server-registry.offers.json", null, offers)
+    println("SERVER-READY port=" + port + " key=" + key + " devices=" + devices.size() + " offers=" + offers.size())
+    controlServe(port, devices, offers,
+        "server-registry.devices.json", "server-registry.offers.json")
     return 0
 }
 

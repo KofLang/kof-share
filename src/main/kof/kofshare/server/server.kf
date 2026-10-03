@@ -6,5 +6,8 @@ import kofshare.control.registry
 main() {
     var devices = new Map<String, DeviceInfo>()
     var offers = new Map<String, OfferInfo>()
-    controlServe(18322, devices, offers)
+    controlLoadList("server-registry.devices.json", devices, null)
+    controlLoadList("server-registry.offers.json", null, offers)
+    controlServe(18322, devices, offers,
+        "server-registry.devices.json", "server-registry.offers.json")
 }

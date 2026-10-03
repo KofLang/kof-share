@@ -1,0 +1,69 @@
+package kofshare.persistcheck
+
+import kofshare.control.registry
+
+// A1 golden (next-plan §1): save -> reload -> byte-identical listings;
+// corrupt file refuses REG009; missing file loads empty. JVM + Script.
+
+main() {
+    var dpath = "persist-test.devices.json"
+    var opath = "persist-test.offers.json"
+    clean(dpath)
+    clean(opath)
+
+    var dev = new Map<String, DeviceInfo>()
+    var off = new Map<String, OfferInfo>()
+    controlRegister(dev, DeviceInfo("d1", "alpha", "192.168.1.10:8021"))
+    controlRegister(dev, DeviceInfo("d2", "beta", "192.168.1.11:8021"))
+    controlOffer(off, dev, OfferInfo("o1", "d1", "/srv/a.bin", 2048, hex64("a1")))
+    controlOffer(off, dev, OfferInfo("o2", "d2", "/srv/b.bin", 4096, hex64("b2")))
+
+    println("saveDev=" + (controlSaveList(dpath, controlDevicesJson(dev)) == "OK"))
+    println("saveOff=" + (controlSaveList(opath, controlOffersJson(off, "")) == "OK"))
+
+    var dev2 = new Map<String, DeviceInfo>()
+    var off2 = new Map<String, OfferInfo>()
+    println("loadDev=" + (controlLoadList(dpath, dev2, null) == "OK"))
+    println("loadOff=" + (controlLoadList(opath, null, off2) == "OK"))
+    println("counts=" + (dev2.size() == 2 && off2.size() == 2))
+    println("listingsSame=" + (controlDevicesJson(dev2) == controlDevicesJson(dev)
+        && controlOffersJson(off2, "") == controlOffersJson(off, "")))
+
+    var r1 = controlResolve(dev2, "d1")
+    var r2 = controlResolveOffer(off2, "o2")
+    println("resolveSame=" + (r1 != null && r1.name() == "beta" == false && r1.id() == "d1"
+        && r2 != null && r2.size() == 4096 && r2.deviceId() == "d2"))
+
+    var junk = File("persist-test.junk.json")
+    junk.writeText("{ this is not json")
+    var dev3 = new Map<String, DeviceInfo>()
+    var bad = controlLoadList("persist-test.junk.json", dev3, null)
+    println("corruptRefused=" + (indexOfStartsWith(bad, "REG009:")))
+    clean("persist-test.junk.json")
+
+    var dev4 = new Map<String, DeviceInfo>()
+    println("missingEmpty=" + (controlLoadList("persist-test.absent.json", dev4, null) == "OK" && dev4.size() == 0))
+
+    clean(dpath)
+    clean(opath)
+    println("PERSIST-OK")
+}
+
+String hex64(String seed) {
+    var out = seed
+    while (out.length() < 64) {
+        out = out + "0"
+    }
+    return out.substring(0, 64)
+}
+
+Boolean indexOfStartsWith(String hay, String needle) {
+    return hay.length() >= needle.length() && hay.substring(0, needle.length()) == needle
+}
+
+void clean(String path) {
+    var f = File(path)
+    if (f.exists()) {
+        f.delete()
+    }
+}
