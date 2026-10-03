@@ -6,7 +6,10 @@ import kof.json
 // Control-plane HTTP surface (architecture.md §4, implementation-plan slice 2).
 // The app owns NOTHING: the registries are passed in, so the pure registry
 // slice 1 stays the domain authority and this file is transport sugar.
-// listen() blocks — callers run it inside `spawn { ... }`.
+// listen() blocks — the server main runs it; stop = process lifecycle
+// (v1 is a LAN daemon). NOTE: lambdas here capture ONLY the registry maps —
+// capturing the app handle in a closure hits Kof4j §575 (phantom kof/web/App
+// descriptor in the lambda field, NoClassDefFoundError at LOAD on JVM).
 
 void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferInfo> offers) {
     var app = web.app()
@@ -56,6 +59,10 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
             return r
         }
         return "REVOKED: " + param("id")
+    }
+
+    app.get("/health") {
+        return "OK"
     }
 
     app.get("/health") {

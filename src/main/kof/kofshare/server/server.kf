@@ -1,0 +1,10 @@
+package kofshare.server
+
+import kofshare.control.app
+import kofshare.control.registry
+
+main() {
+    var devices = new Map<String, DeviceInfo>()
+    var offers = new Map<String, OfferInfo>()
+    controlServe(18322, devices, offers)
+}

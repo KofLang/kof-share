@@ -1,7 +1,5 @@
 package kofshare.httpcheck
 
-import kofshare.control.app
-import kofshare.control.registry
 import kofshare.control.registry
 import kof.http
 import kof.json
@@ -13,13 +11,7 @@ import kof.crypto
 // answer HTTP 500 under the interpreter (§574 OPEN) — this golden therefore
 // runs on JVM only; the pure registry (check.kf) keeps covering JVM+Script.
 main() {
-    var devices = new Map<String, DeviceInfo>()
-    var offers = new Map<String, OfferInfo>()
     var base = "http://127.0.0.1:18322"
-
-    spawn {
-        controlServe(18322, devices, offers)
-    }
 
     var up = ""
     var i = 0
