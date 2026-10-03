@@ -1,15 +1,84 @@
 package kofshare.restart
 
 import kof.http
+import kof.json
 
-// C2 restart probe: after a fresh boot, the registry + shares + control key
-// must come off disk — a grant minted by the PREVIOUS process must still
-// resolve (revoked state included). JVM only (real sockets).
+// Restart persistence golden (C2 + C3), JVM only (real sockets). The server
+// runs as a SEPARATE process. This probe mints a fresh share through the
+// gated API, then — after the operator restarts the server — verifies the
+// registry + shares came off disk AND the bearer model survived: the
+// persisted bearer still authenticates against the reloaded accounts, the
+// gate still refuses anonymous, and the grant minted by the PREVIOUS process
+// still resolves (its bearer JWT verifies against the secret reloaded from
+// file). Run: seed (server up), restart server, run again (verify).
 
 main() {
-    var body = http.get("http://127.0.0.1:18322/shares")
-    println("sharesReloaded=" + (body != null && body.indexOf("REG") != 0 && body.indexOf("maxUses") >= 0))
-    var devs = http.get("http://127.0.0.1:18322/devices")
-    println("devsReloaded=" + (devs != null && devs.indexOf("d1") >= 0))
+    var base = "http://127.0.0.1:18322"
+
+    var bearerFile = File("server-control.bearer")
+    var bearerTxt = bearerFile.readText()
+    if (bearerTxt == null) {
+        throw "restart: bearer file missing — boot the server first"
+    }
+    if (bearerTxt.length() < 20) {
+        throw "restart: bearer file too short"
+    }
+    var auth = "Authorization: Bearer " + bearerTxt
+
+    var anon = http.get(base + "/shares", "")
+    var gateAfterRestart = anon.indexOf("AUTH001") == 0
+
+    var devs = http.get(base + "/devices", auth)
+    var devsReloaded = devs.indexOf("d1") >= 0
+
+    var listed = http.get(base + "/shares", auth)
+    var sharesReloaded = listed.indexOf("maxUses") >= 0
+    var bearerRestored = listed.indexOf("token") >= 0
+
+    var accts = http.get(base + "/accounts", auth)
+    var revokedPersisted = accts.indexOf("revoked") >= 0
+
+    var token = firstToken(listed)
+    var grant = http.get(base + "/s/" + token, "")
+    var grantAfterRestart = grant.indexOf("REFUSED") != 0 && grant.indexOf("error") != 0
+
+    println("devsReloaded=" + devsReloaded)
+    println("sharesReloaded=" + sharesReloaded)
+    println("bearerRestored=" + bearerRestored)
+    println("gateAfterRestart=" + gateAfterRestart)
+    println("revokedPersisted=" + revokedPersisted)
+    println("grantAfterRestart=" + grantAfterRestart)
+    if (!devsReloaded || !sharesReloaded || !bearerRestored || !gateAfterRestart || !revokedPersisted || !grantAfterRestart) {
+        println("grantBody=" + grant)
+        println("RESTART-FAIL")
+        throw "kofshare: RESTART-FAIL"
+    }
     println("RESTART-OK")
+}
+
+// First share whose status is active — revoked/exhausted rows from previous
+// goldens are on disk on purpose (they prove persistence, not resolution).
+String firstToken(String sharesJson) {
+    var rest = sharesJson
+    while (true) {
+        var i = rest.indexOf("\"token\":\"")
+        if (i < 0) {
+            return "none"
+        }
+        var start = i + 9
+        rest = rest.substring(start, rest.length())
+        var j = rest.indexOf("\"")
+        var tok = rest.substring(0, j)
+        var after = rest.substring(j, rest.length())
+        var nxt = after.indexOf("\"token\":\"")
+        var window = after
+        if (nxt >= 0) {
+            window = after.substring(0, nxt)
+        }
+        var s = window.indexOf("\"status\":\"revoked\"")
+        if (s < 0) {
+            return tok
+        }
+        rest = after
+    }
 }

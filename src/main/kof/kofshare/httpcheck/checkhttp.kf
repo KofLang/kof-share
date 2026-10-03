@@ -2,6 +2,7 @@ package kofshare.httpcheck
 
 import kofshare.control.registry
 import kofshare.control.share
+import kofshare.control.auth
 import kof.http
 import kof.json
 import kof.crypto
@@ -12,7 +13,15 @@ import kof.crypto
 // answer HTTP 500 under the interpreter (§574 OPEN) — this golden therefore
 // runs on JVM only; the pure registry (check.kf) keeps covering JVM+Script.
 main() {
+    var ok = true
     var base = "http://127.0.0.1:18322"
+    var kf = File("server-control.bearer")
+    var keyTxt = kf.readText()
+    var key = ""
+    if (keyTxt != null) {
+        key = keyTxt
+    }
+    var auth = "Authorization: Bearer " + key
 
     var up = ""
     var i = 0
@@ -24,62 +33,144 @@ main() {
             i = i + 1
         }
     }
-    println("serverUp=" + (up == "[]"))
-    println("health=" + (http.get(base + "/health") == "OK"))
+    var vserverUp = up == "[]"
+    ok = ok && vserverUp
+    println("serverUp=" + vserverUp)
+    var vhealth = http.get(base + "/health") == "OK"
+    ok = ok && vhealth
+    println("health=" + vhealth)
 
     var regBody = json.encode(DeviceInfo("d1", "alpha", "192.168.1.10:8021"))
-    var regRes = http.post(base + "/devices", regBody)
-    println("register=" + (regRes == "REGISTERED: d1"))
+    var regRes = http.post(base + "/devices", regBody, auth)
+    var vregister = regRes == "REGISTERED: d1"
+    ok = ok && vregister
+    println("register=" + vregister)
 
-    var badReg = http.post(base + "/devices", json.encode(DeviceInfo("", "x", "a:1")))
-    println("registerRefused=" + (badReg == "REG001: empty device id"))
+    var badReg = http.post(base + "/devices", json.encode(DeviceInfo("", "x", "a:1")), auth)
+    var vregisterRefused = badReg == "REG001: empty device id"
+    ok = ok && vregisterRefused
+    println("registerRefused=" + vregisterRefused)
 
     var one = http.get(base + "/devices/d1")
-    println("resolveOne=" + (one.indexOf("\"alpha\"") >= 0 && one.indexOf("\"d1\"") >= 0))
+    var vresolveOne = one.indexOf("\"alpha\"") >= 0 && one.indexOf("\"d1\"") >= 0
+    ok = ok && vresolveOne
+    println("resolveOne=" + vresolveOne)
     var ghost = http.get(base + "/devices/zz")
-    println("resolveGhost=" + (ghost == "DEVICE-NOT-FOUND: zz"))
+    var vresolveGhost = ghost == "DEVICE-NOT-FOUND: zz"
+    ok = ok && vresolveGhost
+    println("resolveGhost=" + vresolveGhost)
 
-    http.post(base + "/devices", json.encode(DeviceInfo("d2", "beta", "192.168.1.11:8021")))
+    http.post(base + "/devices", json.encode(DeviceInfo("d2", "beta", "192.168.1.11:8021")), auth)
     var dlist = http.get(base + "/devices")
-    println("devicesBoth=" + (countObjects(dlist) == 2))
+    var vdevicesBoth = countObjects(dlist) == 2
+    ok = ok && vdevicesBoth
+    println("devicesBoth=" + vdevicesBoth)
 
     var dig = cryptoDigest("/srv/a.bin")
-    var off = http.post(base + "/offers", json.encode(OfferInfo("o1", "d1", "/srv/a.bin", 2048, dig)))
-    println("offer=" + (off == "OFFERED: o1"))
-    var offBad = http.post(base + "/offers", json.encode(OfferInfo("oX", "ghost", "/p", 5, dig)))
-    println("offerUnknownDevice=" + (offBad == "REG004: unknown device ghost"))
+    var off = http.post(base + "/offers", json.encode(OfferInfo("o1", "d1", "/srv/a.bin", 2048, dig)), auth)
+    var voffer = off == "OFFERED: o1"
+    ok = ok && voffer
+    println("offer=" + voffer)
+    var offBad = http.post(base + "/offers", json.encode(OfferInfo("oX", "ghost", "/p", 5, dig)), auth)
+    var vofferUnknownDevice = offBad == "REG004: unknown device ghost"
+    ok = ok && vofferUnknownDevice
+    println("offerUnknownDevice=" + vofferUnknownDevice)
 
     var allOffers = http.get(base + "/offers")
-    println("offersAll=" + (countObjects(allOffers) == 1))
+    var voffersAll = countObjects(allOffers) == 1
+    ok = ok && voffersAll
+    println("offersAll=" + voffersAll)
     var q = http.get(base + "/offers?device=d2")
-    println("offersQueryEmpty=" + (q == "[]"))
+    var voffersQueryEmpty = q == "[]"
+    ok = ok && voffersQueryEmpty
+    println("offersQueryEmpty=" + voffersQueryEmpty)
 
-    var sh = http.post(base + "/shares", json.encode(ShareRequest("o1", 0, 1, false)))
-    println("shareMint=" + (sh.indexOf("SHARED ") == 0))
+    var sh = http.post(base + "/shares", json.encode(ShareRequest("o1", 0, 1, false)), auth)
+    var vshareMint = sh.indexOf("SHARED ") == 0
+    ok = ok && vshareMint
+    println("shareMint=" + vshareMint)
     var bits = sh.split(" ")
     var sid = bits[1]
     var stok = bits[2]
     var grant = http.get(base + "/s/" + stok)
-    println("grantMeta=" + (grant.indexOf("/srv/a.bin") >= 0 && grant.indexOf("192.168.1.10:8021") >= 0 && grant.indexOf("read-write") >= 0))
+    var vgrantMeta = grant.indexOf("/srv/a.bin") >= 0 && grant.indexOf("192.168.1.10:8021") >= 0 && grant.indexOf("read-write") >= 0
+    ok = ok && vgrantMeta
+    println("grantMeta=" + vgrantMeta)
     var again = http.get(base + "/s/" + stok)
-    println("grantExhausted=" + (again == "REG038: share exhausted"))
+    var vgrantExhausted = again == "REG038: share exhausted"
+    ok = ok && vgrantExhausted
+    println("grantExhausted=" + vgrantExhausted)
     var ghostTok = http.get(base + "/s/" + pad64("ff"))
-    println("grantUnknown=" + (ghostTok == "REG035: unknown share token"))
-    var rvs = http.post(base + "/shares/" + sid + "/revoke?reason=httpcheck", "")
-    println("shareRevoke=" + (rvs == "SHARE-REVOKED: " + sid))
+    var vgrantUnknown = ghostTok == "REG035: unknown share token"
+    ok = ok && vgrantUnknown
+    println("grantUnknown=" + vgrantUnknown)
+    var rvs = http.post(base + "/shares/" + sid + "/revoke?reason=httpcheck", "", auth)
+    var vshareRevoke = rvs == "SHARE-REVOKED: " + sid
+    ok = ok && vshareRevoke
+    println("shareRevoke=" + vshareRevoke)
     var afterRev = http.get(base + "/s/" + stok)
-    println("grantAfterRevoke=" + (afterRev == "REG036: share revoked"))
-    var lst = http.get(base + "/shares")
-    println("sharesListed=" + (lst.indexOf(sid) >= 0))
+    var vgrantAfterRevoke = afterRev == "REG036: share revoked"
+    ok = ok && vgrantAfterRevoke
+    println("grantAfterRevoke=" + vgrantAfterRevoke)
+    var lst = http.get(base + "/shares", auth)
+    var vsharesListed = lst.indexOf(sid) >= 0
+    ok = ok && vsharesListed
+    println("sharesListed=" + vsharesListed)
 
-    var rev = http.delete(base + "/offers/o1")
-    println("revoke=" + (rev == "REVOKED: o1"))
-    var revGhost = http.delete(base + "/offers/o1")
-    println("revokeGhost=" + (revGhost == "REG008: unknown offer o1"))
+    var noAuth = http.post(base + "/devices", regBody)
+    var vgateMissing = noAuth == "AUTH001: missing bearer"
+    ok = ok && vgateMissing
+    println("gateMissing=" + vgateMissing)
+    var wrong = http.post(base + "/devices", regBody, "Authorization: Bearer " + key + "deadbeef")
+    var vgateWrong = wrong.indexOf("unauthorized") >= 0
+    ok = ok && vgateWrong
+    println("gateWrong=" + vgateWrong)
+    // idempotent across runs: the tech account may exist (and be revoked) from
+    // a previous golden — re-mint after revoking so the row always measures.
+    http.post(base + "/accounts/tech/revoke", "", auth)
+    var newAccount = http.post(base + "/accounts", json.encode(AccountRequest("tech", "tecla", 0)), auth)
+    var vaccountMint = newAccount.indexOf("APIKEY ") == 0
+    ok = ok && vaccountMint
+    println("accountMint=" + vaccountMint)
+    var techKey = ""
+    if (newAccount.indexOf("APIKEY ") == 0) {
+        techKey = newAccount.substring(7)
+    }
+    var techCall = http.get(base + "/shares", "Authorization: Bearer " + techKey)
+    var vaccountUsable = techCall.indexOf("REG") != 0
+    ok = ok && vaccountUsable
+    println("accountUsable=" + vaccountUsable)
+    var accts = http.get(base + "/accounts", auth)
+    var vaccountsListed = accts.indexOf("tecla") >= 0 && accts.indexOf("status") >= 0 && accts.indexOf(techKey) < 0
+    ok = ok && vaccountsListed
+    println("accountsListed=" + vaccountsListed)
+    var revAcct = http.post(base + "/accounts/tech/revoke", "", auth)
+    var vaccountRevoked = revAcct == "ACCOUNT-REVOKED: tech"
+    ok = ok && vaccountRevoked
+    println("accountRevoked=" + vaccountRevoked)
+    var deadCall = http.get(base + "/shares", "Authorization: Bearer " + techKey)
+    var vrevokedKeyDies = deadCall == "AUTH003: revoked"
+    ok = ok && vrevokedKeyDies
+    println("revokedKeyDies=" + vrevokedKeyDies)
+
+    var rev = http.delete(base + "/offers/o1", auth)
+    var vrevoke = rev == "REVOKED: o1"
+    ok = ok && vrevoke
+    println("revoke=" + vrevoke)
+    var revGhost = http.delete(base + "/offers/o1", auth)
+    var vrevokeGhost = revGhost == "REG008: unknown offer o1"
+    ok = ok && vrevokeGhost
+    println("revokeGhost=" + vrevokeGhost)
 
     var after = http.get(base + "/offers")
-    println("offersGone=" + (after == "[]"))
+    var voffersGone = after == "[]"
+    ok = ok && voffersGone
+    println("offersGone=" + voffersGone)
 
+    if (!ok) {
+        println("HTTPCHECK-FAIL")
+        throw "kofshare: HTTPCHECK-FAIL"
+    }
     println("HTTPCHECK-OK")
 }
 

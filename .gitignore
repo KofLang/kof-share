@@ -1,0 +1,9 @@
+# runtime state — secrets and live tables, never committed
+server-control.apikey
+server-control.bearer
+server-control.ed25519
+server-registry.*.json
+check-auth.*
+check-share.*
+persist-test.*
+share-test.*

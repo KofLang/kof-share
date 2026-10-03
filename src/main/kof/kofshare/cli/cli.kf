@@ -5,6 +5,7 @@ import kofshare.domain
 import kofshare.control.registry
 import kofshare.control.app
 import kofshare.control.share
+import kofshare.control.auth
 import kof.http
 import kof.time
 import kofshare.session
@@ -14,6 +15,8 @@ import kof.crypto
 import kof.keyExchange
 import kof.secrets
 import kof.security
+import kof.auth
+import kof.jwt
 
 // KofShare product entry (implementation-plan.md §2 slice 3). Commands:
 //   server [port] [--key <hex>]  control plane: serves offers over web.app()
@@ -221,7 +224,9 @@ Int runCheck() {
     println("secure=" + secure)
     var share = shareLeg()
     println("share=" + share)
-    if (reg && plain && secure && share) {
+    var auth = authLeg()
+    println("auth=" + auth)
+    if (reg && plain && secure && share && auth) {
         println("CHECK-OK")
         return 0
     }
@@ -255,12 +260,96 @@ Bool shareLeg() {
     return ok
 }
 
+
+Int runAccount(List<String> args) {
+    var rest = tail(args, 1)
+    if (rest.size < 3) {
+        println("ACCOUNT-ERR: usage: account <host> <port> list | account <host> <port> add <id> <label> | account <host> <port> revoke <id>")
+        return 1
+    }
+    var base = "http://" + rest.get(0) + ":" + rest.get(1)
+    var sub = rest.get(2)
+    var bearer = "Authorization: Bearer " + bearerArg(rest, 3)
+    if (sub == "list") {
+        var body = http.get(base + "/accounts", bearer)
+        if (body == null) {
+            println("ACCOUNT-ERR: control plane unreachable")
+            return 1
+        }
+        println(body)
+        return 0
+    }
+    if (sub == "add" && args.size >= 5) {
+        var resp = http.post(base + "/accounts", json.encode(AccountRequest(rest.get(3), rest.get(4), 0)), bearer)
+        if (resp == null) {
+            println("ACCOUNT-ERR: control plane unreachable")
+            return 1
+        }
+        println(resp)
+        return 0
+    }
+    if (sub == "revoke" && args.size >= 4) {
+        var resp = http.post(base + "/accounts/" + rest.get(3) + "/revoke", "", bearer)
+        if (resp == null) {
+            println("ACCOUNT-ERR: control plane unreachable")
+            return 1
+        }
+        println(resp)
+        return 0
+    }
+    println("ACCOUNT-ERR: unknown subcommand " + sub)
+    return 1
+}
+
 String tokenOf(String seed) {
     var s = seed
     while (s.length < 64) {
         s = s + "0"
     }
     return s.substring(0, 64)
+}
+
+// `--check` leg 5 — the C3 bearer model (pure): issue/identity/revocation
+// matrix + JWT mint/verify/parse round-trip (jwt over the control secret);
+// corrupt load refuses by name. The wire-level gate is httpcheck's job.
+Bool authLeg() {
+    var accounts = new Map<String, Account>()
+    var ok = true
+    ok = ok && (authIssue(accounts, "a1", "alpha", 1) == "OK")
+    ok = ok && (authIssue(accounts, "a1", "dup", 2) == "AUTH005: duplicate account id a1")
+    ok = ok && (authIssue(accounts, "", "x", 2) == "AUTH005: empty account id")
+    ok = ok && (authIssue(accounts, "a2", "", 2) == "AUTH004: empty account label")
+    var secret = security.apiKeyGenerate()
+    var token = authMint(secret, "a1", "alpha", 60)
+    ok = ok && (token.length() > 0)
+    var verified = jwt.verify(token, secret)
+    ok = ok && (verified.length() > 0)
+    var sub = authParseSub(verified)
+    ok = ok && (sub == "a1")
+    ok = ok && (authActive(accounts, sub) == "OK")
+    ok = ok && (authActive(accounts, "ghost") == "AUTH006: unknown account ghost")
+    ok = ok && (authActive(accounts, "") == "AUTH002: bearer has no identity")
+    ok = ok && (authRevoke(accounts, "a1") == "OK")
+    ok = ok && (authActive(accounts, "a1") == "AUTH003: revoked")
+    ok = ok && (authParseSub("not json") == "")
+    var apath = "check-auth.accounts.json"
+    var f0 = File(apath)
+    if (f0.exists()) {
+        f0.delete()
+    }
+    ok = ok && (controlSaveList(apath, authAccountsJson(accounts)) == "OK")
+    var acc2 = new Map<String, Account>()
+    ok = ok && (authLoadList(acc2, apath) == "OK")
+    ok = ok && (authAccountsJson(acc2) == authAccountsJson(accounts))
+    if (f0.exists()) {
+        f0.delete()
+    }
+    var jf = File("check-auth.junk.json")
+    jf.writeText("{ not json")
+    var acc3 = new Map<String, Account>()
+    ok = ok && (authLoadList(acc3, "check-auth.junk.json").indexOf("AUTH043") == 0)
+    jf.delete()
+    return ok
 }
 
 // `--dry` — print the resolved product plan, no IO. Deterministic.
@@ -412,11 +501,72 @@ Int runServer(List<String> args) {
     }
     sharesPurgeExpired(shares, time.now())
     var controlKey = loadControlKey("server-control.ed25519")
-    println("SERVER-READY port=" + port + " key=" + key + " devices=" + devices.size() + " offers=" + offers.size() + " shares=" + shares.size())
+    var accounts = new Map<String, Account>()
+    var apath = "server-registry.accounts.json"
+    var aload = authLoadList(accounts, apath)
+    if (aload.indexOf("AUTH043") == 0) {
+        println(aload)
+        return 1
+    }
+    var controlSecret = loadControlSecret()
+    bootstrapAdmin(accounts, apath, controlSecret)
+    println("SERVER-READY port=" + port + " key=" + key + " devices=" + devices.size() + " offers=" + offers.size() + " shares=" + shares.size() + " accounts=" + accounts.size())
     controlServe(port, devices, offers,
         "server-registry.devices.json", "server-registry.offers.json",
-        shares, spath, controlKey)
+        shares, spath, controlKey, accounts, apath, controlSecret)
     return 0
+}
+
+String loadControlSecret() {
+    var f = File("server-control.apikey")
+    if (f.exists()) {
+        var txt = f.readText()
+        if (txt != null && txt.length() >= 32) {
+            var ok = auth.secret(txt)
+            if (!ok) {
+                println("SERVER-ERR: control secret rejected")
+                return ""
+            }
+            return txt
+        }
+    }
+    var fresh = security.apiKeyGenerate()
+    if (!f.writeText(fresh)) {
+        println("SERVER-ERR: cannot persist control secret")
+        return ""
+    }
+    if (!auth.secret(fresh)) {
+        println("SERVER-ERR: control secret rejected")
+        return ""
+    }
+    return fresh
+}
+
+// C3 bootstrap (same law as server.kf): empty table mints an admin bearer,
+// plaintext key lives in server-control.apikey (never printed, never logged).
+void bootstrapAdmin(Map<String, Account> accounts, String apath, String controlSecret) {
+    var hasActive = false
+    var ids = accounts.keys()
+    ids.sort()
+    for (var id in ids) {
+        var a: Account? = accounts.get(id)
+        if (a != null && a.status == "active") {
+            hasActive = true
+        }
+    }
+    if (hasActive) {
+        return
+    }
+    var r = authIssue(accounts, "admin", "owner", 1)
+    if (r != "OK") {
+        println("SERVER-ERR: admin bootstrap refused: " + r)
+        return
+    }
+    controlSaveList(apath, authAccountsJson(accounts))
+    var bearer = File("server-control.bearer")
+    if (!bearer.writeText(authMint(controlSecret, "admin", "owner", 86400))) {
+        println("SERVER-ERR: cannot persist admin bearer")
+    }
 }
 
 Secret loadControlKey(String kpath) {
@@ -433,6 +583,30 @@ Secret loadControlKey(String kpath) {
         throw "kofshare: cannot persist control key " + kpath
     }
     return fresh
+}
+
+
+String localBearer() {
+    var f = File("server-control.bearer")
+    if (!f.exists()) {
+        return ""
+    }
+    var t = f.readText()
+    if (t == null) {
+        return ""
+    }
+    return t
+}
+
+String bearerArg(List<String> rest, Int start) {
+    var i = start
+    while (i < rest.size) {
+        if (rest.get(i) == "--bearer") {
+            return argAt(rest, i + 1)
+        }
+        i = i + 1
+    }
+    return localBearer()
 }
 
 // C2 commands (vote D2=A): share/revoke/shares/authorize talk to the control
@@ -462,7 +636,8 @@ Int runShare(List<String> args) {
         }
     }
     var base = "http://" + rest.get(0) + ":" + rest.get(1)
-    var resp = http.post(base + "/shares", json.encode(req))
+    var bearer = "Authorization: Bearer " + bearerArg(rest, 3)
+    var resp = http.post(base + "/shares", json.encode(req), bearer)
     if (resp == null) {
         println("SHARE-ERR: control plane unreachable")
         return 1
@@ -492,7 +667,8 @@ Int runRevoke(List<String> args) {
     if (rest.size > 3) {
         reason = rest.get(3)
     }
-    var resp = http.post(base + "/shares/" + rest.get(2) + "/revoke?reason=" + reason, "")
+    var rb = "Authorization: Bearer " + bearerArg(rest, 4)
+    var resp = http.post(base + "/shares/" + rest.get(2) + "/revoke?reason=" + reason, "", rb)
     if (resp == null) {
         println("REVOKE-ERR: control plane unreachable")
         return 1
@@ -510,7 +686,8 @@ Int runShares(List<String> args) {
         println("SHARES-ERR: usage: shares <host> <port>")
         return 1
     }
-    var body = http.get("http://" + rest.get(0) + ":" + rest.get(1) + "/shares")
+    var sb = "Authorization: Bearer " + bearerArg(rest, 2)
+    var body = http.get("http://" + rest.get(0) + ":" + rest.get(1) + "/shares", sb)
     if (body == null) {
         println("SHARES-ERR: control plane unreachable")
         return 1
@@ -623,6 +800,13 @@ main(args: List<String>) {
         var rc = runFetch(tail(args, start))
         if (rc != 0) {
             throw "kofshare: FETCH-ERR"
+        }
+        return
+    }
+    if (cmd == "account") {
+        var rc = runAccount(tail(args, start))
+        if (rc != 0) {
+            throw "kofshare: CMD-ERR account"
         }
         return
     }

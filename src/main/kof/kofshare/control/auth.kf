@@ -1,0 +1,110 @@
+package kofshare.control
+
+import kof.json
+import kof.jwt
+import kof.security
+
+// C3 (vote D3=B): accounts are BEARER credentials — JWTs signed with the
+// control secret (minted once via security.apiKeyGenerate, persisted like the
+// Ed25519 key; never logged). The runtime web stack verifies the signature on
+// every request (auth.authenticated()); this table carries the IDENTITY and
+// the revocation state — a validly-signed token whose `sub` is revoked or
+// unknown still refuses (AUTH003/AUTH006). Named refusals (R6):
+//   AUTH001 missing bearer · AUTH002 signed-but-anonymous claims ·
+//   AUTH003 revoked · AUTH004 empty label · AUTH005 duplicate/empty id ·
+//   AUTH006 unknown account · AUTH043 corrupt accounts file.
+
+record Account(String id, String label, String status, Long createdAt)
+
+record AccountRequest(String id, String label, Int ttlSec)
+
+record Claims(String sub, String name, String roles)
+
+String authIssue(Map<String, Account> accounts, String id, String label, Long createdAt) {
+    if (id.length() == 0) {
+        return "AUTH005: empty account id"
+    }
+    if (label.length() == 0) {
+        return "AUTH004: empty account label"
+    }
+    if (accounts.get(id) != null) {
+        return "AUTH005: duplicate account id " + id
+    }
+    accounts.put(id, Account(id, label, "active", createdAt))
+    return "OK"
+}
+
+// Mint the bearer for an account: the house claims shape (sub + name +
+// roles), signed with the control secret, TTL in seconds.
+String authMint(String secret, String id, String label, Int ttlSec) {
+    var claims = json.encode(Claims(id, label, "operator"))
+    return jwt.create(claims, secret, ttlSec)
+}
+
+String authParseSub(String claimsJson) {
+    if (claimsJson == null || claimsJson.length() == 0) {
+        return ""
+    }
+    try {
+        var c = json.decode<Claims>(claimsJson)
+        return c.sub()
+    } catch (String e) {
+        return ""
+    }
+}
+
+String authActive(Map<String, Account> accounts, String sub) {
+    if (sub.length() == 0) {
+        return "AUTH002: bearer has no identity"
+    }
+    var a: Account? = accounts.get(sub)
+    if (a == null) {
+        return "AUTH006: unknown account " + sub
+    }
+    if (a.status != "active") {
+        return "AUTH003: revoked"
+    }
+    return "OK"
+}
+
+String authRevoke(Map<String, Account> accounts, String id) {
+    var a: Account? = accounts.get(id)
+    if (a == null) {
+        return "AUTH006: unknown account " + id
+    }
+    accounts.put(id, Account(a.id, a.label, "revoked", a.createdAt))
+    return "OK"
+}
+
+String authAccountsJson(Map<String, Account> accounts) {
+    var out = new List<Account>()
+    var ids = accounts.keys()
+    ids.sort()
+    for (var id in ids) {
+        var a: Account? = accounts.get(id)
+        if (a != null) {
+            out.add(a)
+        }
+    }
+    return json.encode(out)
+}
+
+String authLoadList(Map<String, Account> accounts, String path) {
+    var f = File(path)
+    if (!f.exists()) {
+        return "OK"  // fresh table, not an error
+    }
+    var txt = f.readText()
+    if (txt == null) {
+        return "AUTH043: unreadable accounts file " + path
+    }
+    try {
+        var list: List<Account> = json.decode<List<Account>>(txt)
+        for (var a in list) {
+            accounts.put(a.id, a)
+        }
+    } catch (String e) {
+        return "AUTH043: corrupt accounts file " + path + ": " + e
+    }
+    return "OK"
+}

@@ -3,6 +3,9 @@ package kofshare.server
 import kofshare.control.app
 import kofshare.control.registry
 import kofshare.control.share
+import kofshare.control.auth
+import kof.security
+import kof.auth
 import kof.secrets
 import kof.keyExchange
 import kof.time
@@ -43,7 +46,70 @@ main() {
         }
     }
 
+    var accounts = new Map<String, Account>()
+    var apath = "server-registry.accounts.json"
+    var aload = authLoadList(accounts, apath)
+    if (aload.indexOf("AUTH043") == 0) {
+        throw aload
+    }
+    var controlSecret = loadControlSecret()
+    bootstrapAdmin(accounts, apath, controlSecret)
+
     controlServe(18322, devices, offers,
         "server-registry.devices.json", "server-registry.offers.json",
-        shares, spath, controlKey)
+        shares, spath, controlKey, accounts, apath, controlSecret)
+}
+
+// C3: the control secret signs every bearer JWT. Minted ONCE via
+// security.apiKeyGenerate (vote D3=B), persisted at rest (owner file, same
+// v1 single-host trade-off as the Ed25519 key), re-registered into the
+// runtime auth layer on every boot.
+String loadControlSecret() {
+    var f = File("server-control.apikey")
+    if (f.exists()) {
+        var txt = f.readText()
+        if (txt != null && txt.length() >= 32) {
+            var ok = auth.secret(txt)
+            if (!ok) {
+                throw "server: control secret rejected"
+            }
+            return txt
+        }
+    }
+    var fresh = security.apiKeyGenerate()
+    if (!f.writeText(fresh)) {
+        throw "server: cannot persist control secret"
+    }
+    if (!auth.secret(fresh)) {
+        throw "server: control secret rejected"
+    }
+    return fresh
+}
+
+// C3 bootstrap: first run mints an admin bearer via security.apiKeyGenerate.
+// The plaintext key is written ONCE to server-control.apikey (owner-readable
+// file — same v1 single-host trade-off as the Ed25519 key file, documented,
+// never logged); the table persists only the sha256 digest.
+void bootstrapAdmin(Map<String, Account> accounts, String apath, String controlSecret) {
+    var hasActive = false
+    var ids = accounts.keys()
+    ids.sort()
+    for (var id in ids) {
+        var a: Account? = accounts.get(id)
+        if (a != null && a.status == "active") {
+            hasActive = true
+        }
+    }
+    if (hasActive) {
+        return
+    }
+    var r = authIssue(accounts, "admin", "owner", 1)
+    if (r != "OK") {
+        throw "server: admin bootstrap refused: " + r
+    }
+    controlSaveList(apath, authAccountsJson(accounts))
+    var bearer = File("server-control.bearer")
+    if (!bearer.writeText(authMint(controlSecret, "admin", "owner", 86400))) {
+        throw "server: cannot persist admin bearer"
+    }
 }

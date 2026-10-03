@@ -2,9 +2,11 @@ package kofshare.control
 
 import kofshare.control.registry
 import kofshare.control.share
+import kofshare.control.auth
 import kof.json
 import kof.security
 import kof.time
+import kof.auth
 
 // Control-plane HTTP surface (architecture.md §4, implementation-plan slice 2).
 // The app owns NOTHING: the registries are passed in, so the pure registry
@@ -19,7 +21,7 @@ import kof.time
 // /s/<token> is the authorization gate (shareTouch decides; only "OK"
 // serves offer metadata). The SECRET stays a Secret handle end to end.
 
-void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferInfo> offers, String dpath, String opath, Map<String, ShareInfo> shares, String spath, Secret controlKey) {
+void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferInfo> offers, String dpath, String opath, Map<String, ShareInfo> shares, String spath, Secret controlKey, Map<String, Account> accounts, String apath, String controlSecret) {
     var app = web.app()
 
     app.get("/devices") {
@@ -35,6 +37,10 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
     }
 
     app.post("/devices") {
+        var g = controlAuthGate(accounts)
+        if (g != "OK") {
+            return g
+        }
         var d = json.decode<DeviceInfo>(body())
         var r = controlRegister(devices, d)
         if (r != "OK") {
@@ -56,6 +62,10 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
     }
 
     app.post("/offers") {
+        var g = controlAuthGate(accounts)
+        if (g != "OK") {
+            return g
+        }
         var o = json.decode<OfferInfo>(body())
         var r = controlOffer(offers, devices, o)
         if (r != "OK") {
@@ -68,6 +78,10 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
     }
 
     app.delete("/offers/:id") {
+        var g = controlAuthGate(accounts)
+        if (g != "OK") {
+            return g
+        }
         var r = controlRevoke(offers, param("id"))
         if (r != "OK") {
             return r
@@ -82,7 +96,65 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
         return "OK"
     }
 
+    // C3 (vote D3=B): mutations and sensitive listings require a bearer key.
+    // Bootstrap law (documented, measured): the FIRST account on an EMPTY
+    // table is open enrollment — the owner mints their own admin key; once
+    // the table has an active account everything else needs it.
+    app.post("/accounts") {
+        // Bootstrap law (documented, measured): the FIRST account on an EMPTY
+        // table is open enrollment — the owner mints their own bearer; once an
+        // active account exists everything else needs one.
+        if (activeAccounts(accounts) > 0) {
+            var g = controlAuthGate(accounts)
+            if (g != "OK") {
+                return g
+            }
+        }
+        var req = json.decode<AccountRequest>(body())
+        var r = authIssue(accounts, req.id, req.label, time.now())
+        if (r != "OK") {
+            return r
+        }
+        if (apath.length() > 0) {
+            controlSaveList(apath, authAccountsJson(accounts))
+        }
+        var ttl = 0
+        if (req.ttlSec > 0) {
+            ttl = req.ttlSec
+        } else {
+            ttl = 86400
+        }
+        return "APIKEY " + authMint(controlSecret, req.id, req.label, ttl)
+    }
+
+    app.get("/accounts") {
+        var g = controlAuthGate(accounts)
+        if (g != "OK") {
+            return g
+        }
+        return authAccountsJson(accounts)
+    }
+
+    app.post("/accounts/:id/revoke") {
+        var g = controlAuthGate(accounts)
+        if (g != "OK") {
+            return g
+        }
+        var r = authRevoke(accounts, param("id"))
+        if (r != "OK") {
+            return r
+        }
+        if (apath.length() > 0) {
+            controlSaveList(apath, authAccountsJson(accounts))
+        }
+        return "ACCOUNT-REVOKED: " + param("id")
+    }
+
     app.post("/shares") {
+        var g = controlAuthGate(accounts)
+        if (g != "OK") {
+            return g
+        }
         var req = json.decode<ShareRequest>(body())
         var o: OfferInfo? = controlResolveOffer(offers, req.offerId)
         if (o == null) {
@@ -119,6 +191,10 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
     }
 
     app.get("/shares") {
+        var g = controlAuthGate(accounts)
+        if (g != "OK") {
+            return g
+        }
         return sharesJson(shares)
     }
 
@@ -147,6 +223,10 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
     }
 
     app.post("/shares/:id/revoke") {
+        var g = controlAuthGate(accounts)
+        if (g != "OK") {
+            return g
+        }
         var rs: String? = query("reason")
         var reason = ""
         if (rs != null) {
@@ -163,4 +243,31 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
     }
 
     app.listen(port)
+}
+
+// Gate: runtime verifies the JWT signature (auth.authenticated reads the
+// Authorization bearer of the current request); AUTH001 = absent or bad
+// signature; then the IDENTITY check against the table (revocation). A
+// malformed-but-present Authorization is rejected by the runtime itself
+// (step 6 of the web security dispatch: {"error":"unauthorized"}), which is
+// the measured, documented behavior — the handler never sees it.
+String controlAuthGate(Map<String, Account> accounts) {
+    if (!auth.authenticated()) {
+        return "AUTH001: missing bearer"
+    }
+    var sub = authParseSub(auth.claims())
+    return authActive(accounts, sub)
+}
+
+Int activeAccounts(Map<String, Account> accounts) {
+    var n = 0
+    var ids = accounts.keys()
+    ids.sort()
+    for (var id in ids) {
+        var a: Account? = accounts.get(id)
+        if (a != null && a.status == "active") {
+            n = n + 1
+        }
+    }
+    return n
 }
