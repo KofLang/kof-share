@@ -66,7 +66,10 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
         if (g != "OK") {
             return g
         }
-        var o = json.decode<OfferInfo>(body())
+        var q = json.decode<OfferRequest>(body())
+        // A4: the SERVER stamps freshness — the client cannot fake createdAt
+        // or resurrect an expired id from the wire.
+        var o = OfferInfo(q.id, q.deviceId, q.path, q.size, q.sha256Hex, time.now())
         var r = controlOffer(offers, devices, o)
         if (r != "OK") {
             return r

@@ -8,7 +8,15 @@ import kof.json
 // HTTP handlers (fatia 2) wrap exactly these verbs; CLI (fatia 3) drives them.
 
 record DeviceInfo(String id, String name, String address)
-record OfferInfo(String id, String deviceId, String path, Int size, String sha256Hex)
+record OfferInfo(String id, String deviceId, String path, Int size, String sha256Hex, Long createdAt)
+
+// A4 wire contract: what the CLIENT may send. The server stamps createdAt
+// itself — a client cannot fake freshness or resurrect expired ids.
+record OfferRequest(String id, String deviceId, String path, Int size, String sha256Hex)
+
+Long offerTtlMs() {
+    return 86400000
+}
 
 String controlRegister(Map<String, DeviceInfo> devices, DeviceInfo d) {
     if (d.id.length() == 0) {
@@ -55,8 +63,30 @@ String controlOffer(Map<String, OfferInfo> offers, Map<String, DeviceInfo> devic
     if (o.sha256Hex.length() != 64) {
         return "REG007: digest must be 64 hex chars"
     }
+    if (o.createdAt <= 0) {
+        return "REG010: offer has no registration timestamp"
+    }
     offers.put(o.id, o)
     return "OK"
+}
+
+// A4 registry hygiene (pure over the passed table): drop offers older than
+// `ttlMs` AND offers pointing at unknown devices. Returns how many were
+// dropped — the caller logs it; behavior is never silent.
+Int controlPurgeExpired(Map<String, OfferInfo> offers, Map<String, DeviceInfo> devices, Long now, Long ttlMs) {
+    var dropped = 0
+    var ids = offers.keys()
+    ids.sort()
+    for (var id in ids) {
+        var o: OfferInfo? = offers.get(id)
+        if (o != null) {
+        if (now - o.createdAt > ttlMs || devices.get(o.deviceId) == null) {
+            offers.remove(id)
+            dropped = dropped + 1
+        }
+        }
+    }
+    return dropped
 }
 
 OfferInfo? controlResolveOffer(Map<String, OfferInfo> offers, String id) {

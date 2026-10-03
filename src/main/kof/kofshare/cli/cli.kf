@@ -107,7 +107,7 @@ String offerJson(String path) {
         return "OFFER-ERR: empty file: " + path
     }
     var digest = crypto.sha256Bytes(toBytes(data))
-    var o = OfferInfo("o-" + digest.substring(0, 12), "local", path, data.size, digest)
+    var o = OfferRequest("o-" + digest.substring(0, 12), "local", path, data.size, digest)
     return json.encode(o)
 }
 
@@ -148,7 +148,7 @@ Boolean registryLeg() {
     var d1 = controlResolve(devices, "d1")
     ok = ok && (d1 != null && d1.name == "alpha")
     var dig = crypto.sha256("/srv/a.bin")
-    ok = ok && (controlOffer(offers, devices, OfferInfo("o1", "d1", "/srv/a.bin", 2048, dig)) == "OK")
+    ok = ok && (controlOffer(offers, devices, OfferInfo("o1", "d1", "/srv/a.bin", 2048, dig, 1789000000000)) == "OK")
     var back = controlResolveOffer(offers, "o1")
     ok = ok && (back != null && back.size == 2048 && back.deviceId == "d1")
     ok = ok && (controlRevoke(offers, "o1") == "OK")

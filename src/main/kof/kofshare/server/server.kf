@@ -21,6 +21,11 @@ main() {
     var offers = new Map<String, OfferInfo>()
     controlLoadList("server-registry.devices.json", devices, null)
     controlLoadList("server-registry.offers.json", null, offers)
+    var opurge = controlPurgeExpired(offers, devices, time.now(), offerTtlMs())
+    if (opurge > 0) {
+        println("server: purged " + opurge + " stale offers (A4 hygiene)")
+        controlSaveList("server-registry.offers.json", controlOffersJson(offers, ""))
+    }
 
     var shares = new Map<String, ShareInfo>()
     var spath = "server-registry.shares.json"

@@ -23,15 +23,15 @@ main() {
     println("devicesCount=" + (jsonArrayLen(dj) == 2))
     println("devicesSorted=" + (dj.indexOf("d1") >= 0 && dj.indexOf("d1") < dj.indexOf("d2")))
 
-    var ghostOffer = controlOffer(offers, devices, OfferInfo("o0", "ghost", "/p", 10, registryDigest("/p")))
+    var ghostOffer = controlOffer(offers, devices, OfferInfo("o0", "ghost", "/p", 10, registryDigest("/p"), 1789000000000))
     println("offerUnknownDevice=" + (ghostOffer == "REG004: unknown device ghost"))
-    println("offerEmptyId=" + (controlOffer(offers, devices, OfferInfo("", "d1", "/p", 10, registryDigest("/p"))) == "REG003: empty offer id"))
-    println("offerEmptyPath=" + (controlOffer(offers, devices, OfferInfo("oX", "d1", "", 10, registryDigest("/p"))) == "REG005: empty offer path"))
-    println("offerSize=" + (controlOffer(offers, devices, OfferInfo("oX", "d1", "/p", 0, registryDigest("/p"))) == "REG006: non-positive offer size"))
-    println("offerDigest=" + (controlOffer(offers, devices, OfferInfo("oX", "d1", "/p", 10, "deadbeef")) == "REG007: digest must be 64 hex chars"))
+    println("offerEmptyId=" + (controlOffer(offers, devices, OfferInfo("", "d1", "/p", 10, registryDigest("/p"), 1789000000000)) == "REG003: empty offer id"))
+    println("offerEmptyPath=" + (controlOffer(offers, devices, OfferInfo("oX", "d1", "", 10, registryDigest("/p"), 1789000000000)) == "REG005: empty offer path"))
+    println("offerSize=" + (controlOffer(offers, devices, OfferInfo("oX", "d1", "/p", 0, registryDigest("/p"), 1789000000000)) == "REG006: non-positive offer size"))
+    println("offerDigest=" + (controlOffer(offers, devices, OfferInfo("oX", "d1", "/p", 10, "deadbeef", 1789000000000)) == "REG007: digest must be 64 hex chars"))
 
-    println("offer1=" + (controlOffer(offers, devices, OfferInfo("o1", "d1", "/srv/a.bin", 2048, registryDigest("/srv/a.bin"))) == "OK"))
-    println("offer2=" + (controlOffer(offers, devices, OfferInfo("o2", "d2", "/srv/b.bin", 4096, registryDigest("/srv/b.bin"))) == "OK"))
+    println("offer1=" + (controlOffer(offers, devices, OfferInfo("o1", "d1", "/srv/a.bin", 2048, registryDigest("/srv/a.bin"), 1789000000000)) == "OK"))
+    println("offer2=" + (controlOffer(offers, devices, OfferInfo("o2", "d2", "/srv/b.bin", 4096, registryDigest("/srv/b.bin"), 1789000000000)) == "OK"))
 
     var oj = controlOffersJson(offers, "")
     println("offersAll=" + (jsonArrayLen(oj) == 2))
@@ -53,6 +53,17 @@ main() {
     } catch (String e) {
         threw = true
     }
+    println("offerNoStamp=" + ((controlOffer(offers, devices, OfferInfo("o3", "d1", "/p", 10, registryDigest("/p"), 0)) == "REG010: offer has no registration timestamp") && (controlOffer(offers, devices, OfferInfo("o4", "d1", "/p", 10, registryDigest("/p"), 0 - 5)) == "REG010: offer has no registration timestamp")))
+    // A4 hygiene: stale-by-age AND dangling-by-device are purged, fresh stays
+    println("offerFresh2=" + (controlOffer(offers, devices, OfferInfo("o5", "d1", "/srv/c.bin", 512, registryDigest("/srv/c.bin"), 1789000000000)) == "OK"))
+    println("offerOld=" + (controlOffer(offers, devices, OfferInfo("o6", "d1", "/srv/d.bin", 512, registryDigest("/srv/d.bin"), 1788000000000)) == "OK"))
+    println("offerDangle=" + (controlOffer(offers, devices, OfferInfo("o7", "d2", "/srv/e.bin", 512, registryDigest("/srv/e.bin"), 1789000000000)) == "OK"))
+    devices.remove("d2")  // dangling-by-device: o7 AND any older d2 offer
+    var before = offers.size
+    var purged = controlPurgeExpired(offers, devices, 1789000001000, offerTtlMs())
+    println("purged=" + (purged == before - offers.size && purged >= 2))
+    var after = controlOffersJson(offers, "")
+    println("purgeKeepsFresh=" + (after.indexOf("\"o5\"") >= 0 && after.indexOf("\"o6\"") < 0 && after.indexOf("\"o7\"") < 0))
     println("decodeMalformedThrew=" + threw)
 
     println("REGCHECK-OK")
