@@ -1,0 +1,162 @@
+package kofshare.control
+
+import kof.json
+import kof.crypto
+
+// C2 (next-plan §4, vote D2=A): the full share model. A share is the
+// AUTHORIZATION of one offer to whoever holds the token — the token is the
+// bearer secret (64 hex = 32 random bytes, minted with security.randomHex at
+// the edge, never here: this file stays pure). Expiry, use-count, read-only
+// and revocation are DATA, enforced by the named refusals below; the state
+// transitions replace the entry instead of mutating it, so a stale copy
+// cannot half-advance. The signature (C1 face) covers the immutable core
+// ONLY — used/status/revocation churn must not invalidate an issued grant.
+
+record ShareInfo(String id, String token, String deviceId, String offerId, String permissions, Long createdAt, Long expiresAt, Int maxUses, Int used, String status, String revocation, String sig)
+
+record ShareRequest(String offerId, Long ttlMs, Int maxUses, Bool readOnly)
+
+record ShareGrant(String offerId, String path, Int size, String sha256Hex, String deviceAddress, String permissions)
+
+// Canonical signed form: version-pinned, field-joined, no nesting tricks.
+// Changing this string is a wire change — bump the v1 prefix then.
+String shareCanonical(ShareInfo s) {
+    return "v1|" + s.id + "|" + s.token + "|" + s.deviceId + "|" + s.offerId + "|" + s.permissions + "|" + s.createdAt + "|" + s.expiresAt + "|" + s.maxUses
+}
+
+Byte[] sharePayloadBytes(String text) {
+    var out = new Byte[text.length]
+    var i = 0
+    while (i < text.length) {
+        out[i] = text.charAt(i)
+        i = i + 1
+    }
+    return out
+}
+
+String shareSign(Secret sk, ShareInfo s) {
+    return crypto.sign(sk, sharePayloadBytes(shareCanonical(s)))
+}
+
+Bool shareVerify(Secret pubOrPriv, ShareInfo s) {
+    return crypto.verify(pubOrPriv, sharePayloadBytes(shareCanonical(s)), s.sig)
+}
+
+// Domain validation at issue time. The edge (app/cli) mints id/token/time;
+// this function only refuses malformed grants, by name (R6).
+String shareIssue(Map<String, ShareInfo> shares, ShareInfo s) {
+    if (s.id.length() == 0) {
+        return "REG030: empty share id"
+    }
+    if (s.token.length() != 64) {
+        return "REG031: token must be 64 hex chars"
+    }
+    if (s.deviceId.length() == 0) {
+        return "REG032: empty share device"
+    }
+    if (s.offerId.length() == 0) {
+        return "REG033: empty share offer"
+    }
+    if (s.maxUses < 0) {
+        return "REG034: negative maxUses"
+    }
+    var perms = s.permissions
+    if (perms.length() == 0) {
+        perms = "read"
+    }
+    shares.put(s.id, new ShareInfo(s.id, s.token, s.deviceId, s.offerId, perms, s.createdAt, s.expiresAt, s.maxUses, 0, "active", "", s.sig))
+    return "OK"
+}
+
+ShareInfo? shareResolve(Map<String, ShareInfo> shares, String token) {
+    var ids = shares.keys()
+    ids.sort()  // golden-stable scan when two ids alias one token (never expected)
+    for (var id in ids) {
+        var s: ShareInfo? = shares.get(id)
+        if (s != null && s.token == token) {
+            return s
+        }
+    }
+    return null
+}
+
+// The authorization gate: ONE call answers "may this token open the offer
+// now?" and advances the use counter only on success. Returns OK or a named
+// refusal; the caller must never serve bytes on anything but "OK".
+String shareTouch(Map<String, ShareInfo> shares, String token, Long now) {
+    var s = shareResolve(shares, token)
+    if (s == null) {
+        return "REG035: unknown share token"
+    }
+    if (s.status != "active") {
+        return "REG036: share " + s.status
+    }
+    if (s.expiresAt > 0 && now >= s.expiresAt) {
+        return "REG037: share expired"
+    }
+    if (s.maxUses > 0 && s.used >= s.maxUses) {
+        return "REG038: share exhausted"
+    }
+    shares.put(s.id, new ShareInfo(s.id, s.token, s.deviceId, s.offerId, s.permissions, s.createdAt, s.expiresAt, s.maxUses, s.used + 1, s.status, s.revocation, s.sig))
+    return "OK"
+}
+
+String shareRevoke(Map<String, ShareInfo> shares, String id, String reason) {
+    var s: ShareInfo? = shares.get(id)
+    if (s == null) {
+        return "REG039: unknown share " + id
+    }
+    shares.put(id, new ShareInfo(s.id, s.token, s.deviceId, s.offerId, s.permissions, s.createdAt, s.expiresAt, s.maxUses, s.used, "revoked", reason, s.sig))
+    return "OK"
+}
+
+String shareJson(ShareInfo s) {
+    return json.encode(s)
+}
+
+String sharesJson(Map<String, ShareInfo> shares) {
+    var out = new List<ShareInfo>()
+    var ids = shares.keys()
+    ids.sort()
+    for (var id in ids) {
+        var s: ShareInfo? = shares.get(id)
+        if (s != null) {
+            out.add(s)
+        }
+    }
+    return json.encode(out)
+}
+
+Int sharesPurgeExpired(Map<String, ShareInfo> shares, Long now) {
+    var n = 0
+    var ids = shares.keys()
+    ids.sort()
+    for (var id in ids) {
+        var s: ShareInfo? = shares.get(id)
+        if (s != null && s.expiresAt > 0 && now >= s.expiresAt) {
+            shares.remove(id)
+            n = n + 1
+        }
+    }
+    return n
+}
+
+String shareLoadList(Map<String, ShareInfo> shares, String path) {
+    var f = File(path)
+    if (!f.exists()) {
+        return "OK"  // fresh shares file, not an error
+    }
+    var txt = f.readText()
+    if (txt == null) {
+        return "REG040: unreadable shares file " + path
+    }
+    try {
+        var list: List<ShareInfo> = json.decode<List<ShareInfo>>(txt)
+        for (var s in list) {
+            shares.put(s.id, s)
+        }
+    } catch (String e) {
+        return "REG041: corrupt shares file " + path + ": " + e
+    }
+    return "OK"
+}

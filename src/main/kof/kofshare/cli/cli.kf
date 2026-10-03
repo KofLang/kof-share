@@ -4,6 +4,9 @@ import kofshare.transfer
 import kofshare.domain
 import kofshare.control.registry
 import kofshare.control.app
+import kofshare.control.share
+import kof.http
+import kof.time
 import kofshare.session
 import kofshare.relay
 import kof.json
@@ -216,12 +219,48 @@ Int runCheck() {
     println("persist=" + persistLeg())
     println("plain=" + plain)
     println("secure=" + secure)
-    if (reg && plain && secure) {
+    var share = shareLeg()
+    println("share=" + share)
+    if (reg && plain && secure && share) {
         println("CHECK-OK")
         return 0
     }
     println("CHECK-FAIL")
     return 1
+}
+
+// `--check` leg 4 — the C2 share model (pure domain + C1 signature face).
+// issue/touch/exhaust/revoke/expired/purge + sign/verify/tamper, all by NAME.
+Bool shareLeg() {
+    var now = 1000
+    var sk = keyExchange.privateKey("Ed25519")
+    var pub = keyExchange.publicKey(sk)
+    var shares = new Map<String, ShareInfo>()
+    var ok = true
+    ok = ok && (shareIssue(shares, ShareInfo("s1", tokenOf("11"), "d1", "o1", "read", now, now + 10, 1, 0, "active", "", "")) == "OK")
+    var core = shareResolve(shares, tokenOf("11"))
+    if (core == null) {
+        return false
+    }
+    var st = shareSign(sk, core)
+    var signed = ShareInfo(core.id, core.token, core.deviceId, core.offerId, core.permissions, core.createdAt, core.expiresAt, core.maxUses, core.used, core.status, core.revocation, st)
+    shares.put("s1", signed)
+    ok = ok && shareVerify(secrets.of(pub), signed)
+    ok = ok && shareTouch(shares, signed.token, now) == "OK"
+    ok = ok && shareTouch(shares, signed.token, now + 1) == "REG038: share exhausted"
+    ok = ok && shareRevoke(shares, "s1", "check") == "OK"
+    ok = ok && shareTouch(shares, signed.token, now + 2) == "REG036: share revoked"
+    ok = ok && shareResolve(shares, tokenOf("ff")) == null
+    ok = ok && sharesPurgeExpired(shares, now + 999) == 1
+    return ok
+}
+
+String tokenOf(String seed) {
+    var s = seed
+    while (s.length < 64) {
+        s = s + "0"
+    }
+    return s.substring(0, 64)
 }
 
 // `--dry` — print the resolved product plan, no IO. Deterministic.
@@ -231,6 +270,9 @@ Int runDry() {
     println("  offer <file>                 -> OfferInfo JSON (sha256Bytes over the file)")
     println("  fetch <host> <port> <dest> [--resume <n>] [--key <hex>] [--secure] [--relay <rhost> <rport>] -> kof.net pull")
     println("  relay <port> <peerHost> <peerPort> [--tamper] -> ciphertext-only relay")
+    println("  share <host> <port> <offerId> [--once] [--read-only] [--ttl <ms>] -> mint grant")
+    println("  revoke <host> <port> <shareId> [reason] | shares <host> <port>")
+    println("  authorize <host> <port> <token> -> GET /s/<token> (grant JSON or REG refusal)")
     println("  --check                      -> registry + plain port=" + checkPortPlain()
         + " resume=" + checkResumePlain() + " + secure port=" + checkPortSecure()
         + " resume=" + checkResumeSecure())
@@ -361,9 +403,137 @@ Int runServer(List<String> args) {
     var offers = new Map<String, OfferInfo>()
     controlLoadList("server-registry.devices.json", devices, null)
     controlLoadList("server-registry.offers.json", null, offers)
-    println("SERVER-READY port=" + port + " key=" + key + " devices=" + devices.size() + " offers=" + offers.size())
+    var shares = new Map<String, ShareInfo>()
+    var spath = "server-registry.shares.json"
+    var load = shareLoadList(shares, spath)
+    if (load.indexOf("REG041") == 0) {
+        println(load)
+        return 1
+    }
+    sharesPurgeExpired(shares, time.now())
+    var controlKey = loadControlKey("server-control.ed25519")
+    println("SERVER-READY port=" + port + " key=" + key + " devices=" + devices.size() + " offers=" + offers.size() + " shares=" + shares.size())
     controlServe(port, devices, offers,
-        "server-registry.devices.json", "server-registry.offers.json")
+        "server-registry.devices.json", "server-registry.offers.json",
+        shares, spath, controlKey)
+    return 0
+}
+
+Secret loadControlKey(String kpath) {
+    var kf = File(kpath)
+    if (kf.exists()) {
+        var txt = kf.readText()
+        if (txt == null) {
+            throw "kofshare: unreadable control key " + kpath
+        }
+        return secrets.of(txt)
+    }
+    var fresh = keyExchange.privateKey("Ed25519")
+    if (!kf.writeText(fresh.reveal())) {
+        throw "kofshare: cannot persist control key " + kpath
+    }
+    return fresh
+}
+
+// C2 commands (vote D2=A): share/revoke/shares/authorize talk to the control
+// plane over kof.http — the token never leaves the link; the GRANT response
+// of /s/<token> is what the recipient feeds into `fetch` unchanged.
+Int runShare(List<String> args) {
+    var rest = tail(args, 1)
+    if (rest.size < 3) {
+        println("SHARE-ERR: usage: share <host> <port> <offerId> [--once] [--read-only] [--ttl <ms>]")
+        return 1
+    }
+    var req = ShareRequest(rest.get(2), 0, 0, false)
+    var i = 3
+    while (i < rest.size) {
+        var a = argAt(rest, i)
+        if (a == "--once") {
+            req = ShareRequest(req.offerId, req.ttlMs, 1, req.readOnly)
+            i = i + 1
+        } else if (a == "--read-only") {
+            req = ShareRequest(req.offerId, req.ttlMs, req.maxUses, true)
+            i = i + 1
+        } else if (a == "--ttl") {
+            req = ShareRequest(req.offerId, req.ttlMs + ttlOf(argAt(rest, i + 1)), req.maxUses, req.readOnly)
+            i = i + 2
+        } else {
+            i = i + 1
+        }
+    }
+    var base = "http://" + rest.get(0) + ":" + rest.get(1)
+    var resp = http.post(base + "/shares", json.encode(req))
+    if (resp == null) {
+        println("SHARE-ERR: control plane unreachable")
+        return 1
+    }
+    if (resp.indexOf("SHARED ") != 0) {
+        println(resp)
+        return 1
+    }
+    var parts = resp.split(" ")
+    println("SHARE-LINK " + base + "/s/" + parts[2])
+    println("SHARE-ID " + parts[1])
+    return 0
+}
+
+Long ttlOf(String s) {
+    return math.parseLong(s)
+}
+
+Int runRevoke(List<String> args) {
+    var rest = tail(args, 1)
+    if (rest.size < 3) {
+        println("REVOKE-ERR: usage: revoke <host> <port> <shareId> [reason]")
+        return 1
+    }
+    var base = "http://" + rest.get(0) + ":" + rest.get(1)
+    var reason = "manual"
+    if (rest.size > 3) {
+        reason = rest.get(3)
+    }
+    var resp = http.post(base + "/shares/" + rest.get(2) + "/revoke?reason=" + reason, "")
+    if (resp == null) {
+        println("REVOKE-ERR: control plane unreachable")
+        return 1
+    }
+    println(resp)
+    if (resp.indexOf("SHARE-REVOKED") == 0) {
+        return 0
+    }
+    return 1
+}
+
+Int runShares(List<String> args) {
+    var rest = tail(args, 1)
+    if (rest.size < 2) {
+        println("SHARES-ERR: usage: shares <host> <port>")
+        return 1
+    }
+    var body = http.get("http://" + rest.get(0) + ":" + rest.get(1) + "/shares")
+    if (body == null) {
+        println("SHARES-ERR: control plane unreachable")
+        return 1
+    }
+    println(body)
+    return 0
+}
+
+Int runAuthorize(List<String> args) {
+    var rest = tail(args, 1)
+    if (rest.size < 3) {
+        println("AUTH-ERR: usage: authorize <host> <port> <token>")
+        return 1
+    }
+    var body = http.get("http://" + rest.get(0) + ":" + rest.get(1) + "/s/" + rest.get(2))
+    if (body == null) {
+        println("AUTH-ERR: control plane unreachable")
+        return 1
+    }
+    println(body)
+    if (body.indexOf("REG") == 0) {
+        return 1
+    }
     return 0
 }
 
@@ -453,6 +623,22 @@ main(args: List<String>) {
         var rc = runFetch(tail(args, start))
         if (rc != 0) {
             throw "kofshare: FETCH-ERR"
+        }
+        return
+    }
+    if (cmd == "share" || cmd == "revoke" || cmd == "shares" || cmd == "authorize") {
+        var rc = 1
+        if (cmd == "share") {
+            rc = runShare(tail(args, start))
+        } else if (cmd == "revoke") {
+            rc = runRevoke(tail(args, start))
+        } else if (cmd == "shares") {
+            rc = runShares(tail(args, start))
+        } else {
+            rc = runAuthorize(tail(args, start))
+        }
+        if (rc != 0) {
+            throw "kofshare: CMD-ERR " + cmd
         }
         return
     }

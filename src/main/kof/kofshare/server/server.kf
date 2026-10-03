@@ -2,12 +2,48 @@ package kofshare.server
 
 import kofshare.control.app
 import kofshare.control.registry
+import kofshare.control.share
+import kof.secrets
+import kof.keyExchange
+import kof.time
+
+// C2 bootstrap: shares reload from disk (purging expired by NAME of the
+// clock, never silently serving stale grants) and the control Ed25519 key
+// persists across restarts — a grant signed yesterday must verify tomorrow.
+// The key file holds the private Secret hex (184 chars) at rest; v1 is a
+// single-owner LAN daemon (documented trade-off, not a secret-theater).
 
 main() {
     var devices = new Map<String, DeviceInfo>()
     var offers = new Map<String, OfferInfo>()
     controlLoadList("server-registry.devices.json", devices, null)
     controlLoadList("server-registry.offers.json", null, offers)
+
+    var shares = new Map<String, ShareInfo>()
+    var spath = "server-registry.shares.json"
+    var load = shareLoadList(shares, spath)
+    if (load.indexOf("REG041") == 0) {
+        throw load
+    }
+    sharesPurgeExpired(shares, time.now())
+
+    var kpath = "server-control.ed25519"
+    var kf = File(kpath)
+    var controlKey = secrets.of("")
+    if (kf.exists()) {
+        var txt = kf.readText()
+        if (txt == null) {
+            throw "server: unreadable control key " + kpath
+        }
+        controlKey = secrets.of(txt)
+    } else {
+        controlKey = keyExchange.privateKey("Ed25519")
+        if (!kf.writeText(controlKey.reveal())) {
+            throw "server: cannot persist control key " + kpath
+        }
+    }
+
     controlServe(18322, devices, offers,
-        "server-registry.devices.json", "server-registry.offers.json")
+        "server-registry.devices.json", "server-registry.offers.json",
+        shares, spath, controlKey)
 }

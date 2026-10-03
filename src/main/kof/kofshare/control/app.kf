@@ -1,7 +1,10 @@
 package kofshare.control
 
 import kofshare.control.registry
+import kofshare.control.share
 import kof.json
+import kof.security
+import kof.time
 
 // Control-plane HTTP surface (architecture.md §4, implementation-plan slice 2).
 // The app owns NOTHING: the registries are passed in, so the pure registry
@@ -11,8 +14,12 @@ import kof.json
 // capture of the app handle became LEGAL on JVM after Kof4j §575 was fixed
 // (JvmTypeMapper erases the phantom descriptor); we still choose NOT to
 // capture — daemon lifecycle = process lifecycle.
+// C2 (vote D2=A): /shares mints bearer grants over offers — token =
+// security.randomHex(32), signed with the control Ed25519 key (C1 face);
+// /s/<token> is the authorization gate (shareTouch decides; only "OK"
+// serves offer metadata). The SECRET stays a Secret handle end to end.
 
-void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferInfo> offers, String dpath, String opath) {
+void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferInfo> offers, String dpath, String opath, Map<String, ShareInfo> shares, String spath, Secret controlKey) {
     var app = web.app()
 
     app.get("/devices") {
@@ -73,6 +80,86 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
 
     app.get("/health") {
         return "OK"
+    }
+
+    app.post("/shares") {
+        var req = json.decode<ShareRequest>(body())
+        var o: OfferInfo? = controlResolveOffer(offers, req.offerId)
+        if (o == null) {
+            return "REG033: unknown offer " + req.offerId
+        }
+        if (controlResolve(devices, o.deviceId) == null) {
+            return "REG032: unknown device " + o.deviceId
+        }
+        var now = time.now()
+        var id = "sh" + security.randomHex(8)
+        var token = security.randomHex(32)
+        var perms = "read-write"
+        if (req.readOnly) {
+            perms = "read"
+        }
+        // HONEST type from the start: the slot is Long (assigning a widened
+        // Long over an Int-inferred local inside a route lambda hits Kof4j
+        // §583 — recorded, not hidden: the typed declaration is the correct
+        // Kof form, the emitter bug is the ledger's).
+        var expires: Long = 0
+        if (req.ttlMs > 0) {
+            expires = now + req.ttlMs
+        }
+        var core = ShareInfo(id, token, o.deviceId, req.offerId, perms, now, expires, req.maxUses, 0, "active", "", "")
+        var signed = ShareInfo(core.id, core.token, core.deviceId, core.offerId, core.permissions, core.createdAt, core.expiresAt, core.maxUses, core.used, core.status, core.revocation, shareSign(controlKey, core))
+        var r = shareIssue(shares, signed)
+        if (r != "OK") {
+            return r
+        }
+        if (spath.length() > 0) {
+            controlSaveList(spath, sharesJson(shares))
+        }
+        return "SHARED " + id + " " + token
+    }
+
+    app.get("/shares") {
+        return sharesJson(shares)
+    }
+
+    app.get("/s/:token") {
+        var now = time.now()
+        var r = shareTouch(shares, param("token"), now)
+        if (r != "OK") {
+            return r
+        }
+        var s = shareResolve(shares, param("token"))
+        if (s == null) {
+            return "REG035: unknown share token"
+        }
+        var o: OfferInfo? = controlResolveOffer(offers, s.offerId)
+        if (o == null) {
+            return "REG034: offer vanished " + s.offerId
+        }
+        var d: DeviceInfo? = controlResolve(devices, o.deviceId)
+        if (d == null) {
+            return "REG032: unknown device " + o.deviceId
+        }
+        if (spath.length() > 0) {
+            controlSaveList(spath, sharesJson(shares))
+        }
+        return json.encode(ShareGrant(o.id, o.path, o.size, o.sha256Hex, d.address, s.permissions))
+    }
+
+    app.post("/shares/:id/revoke") {
+        var rs: String? = query("reason")
+        var reason = ""
+        if (rs != null) {
+            reason = rs
+        }
+        var r = shareRevoke(shares, param("id"), reason)
+        if (r != "OK") {
+            return r
+        }
+        if (spath.length() > 0) {
+            controlSaveList(spath, sharesJson(shares))
+        }
+        return "SHARE-REVOKED: " + param("id")
     }
 
     app.listen(port)

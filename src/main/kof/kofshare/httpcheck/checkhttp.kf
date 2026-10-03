@@ -1,6 +1,7 @@
 package kofshare.httpcheck
 
 import kofshare.control.registry
+import kofshare.control.share
 import kof.http
 import kof.json
 import kof.crypto
@@ -53,6 +54,24 @@ main() {
     var q = http.get(base + "/offers?device=d2")
     println("offersQueryEmpty=" + (q == "[]"))
 
+    var sh = http.post(base + "/shares", json.encode(ShareRequest("o1", 0, 1, false)))
+    println("shareMint=" + (sh.indexOf("SHARED ") == 0))
+    var bits = sh.split(" ")
+    var sid = bits[1]
+    var stok = bits[2]
+    var grant = http.get(base + "/s/" + stok)
+    println("grantMeta=" + (grant.indexOf("/srv/a.bin") >= 0 && grant.indexOf("192.168.1.10:8021") >= 0 && grant.indexOf("read-write") >= 0))
+    var again = http.get(base + "/s/" + stok)
+    println("grantExhausted=" + (again == "REG038: share exhausted"))
+    var ghostTok = http.get(base + "/s/" + pad64("ff"))
+    println("grantUnknown=" + (ghostTok == "REG035: unknown share token"))
+    var rvs = http.post(base + "/shares/" + sid + "/revoke?reason=httpcheck", "")
+    println("shareRevoke=" + (rvs == "SHARE-REVOKED: " + sid))
+    var afterRev = http.get(base + "/s/" + stok)
+    println("grantAfterRevoke=" + (afterRev == "REG036: share revoked"))
+    var lst = http.get(base + "/shares")
+    println("sharesListed=" + (lst.indexOf(sid) >= 0))
+
     var rev = http.delete(base + "/offers/o1")
     println("revoke=" + (rev == "REVOKED: o1"))
     var revGhost = http.delete(base + "/offers/o1")
@@ -86,4 +105,12 @@ Int countObjects(String body) {
         i = i + 1
     }
     return count
+}
+
+String pad64(String seed) {
+    var t = seed
+    while (t.length < 64) {
+        t = t + "0"
+    }
+    return t.substring(0, 64)
 }

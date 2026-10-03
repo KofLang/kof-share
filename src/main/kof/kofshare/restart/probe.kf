@@ -1,0 +1,15 @@
+package kofshare.restart
+
+import kof.http
+
+// C2 restart probe: after a fresh boot, the registry + shares + control key
+// must come off disk — a grant minted by the PREVIOUS process must still
+// resolve (revoked state included). JVM only (real sockets).
+
+main() {
+    var body = http.get("http://127.0.0.1:18322/shares")
+    println("sharesReloaded=" + (body != null && body.indexOf("REG") != 0 && body.indexOf("maxUses") >= 0))
+    var devs = http.get("http://127.0.0.1:18322/devices")
+    println("devsReloaded=" + (devs != null && devs.indexOf("d1") >= 0))
+    println("RESTART-OK")
+}

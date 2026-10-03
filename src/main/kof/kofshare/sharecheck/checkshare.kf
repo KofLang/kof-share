@@ -1,0 +1,93 @@
+package kofshare.sharecheck
+
+import kofshare.control.registry
+import kofshare.control.share
+import kof.keyExchange
+import kof.secrets
+
+// C2 golden (next-plan §4, vote D2=A): the share model end-to-end at the
+// DOMAIN edge — issue validation, Ed25519 signature over the canonical core
+// (C1 face), the named touch matrix (unknown/expired/exhausted/revoked),
+// purge, persistence reload, corrupt refusal. JVM + Script must print the
+// same golden.
+
+ShareInfo mkShare(String id, String tokenTail, Long now, Long ttl, Int maxUses) {
+    return ShareInfo(id, hex64(tokenTail), "d1", "o1", "read", now, ttl, maxUses, 0, "active", "", "")
+}
+
+String hex64(String seed) {
+    var s = seed
+    while (s.length < 64) {
+        s = s + "0"
+    }
+    return s.substring(0, 64)
+}
+
+void clean(String path) {
+    var f = File(path)
+    if (f.exists()) {
+        f.delete()
+    }
+}
+
+main() {
+    var now = 1000000
+    var sk = keyExchange.privateKey("Ed25519")
+    var pub = keyExchange.publicKey(sk)
+
+    var shares = new Map<String, ShareInfo>()
+    println("issueShort=" + (shareIssue(shares, ShareInfo("x", "abc", "d1", "o1", "read", now, 0, 0, 0, "active", "", "")) == "REG031: token must be 64 hex chars"))
+    println("issueNoDev=" + (shareIssue(shares, ShareInfo("x", hex64("a"), "", "o1", "read", now, 0, 0, 0, "active", "", "")) == "REG032: empty share device"))
+
+    var s1 = mkShare("s1", "11", now, now + 10000, 2)
+    s1 = ShareInfo(s1.id, s1.token, s1.deviceId, s1.offerId, s1.permissions, s1.createdAt, s1.expiresAt, s1.maxUses, s1.used, s1.status, s1.revocation, shareSign(sk, s1))
+    println("issueOk=" + (shareIssue(shares, s1) == "OK"))
+    println("verifyOk=" + shareVerify(secrets.of(pub), s1))
+    var s1bad = ShareInfo(s1.id, s1.token, s1.deviceId, s1.offerId, s1.permissions, s1.createdAt, s1.expiresAt, 999999, s1.used, s1.status, s1.revocation, s1.sig)
+    println("verifyTamper=" + !shareVerify(secrets.of(pub), s1bad))
+
+    println("touch1=" + (shareTouch(shares, s1.token, now + 1) == "OK"))
+    println("touch2=" + (shareTouch(shares, s1.token, now + 2) == "OK"))
+    println("touch3exhausted=" + (shareTouch(shares, s1.token, now + 3) == "REG038: share exhausted"))
+
+    var s2 = mkShare("s2", "22", now, now + 5, 0)
+    shareIssue(shares, s2)
+    println("touchUnknown=" + (shareTouch(shares, hex64("ff"), now) == "REG035: unknown share token"))
+    println("touchExpired=" + (shareTouch(shares, s2.token, now + 5) == "REG037: share expired"))
+
+    var s3 = mkShare("s3", "33", now, 0, 1)
+    shareIssue(shares, s3)
+    println("onceOk=" + (shareTouch(shares, s3.token, now) == "OK"))
+    println("onceUsed=" + (shareTouch(shares, s3.token, now) == "REG038: share exhausted"))
+
+    var s4 = mkShare("s4", "44", now, 0, 0)
+    shareIssue(shares, s4)
+    println("revokeUnknown=" + (shareRevoke(shares, "nope", "test") == "REG039: unknown share nope"))
+    println("revokeOk=" + (shareRevoke(shares, "s4", "owner changed mind") == "OK"))
+    println("touchRevoked=" + (shareTouch(shares, s4.token, now) == "REG036: share revoked"))
+    var r4: ShareInfo? = shares.get("s4")
+    println("revocationKept=" + (r4 != null && r4.revocation == "owner changed mind"))
+
+    println("purged=" + (sharesPurgeExpired(shares, now + 1000) == 1))
+    println("s2Gone=" + (shareResolve(shares, s2.token) == null))
+
+    var spath = "share-test.json"
+    clean(spath)
+    println("save=" + (controlSaveList(spath, sharesJson(shares)) == "OK"))
+    var shares2 = new Map<String, ShareInfo>()
+    println("load=" + (shareLoadList(shares2, spath) == "OK"))
+    println("roundTrip=" + (sharesJson(shares2) == sharesJson(shares)))
+    var back: ShareInfo? = shares2.get("s1")
+    println("verifyAfterLoad=" + (back != null && shareVerify(secrets.of(pub), back)))
+
+    var junk = File("share-test.junk.json")
+    junk.writeText("{ not json")
+    var shares3 = new Map<String, ShareInfo>()
+    var bad = shareLoadList(shares3, "share-test.junk.json")
+    println("corrupt=" + (bad.indexOf("REG041: corrupt shares file") == 0))
+    println("missingOk=" + (shareLoadList(shares3, "share-test.absent.json") == "OK"))
+
+    clean(spath)
+    clean("share-test.junk.json")
+    println("SHARECHECK-OK")
+}
