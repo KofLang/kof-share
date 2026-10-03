@@ -1,7 +1,7 @@
 package kofshare.probe
 
-import kofshare.transfer
-import kofshare.handshake
+import kofshare.protocol
+import kofshare.session
 import kof.security
 import kof.crypto
 

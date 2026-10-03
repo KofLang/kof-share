@@ -4,7 +4,7 @@ import kofshare.transfer
 import kofshare.domain
 import kofshare.control.registry
 import kofshare.control.app
-import kofshare.handshake
+import kofshare.session
 import kof.json
 import kof.crypto
 import kof.keyExchange

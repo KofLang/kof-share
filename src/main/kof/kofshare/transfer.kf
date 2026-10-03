@@ -1,127 +1,22 @@
 package kofshare
 
 import kofshare.domain
+import kofshare.protocol
 import kof.security
-import kof.crypto
 
-// KofShare transfer core — D-KOFSHARE-100KOF: 100% Kof over the kof.net
-// front (D-KOF-NET). Frame = len(4 BE) | index(4 BE) | payload, each
-// payload followed by a 64-ASCII-hex HMAC-SHA256 tag over
-// (key | len | index | payload) — the architecture.md §TRANSFER shape with
-// the per-chunk integrity digest; the AES-GCM encryption envelope rides
-// the separate SECN005 key-exchange decision (the tag framing is the part
-// SECN005 does not block). Binary-safe end to end: files move as Int[]
-// (bytes 0..255, the io face), the wire uses Byte[] (the net face), and
-// the wrap/unwrap lives HERE, never in the transport. Offset-idempotent:
-// the sender starts at `resumeOffset`, the receiver appends; a restart
-// asks only for what is missing. A tampered chunk (or a chunk delivered
-// out of order) refuses before the bytes reach the file.
-
-Int metaIndex() {
-    // 0x3FFFFFFF — largest 32-bit sentinel that fits Kof's signed Int
-    return 1073741823
-}
-
-Int chunkSize() {
-    return 65536
-}
-
-Int tagLen() {
-    return 64
-}
-
-Byte[] headFrame(Int totalLen, Int index) {
-    var h = new Byte[8]
-    h[0] = (totalLen / 16777216) % 256
-    h[1] = (totalLen / 65536) % 256
-    h[2] = (totalLen / 256) % 256
-    h[3] = totalLen % 256
-    h[4] = (index / 16777216) % 256
-    h[5] = (index / 65536) % 256
-    h[6] = (index / 256) % 256
-    h[7] = index % 256
-    return h
-}
-
-Int be32(Byte[] b, Int off) {
-    return ((b[off] + 256) % 256) * 16777216
-        + ((b[off + 1] + 256) % 256) * 65536
-        + ((b[off + 2] + 256) % 256) * 256
-        + ((b[off + 3] + 256) % 256)
-}
-
-Byte[] concatBytes(Byte[] a, Byte[] b) {
-    var out = new Byte[a.length + b.length]
-    var i = 0
-    while (i < a.length) {
-        out[i] = a[i]
-        i = i + 1
-    }
-    var j = 0
-    while (j < b.length) {
-        out[a.length + j] = b[j]
-        j = j + 1
-    }
-    return out
-}
-
-Byte[] recvRaw(Conn c, Int n) {
-    var acc = new Byte[0]
-    while (acc.length < n) {
-        var chunk = c.receive(n - acc.length)
-        if (chunk.length == 0) {
-            throw "kofshare: channel closed mid-frame"
-        }
-        acc = concatBytes(acc, chunk)
-    }
-    return acc
-}
-
-Int[] bytesToInts(Byte[] src) {
-    var out = new Int[src.length]
-    var i = 0
-    while (i < src.length) {
-        var v = src[i]
-        if (v < 0) {
-            v = v + 256
-        }
-        out[i] = v
-        i = i + 1
-    }
-    return out
-}
-
-String HEX() {
-    return "0123456789abcdef"
-}
-
-String hexOf(Byte[] bs) {
-    var h = HEX()
-    var out = ""
-    var i = 0
-    while (i < bs.length) {
-        var v = bs[i]
-        if (v < 0) {
-            v = v + 256
-        }
-        out = out + h.charAt(v / 16) + h.charAt(v % 16)
-        i = i + 1
-    }
-    return out
-}
-
-// tag = HMAC-SHA256 over a STRING AAD (key | index | len | payload-hex).
-// The crypto face digests Strings; feeding it raw Byte[] is a MEASURED
-// no-go (silent identity digest on Script, VerifyError on JVM — the §563
-// candidate), so the chunk is hex-pinned into the AAD deterministically.
-String tagHex(String key, Int index, Byte[] payload) {
-    return crypto.hmacSha256(key, "" + index + "|" + payload.length + "|" + hexOf(payload))
-}
+// KofShare plain transfer — D-KOFSHARE-100KOF: 100% Kof over the kof.net
+// front (D-KOF-NET). The framing + codec live in protocol.kf; this file is
+// only the plain (unsealed) state machine: the META frame carries the total
+// size, every payload frame is followed by its HMAC tag, and resume is an
+// OFFSET, not a chunk table (the architecture's offset-idempotent rule).
+// The AES-GCM envelope lives in session.kf (SECN005 key exchange).
+// Offset-idempotent: the sender starts at `resumeOffset`, the receiver
+// appends; a restart asks only for what is missing. A tampered chunk (or a
+// chunk delivered out of order) refuses before the bytes reach the file.
 
 // Server side: stream `path` over an accepted conn starting at
 // resumeOffset. META frame carries the total size; every payload frame is
-// followed by its HMAC tag. In-order by construction — resume is an
-// OFFSET, not a chunk table (the architecture's offset-idempotent rule).
+// followed by its HMAC tag. In-order by construction.
 Int serveFile(Conn c, String path, Int resumeOffset, String key) {
     var data = File(path).readBytes()
     var total = data.size
@@ -142,14 +37,7 @@ Int serveFile(Conn c, String path, Int resumeOffset, String key) {
         }
         c.send(headFrame(len, index))
         c.send(frame)
-        var th = tagHex(key, index, frame)
-        var tb = new Byte[tagLen()]
-        var k = 0
-        while (k < tagLen()) {
-            tb[k] = th.charAt(k)
-            k = k + 1
-        }
-        c.send(tb)
+        c.send(tagBytes(key, index, frame))
         pos = pos + len
         sent = sent + len
         index = index + 1
@@ -178,13 +66,8 @@ Transfer fetchFile(Conn c, String dst, Int resumeOffset, String shareId, String 
         }
         var payload = recvRaw(c, len)
         var tag = recvRaw(c, tagLen())
-        var expected = tagHex(key, idx, payload)
-        var j = 0
-        while (j < tagLen()) {
-            if (tag[j] != expected.charAt(j)) {
-                throw "kofshare: chunk tag mismatch"
-            }
-            j = j + 1
+        if (asciiOf(tag) != tagHex(key, idx, payload)) {
+            throw "kofshare: chunk tag mismatch"
         }
         File(dst).appendBytes(bytesToInts(payload))
         got = got + len
@@ -193,6 +76,8 @@ Transfer fetchFile(Conn c, String dst, Int resumeOffset, String shareId, String 
     return Transfer("t" + shareId, shareId, peerId, SessionState.Done, got, total, "")
 }
 
+// Byte-oracle helpers shared by the e2e/CLI checks (byte-sum and first
+// differing index); kept beside the plain transfer they validate.
 Int byteSum(Int[] bs) {
     var s = 0
     var i = 0

@@ -1,0 +1,187 @@
+package kofshare
+
+import kof.security
+import kof.crypto
+
+// KofShare wire protocol — framing + codec (slice 4). Frame =
+// len(4 BE) | index(4 BE) | payload; each payload is followed by a
+// 64-ASCII-hex HMAC-SHA256 tag over (key | index | len | payload-hex).
+// Binary-safe: files move as Int[] (bytes 0..255, the io face), the wire
+// uses Byte[] (the net face), and the wrap/unwrap lives HERE, never in the
+// transport. Pure helpers, no state machine — transfer.kf (plain) and
+// session.kf (sealed) both ride this.
+
+Int metaIndex() {
+    // 0x3FFFFFFF — largest 32-bit sentinel that fits Kof's signed Int
+    return 1073741823
+}
+
+Int chunkSize() {
+    return 65536
+}
+
+Int tagLen() {
+    return 64
+}
+
+Byte[] headFrame(Int totalLen, Int index) {
+    var h = new Byte[8]
+    h[0] = (totalLen / 16777216) % 256
+    h[1] = (totalLen / 65536) % 256
+    h[2] = (totalLen / 256) % 256
+    h[3] = totalLen % 256
+    h[4] = (index / 16777216) % 256
+    h[5] = (index / 65536) % 256
+    h[6] = (index / 256) % 256
+    h[7] = index % 256
+    return h
+}
+
+Int be32(Byte[] b, Int off) {
+    return ((b[off] + 256) % 256) * 16777216
+        + ((b[off + 1] + 256) % 256) * 65536
+        + ((b[off + 2] + 256) % 256) * 256
+        + ((b[off + 3] + 256) % 256)
+}
+
+Byte[] concatBytes(Byte[] a, Byte[] b) {
+    var out = new Byte[a.length + b.length]
+    var i = 0
+    while (i < a.length) {
+        out[i] = a[i]
+        i = i + 1
+    }
+    var j = 0
+    while (j < b.length) {
+        out[a.length + j] = b[j]
+        j = j + 1
+    }
+    return out
+}
+
+Byte[] recvRaw(Conn c, Int n) {
+    var acc = new Byte[0]
+    while (acc.length < n) {
+        var chunk = c.receive(n - acc.length)
+        if (chunk.length == 0) {
+            throw "kofshare: channel closed mid-frame"
+        }
+        acc = concatBytes(acc, chunk)
+    }
+    return acc
+}
+
+Int[] bytesToInts(Byte[] src) {
+    var out = new Int[src.length]
+    var i = 0
+    while (i < src.length) {
+        var v = src[i]
+        if (v < 0) {
+            v = v + 256
+        }
+        out[i] = v
+        i = i + 1
+    }
+    return out
+}
+
+String HEX() {
+    return "0123456789abcdef"
+}
+
+String hexOf(Byte[] bs) {
+    var h = HEX()
+    var out = ""
+    var i = 0
+    while (i < bs.length) {
+        var v = bs[i]
+        if (v < 0) {
+            v = v + 256
+        }
+        out = out + h.charAt(v / 16) + h.charAt(v % 16)
+        i = i + 1
+    }
+    return out
+}
+
+// tag = HMAC-SHA256 over a STRING AAD (key | index | len | payload-hex).
+// The crypto face digests Strings; feeding it raw Byte[] is a MEASURED
+// no-go (silent identity digest on Script, VerifyError on JVM — the §563
+// candidate), so the chunk is hex-pinned into the AAD deterministically.
+String tagHex(String key, Int index, Byte[] payload) {
+    return crypto.hmacSha256(key, "" + index + "|" + payload.length + "|" + hexOf(payload))
+}
+
+Int helloIndex() {
+    return 1073741822
+}
+
+String HEXD() {
+    return "0123456789abcdef"
+}
+
+Byte[] asciiBytes(String s) {
+    var out = new Byte[s.length]
+    var i = 0
+    while (i < s.length) {
+        out[i] = s.charAt(i)
+        i = i + 1
+    }
+    return out
+}
+
+String asciiOf(Byte[] bs) {
+    var out = ""
+    var i = 0
+    while (i < bs.length) {
+        var v = bs[i]
+        if (v < 0) {
+            v = v + 256
+        }
+        out = out + (v as Char)
+        i = i + 1
+    }
+    return out
+}
+
+// info strings ("enc-c2s"...) become hex so HKDF sees a pure-hex face
+String hexAscii(String s) {
+    var out = ""
+    var i = 0
+    while (i < s.length) {
+        var v = s.charAt(i)
+        if (v < 0) {
+            v = v + 256
+        }
+        out = out + HEXD().charAt(v / 16) + HEXD().charAt(v % 16)
+        i = i + 1
+    }
+    return out
+}
+
+Int hexVal(Int c) {
+    if (c >= '0' & c <= '9') {
+        return c - '0'
+    }
+    return 10 + (c - 'a')
+}
+
+Byte[] bytesFromHex(String h) {
+    var out = new Byte[h.length / 2]
+    var i = 0
+    while (i < out.length) {
+        out[i] = hexVal(h.charAt(i * 2)) * 16 + hexVal(h.charAt(i * 2 + 1))
+        i = i + 1
+    }
+    return out
+}
+
+Byte[] sliceBytes(Byte[] src, Int from, Int len) {
+    var out = new Byte[len]
+    var i = 0
+    while (i < len) {
+        out[i] = src[from + i]
+        i = i + 1
+    }
+    return out
+}

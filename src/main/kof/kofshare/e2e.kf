@@ -1,8 +1,7 @@
 package kofshare
 
 import kofshare.transfer
-import kofshare.handshake
-import kofshare.domain
+import kofshare.session
 import kofshare.domain
 import kof.keyExchange
 import kof.secrets

@@ -10,7 +10,7 @@
 
 READY (in-tree at base, green re-measured with the tip jar):
 * `transfer.kf` — framing `len|index|payload`, offset-idempotent resume, per-chunk HMAC-SHA256 over hex AAD.
-* `handshake.kf` — ephemeral X25519, HELLO (index `1073741822`, 64-hex pub + server salt), HKDF-SHA256 directional keys, encrypt-then-MAC over the cipher.
+* `protocol.kf` — framing + codec (`headFrame`/`be32`/`recvRaw`/`hexOf`/`tagHex` + ASCII/hex codec); `session.kf` — ephemeral X25519, HELLO (index `1073741822`, 64-hex pub + server salt), HKDF-SHA256 directional keys, encrypt-then-MAC over the cipher (split out of `handshake.kf` 03/10).
 * `e2e.kf` — plain leg (resume@100000) + secure leg (resume@123456), 200000 B, both targets.
 * `probe/tamper.kf` — legacy tamper + the 5 envelope assertions.
 * `domain.kf` — records + JSON round-trip.
@@ -18,7 +18,7 @@ READY (in-tree at base, green re-measured with the tip jar):
 MISSING (the whole control plane, CLI, module split, relay, packaging):
 1. `control/` — device registry + offers over HTTP (`architecture.md` §4). No code exists.
 2. `cli.kf` — `server` / `offer` / `fetch` with `--check` / `--dry` goldens (§6).
-3. `session.kf` / `protocol.kf` — the state machine is inline in `transfer.kf`/`handshake.kf`; one-responsibility split (§10).
+3. ~~`session.kf` / `protocol.kf` — the state machine is inline in `transfer.kf`/`handshake.kf`; one-responsibility split (§10).~~ **DONE 03/10** (see Slice 4 LANDED).
 4. Relay fallback — direct LAN works in the e2e; relay-via-control (ciphertext only, §7 MVP position) has no handler.
 5. Packaging — no `kof.toml`, no product tree, no run script.
 6. Device identity/trust — Ed25519 signing is NOT a Kof face (interop-over-JDK guidance only) → **rule-6, out of v1**, recorded as an honest limitation (passive-MITM is dead; active MITM of the key exchange is NOT refused — the envelope v1 position, stated plainly).
@@ -49,6 +49,8 @@ Registry model: devices (`id → {name, addresses, lastSeen}`), offers (`id → 
 
 **Slice 4 — `session.kf`/`protocol.kf` extraction (no behavior change).**
 Move the envelope state machine (HELLO/keys/frames) out of `transfer.kf`/`handshake.kf` into `protocol.kf` (framing + codec) and `session.kf` (handshake + keys + sealed send/receive), per §10 one-responsibility; `e2e.kf`/`probe/tamper.kf` stay the SAME goldens byte-for-byte — that is the proof of the refactor. DoD: all existing goldens green on both targets + refactor diff contains zero new semantic faces.
+
+**LANDED 03/10 (`protocol.kf` + `session.kf`; `handshake.kf` deleted).** `protocol.kf` now owns the pure wire helpers (`metaIndex`/`chunkSize`/`tagLen`, `headFrame`/`be32`/`concatBytes`/`recvRaw`, `hexOf`/`tagHex`, `helloIndex` + the ASCII/hex codec), and `session.kf` owns the sealed state machine (`helloFrame`/`helloBody`/`sessionKeys`/`wrapChunk`/`unwrapChunk`/`readHello`/`serveFileSecure`/`fetchHandshake`/`serveLoopEncrypted`/`fetchFileSecure`). `transfer.kf` is now only the plain state machine (`serveFile`/`fetchFile`) plus the byte-oracle helpers. Import edges updated (`e2e.kf`/`cli.kf` → `session`, `probe/tamper.kf` → `protocol`+`session`). **Proof (byte-identical to the pre-refactor baseline):** `e2e.kf` JVM **and** Script → `SEC-E2E-OK` + `E2E-OK` with the same `len=200000/200000 sum=25499232/25499232 mismatch=-1 done=true offset=200000/200000`; `probe/tamper.kf` JVM → `TAMPER-OK` (all envelope refusals true); `cli --check` JVM **and** Script → `registry=true plain=true secure=true` + `CHECK-OK`. No new semantic face; the only code-shape change is the tag compare now `asciiOf(tag) != tagHex(...)` (equivalent to the old per-byte loop, proven by the tamper golden).
 
 **Slice 5 — relay fallback (LAN-direct first, relay ciphertext-only).**
 `fetch` tries `connect(deviceAddr)`; on refusal falls back to the control host relay: opaque chunk frames forwarded byte-for-byte between the two peers' TCP connections (control never sees plaintext — the envelope already encrypts the transport). Proof: `RelayE2ETest` — two peers + relay, all three sockets on loopback with distinct ports, golden equal to the direct path output; tamper-at-relay refused (relay flipping a byte = envelope tag death, reuse `probe/tamper.kf` assertions on the relayed leg). DoD: honest statement that traversal ≠ hole-punching (STUN/ICE = post-MVP, architecture §7).

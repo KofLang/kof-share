@@ -1,9 +1,11 @@
 # kof-share
 ## Transfer core (sliced 02/10)
 
-`src/main/kof/kofshare/transfer.kf` — 100% Kof over `kof.net` (D-KOF-NET):
-frame `len(4 BE) | index(4 BE) | payload`, offset-idempotent resume
-(`serveFile` from `resumeOffset`, `fetchFile` appends the `.part`).
+`src/main/kof/kofshare/protocol.kf` — wire framing + codec:
+frame `len(4 BE) | index(4 BE) | payload`, each payload followed by a
+64-hex HMAC-SHA256 tag. `src/main/kof/kofshare/transfer.kf` — the plain
+(unsealed) state machine (`serveFile`/`fetchFile`), offset-idempotent
+resume (sender starts at `resumeOffset`, receiver appends the `.part`).
 
 ## CLI entry (landed 03/10)
 
@@ -25,9 +27,9 @@ X25519/HKDF envelope leg (resume@123456), real `kof.net` loopback. The
 entry lives in its own subpackage because the module enforces ONE `main()`
 per package (`e2e.kf` already owns the `kofshare` one).
 
-## Session envelope (landed 02/10)
+## Session envelope (landed 02/10; split 03/10)
 
-`src/main/kof/kofshare/handshake.kf` — over the now-real `keyExchange`
+`src/main/kof/kofshare/session.kf` — over the now-real `keyExchange`
 face (D-KOF-X25519, Kof4j `02/10`): ephemeral X25519 each side, HELLO
 frame (index `1073741822`) carries the 64-hex public value + the server's
 random salt (private scalars never leave `Secret` — R8), HKDF-SHA256
