@@ -41,7 +41,7 @@ $J ... run --target jvm src/main/kof/kofshare/cli/cli.kf fetch <host> <porta> <d
 5. **Destinatário abre o link no browser (§1, §25)** — exige cliente JS: `kof.net` no JS recusado no compile (`NETN001`) e `keyExchange` recusado (`SECN012`). Hoje o destinatário usa CLI. → decisão D5.
 6. **Pastas (§18)** — só arquivos; diretório como coleção lógica de recursos não implementado. → decisão D6.
 7. ~~**Persistência do registro (§17, crash-doesn't-forget)**~~ — **FEITA 03/10 (A1):** `PERSIST-OK` 9/9 JVM+Script; servidor salva após cada mutação e recarrega no boot (sonda de restart medida: 2 devices voltam do disco). Falta só a perna `persist=true` no `--check`.
-8. **Negociação de resume (§10)** — offset coordenado fora-de-faixa; sem verificação servidor↔cliente. → fatia A3.
+8. **Negociação de resume (§10)** — **FEITA 03/10 (A3):** o receptor anuncia o tamanho do `.part` num HELLO head (`helloIndex`) antes de qualquer payload; o SERVIDOR verifica contra o tamanho real e serve daquele offset — offset inválido recusa **por nome** (`RESUME-ERR: server file shorter than requested offset` / `RESUME-ERR: negative offset`, head `resumeErrIndex`, nada corrompe). Vale no plain e no envelope selado. `OfferInfo` continua SEM campo de sessão (nota aposentada: a coordenação agora É in-band). Golden `resumecheck/checkresume.kf` → `RESUMECHECK-OK` (mid 2000/5000, done 5000/5000, recusas plain+selado, `.part` intacto; JVM).
 
 ## Próximo passo técnico
 

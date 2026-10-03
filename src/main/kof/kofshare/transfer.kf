@@ -20,10 +20,26 @@ import kof.security
 Int serveFile(Conn c, String path, Int resumeOffset, String key) {
     var data = File(path).readBytes()
     var total = data.size
+    var first = recvRaw(c, 8)
+    var off = resumeOffset
+    if (first.length == 8 && be32(first, 4) == helloIndex()) {
+        off = be32(first, 0)
+        var v = resumeVerify(off, total)
+        if (v != "OK") {
+            c.send(headFrame(total, resumeErrIndex()))
+            return 0 - 3
+        }
+    } else {
+        var vf = resumeVerify(off, total)
+        if (vf != "OK") {
+            c.send(headFrame(total, resumeErrIndex()))
+            return 0 - 3
+        }
+    }
     c.send(headFrame(total, metaIndex()))
     var sent = 0
     var index = 0
-    var pos = resumeOffset
+    var pos = off
     while (pos < total) {
         var len = total - pos
         if (len > chunkSize()) {
@@ -50,11 +66,18 @@ Int serveFile(Conn c, String path, Int resumeOffset, String key) {
 // verified against the digest recomputed from the chunk BEFORE anything
 // reaches the file; mismatch refuses by name.
 Transfer fetchFile(Conn c, String dst, Int resumeOffset, String shareId, String peerId, String key) {
+    c.send(headFrame(resumeOffset, helloIndex()))
     var meta = recvRaw(c, 8)
+    if (be32(meta, 4) == resumeErrIndex()) {
+        throw "kofshare: RESUME-ERR: server file shorter than requested offset"
+    }
     if (be32(meta, 4) != metaIndex()) {
         throw "kofshare: first frame must be META"
     }
     var total = be32(meta, 0)
+    if (resumeOffset > total) {
+        throw "kofshare: RESUME-ERR: local part larger than remote file"
+    }
     var got = resumeOffset
     var index = 0
     while (got < total) {

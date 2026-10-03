@@ -11,7 +11,7 @@
 * `crypto` today: `sha256`/`sha256Bytes`, HMAC, `keyExchange` (X25519, D-KOF-X25519). **`grep -rli ed25519` across `kof-compiler/src/main/java` = ZERO** — there is no signing face at all (B1 is genuinely missing, not hidden).
 * `InterpretedCallable` exposes only `invoke()` and `invoke(String×5)` (HTTP routes). The runtime also reflects `invoke(SseConnection)` (SSE) and WS message handlers — the Script bridge for those is NOT done (A2; §574's fix scope note says the same).
 * Persistence faces exist and are measured: `File.readText()`/`File.writeText(s)` instance forms (D-FILE-STATIC keeps static arms unwired). `json.encode(record)`/`json.decode<T>` work on packaged records (§573 fixed; `--check` registry leg uses them).
-* The CLI has no mid-transfer resume NEGOTIATION: `fetch ... --resume` continues from the local `.part` size and the peer must `serveFile` from the same offset; `OfferInfo` has no `resumeOffsetHint` field (measured: absent at tip).
+* ~~The CLI has no mid-transfer resume NEGOTIATION~~ — RESOLVED by A3 03/10: the `.part` size now crosses in-band as a HELLO head and the server verifies it (`RESUME-ERR` refusals); `OfferInfo` intentionally keeps no session field.
 
 ## 1. Track A — decision-free (Kof faces already exist)
 
@@ -21,7 +21,7 @@
 **Slice A2 — Script SSE/WS bridge (§574 residual). **LANDED 03/10** (Kof4j `ScriptSseWsE2ETest` 1/1; product gains target parity — interpreted handlers now receive SSE connections; no product code required).
 Kof4j-side (compiler lane): `InterpretedCallable` gains the handler shapes the runtime reflects for SSE (`invoke(SseConnection)`) and WS messages, delegating to `invokeLambda` exactly like the HTTP arms; interpreted handlers receive the connection object the same way compiled ones do. Proof: RED-first sibling of `ScriptWebRouteE2ETest` (SSE send-through + WS echo over loopback under `--target script`). DoD: §574's "SSE/WS not covered" scope note retired; no KofShare code required (the product gains the capability by target parity). **Boundary:** if WS handshake under interpretation hits a deeper interpreter gap, record the refusal by name (R6) instead of forcing — the HTTP/SSE split is one committable unit.
 
-**Slice A3 — honest resume negotiation.**
+**Slice A3 — honest resume negotiation.** LANDED 03/10 (in-band HELLO head `helloIndex` announces the receiver's .part size; server-side `resumeVerify` checks it against the real file size; refusal travels as `resumeErrIndex` head and the client throws the name; plain + sealed; `resumecheck/checkresume.kf` → `RESUMECHECK-OK`; the out-of-band divergence note is retired — `OfferInfo` stays session-free).
 Server (`serveFile` path) already answers a client-chosen offset; make it explicit: `fetch --resume` sends its local `.part` size in the HELLO/meta exchange and the SERVER verifies it (≤ size) and serves from it — a wrong offset refuses by name (`RESUME-ERR: server file shorter than requested offset`) instead of corrupting. `resumeOffsetHint` is NOT added to `OfferInfo` (the offer describes the file, not a session). Proof: golden — 5000 B file, `.part` of 2000 → `offset=5000/5000` + `cmp` clean (already measured, now asserted through the negotiation), plus the refusal case (hint > size). DoD: the plan-v1 "peer must cooperate out-of-band" divergence note is retired.
 
 **Slice A4 — offer expiry + registry hygiene (cheap, pure).**

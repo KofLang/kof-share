@@ -16,6 +16,25 @@ Int metaIndex() {
     return 1073741823
 }
 
+Int resumeErrIndex() {
+    // A3: the server's named refusal when the requested offset does not fit.
+    return 1073741821
+}
+
+// A3 resume negotiation: the receiver announces its .part size with a HELLO
+// head (helloIndex) BEFORE any payload; the server verifies it against the
+// real file size and serves from it — a wrong offset refuses by name
+// (resumeErrIndex head) instead of corrupting.
+String resumeVerify(Int offset, Int total) {
+    if (offset < 0) {
+        return "RESUME-ERR: negative offset"
+    }
+    if (offset > total) {
+        return "RESUME-ERR: server file shorter than requested offset"
+    }
+    return "OK"
+}
+
 Int chunkSize() {
     return 65536
 }

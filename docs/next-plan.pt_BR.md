@@ -11,7 +11,7 @@
 * `crypto` hoje: `sha256`/`sha256Bytes`, HMAC, `keyExchange` (X25519, D-KOF-X25519). **`grep -rli ed25519` em `kof-compiler/src/main/java` = ZERO** — não existe nenhuma face de assinatura (B1 está genuinamente ausente, não escondida).
 * `InterpretedCallable` expõe só `invoke()` e `invoke(String×5)` (rotas HTTP). O runtime também reflete `invoke(SseConnection)` (SSE) e handlers de mensagem WS — a ponte Script desses NÃO está feita (A2; a nota de escopo do §574 diz o mesmo).
 * As faces de persistência existem e são medidas: `File.readText()`/`File.writeText(s)` nas formas de instância (D-FILE-STATIC mantém os braços estáticos desligados). `json.encode(record)`/`json.decode<T>` funcionam em records empacotados (§573 corrigido; a perna de registro do `--check` usa isso).
-* A CLI não tem NEGOCIAÇÃO de resume em voo: `fetch ... --resume` continua a partir do tamanho do `.part` local e o peer precisa `serveFile` do mesmo offset; `OfferInfo` não tem o campo `resumeOffsetHint` (medido: ausente no tip).
+* ~~A CLI não tem NEGOCIAÇÃO de resume em meia transferência~~ — RESOLVIDO por A3 03/10: o tamanho do `.part` agora cruza in-band num head HELLO e o servidor o verifica (recusas `RESUME-ERR`); `OfferInfo` deliberadamente não carrega campo de sessão.
 
 ## 1. Trilha A — sem decisão necessária (faces Kof já existem)
 
@@ -21,7 +21,7 @@
 **Fatia A2 — ponte SSE/WS no Script (residual do §574).**. **POUSADA 03/10** (Kof4j `ScriptSseWsE2ETest` 1/1; o produto ganha paridade de alvo — handlers interpretados recebem conexões SSE; nenhum código do produto é necessário).
 Lado Kof4j (lane compiler): `InterpretedCallable` ganha os formatos de handler que o runtime reflete para SSE (`invoke(SseConnection)`) e mensagens WS, delegando ao `invokeLambda` exatamente como os braços HTTP; handlers interpretados recebem o objeto de conexão do mesmo modo que os compilados. Prova: irmã RED-first do `ScriptWebRouteE2ETest` (SSE send-through + eco WS sobre loopback sob `--target script`). DoD: a nota "SSE/WS não coberto" do §574 é aposentada; nenhum código KofShare é necessário (o produto ganha a capacidade por paridade de alvo). **Fronteira:** se o handshake WS sob interpretação esbarrar num gap mais fundo do interpretador, registrar a recusa por nome (R6) em vez de forçar — a divisão HTTP/SSE é uma unidade commitável.
 
-**Fatia A3 — negociação honesta de resume.**
+**Fatia A3 — negociação honesta de resume.** POUSADA 03/10 (head HELLO `helloIndex` in-band anuncia o tamanho do `.part` do receptor; `resumeVerify` no SERVIDOR confere contra o tamanho real; recusa viaja como head `resumeErrIndex` e o cliente lança o nome; plain + selado; `resumecheck/checkresume.kf` → `RESUMECHECK-OK`; a nota fora-de-faixa foi aposentada — `OfferInfo` segue sem campo de sessão).
 O servidor (caminho `serveFile`) já atende um offset escolhido pelo cliente; tornar explícito: `fetch --resume` envia o tamanho do `.part` local na troca HELLO/meta e o SERVIDOR verifica (≤ tamanho) e serve daquele ponto — um offset errado recusa por nome (`RESUME-ERR: server file shorter than requested offset`) em vez de corromper. `resumeOffsetHint` NÃO entra em `OfferInfo` (a oferta descreve o arquivo, não uma sessão). Prova: golden — arquivo de 5000 B, `.part` de 2000 → `offset=5000/5000` + `cmp` limpo (já medido, agora afirmado pela negociação) + o caso de recusa (hint > size). DoD: a nota de divergência do plano-v1 "peer coopera fora-de-faixa" é aposentada.
 
 **Fatia A4 — expiração de ofertas + higiene do registro (barato, puro).**

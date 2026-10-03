@@ -1,0 +1,198 @@
+package kofshare.resumecheck
+
+import kofshare.transfer
+import kofshare.session
+import kofshare.protocol
+import kof.keyExchange
+
+// A3 golden — honest resume negotiation (plan: retire the "peer must
+// cooperate out-of-band" divergence note). The receiver announces its
+// .part size with a HELLO head; the SERVER verifies it against the real
+// file size. Measured lines, plain AND sealed envelope:
+//   mid:        2000/5000 part → tail crosses, byte-identical result
+//   done:       5000/5000 part → nothing crosses, session still Done
+//   refuse:     6000 > 5000 → RESUME-ERR refused BY NAME both sides
+//               (client throws; server sends resumeErrIndex head, serves 0)
+
+Int portOf() {
+    return 19331
+}
+
+Int securePortOf() {
+    return 19332
+}
+
+Int[] makeSource(Int n) {
+    var a = new Int[n]
+    var i = 0
+    while (i < n) {
+        a[i] = (i * 13 + 5) % 256
+        i = i + 1
+    }
+    return a
+}
+
+Int[] prefix(Int[] src, Int n) {
+    var out = new Int[n]
+    var i = 0
+    while (i < n) {
+        out[i] = src[i]
+        i = i + 1
+    }
+    return out
+}
+
+Bool identical(Int[] a, Int[] b) {
+    if (a.size != b.size) {
+        return false
+    }
+    var i = 0
+    while (i < a.size) {
+        if (a[i] != b[i]) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// One plain serve/fetch round-trip; returns bytes written by the fetch side.
+Int[] plainRun(Int total, Int resume) {
+    var src = "resume-src-" + total + ".bin"
+    var dst = "resume-dst-" + total + "-" + resume + ".part"
+    File(src).writeBytes(makeSource(total))
+    File(dst).writeBytes(prefix(makeSource(total), resume))
+    var l = net.listen(portOf() + total % 10)
+    var worker = spawn {
+        var s = l.accept()
+        serveFile(s, src, resume, "k0")
+        s.close()
+    }
+    var c = net.connect("127.0.0.1", portOf() + total % 10)
+    var t = fetchFile(c, dst, resume, "share-rc", "devA", "k0")
+    c.close()
+    await worker
+    l.close()
+    var out = File(dst).readBytes()
+    File(src).delete()
+    File(dst).delete()
+    return out
+}
+
+// The same through the sealed envelope.
+Int[] secureRun(Int total, Int resume) {
+    var src = "resume-sec-src.bin"
+    var dst = "resume-sec-dst.part"
+    File(src).writeBytes(makeSource(total))
+    File(dst).writeBytes(prefix(makeSource(total), resume))
+    var l = net.listen(securePortOf() + total % 10)
+    var worker = spawn {
+        var sv = l.accept()
+        var privS = keyExchange.privateKey()
+        serveFileSecure(sv, src, resume, privS, "a1b2c3d4e5f60718")
+        sv.close()
+    }
+    var c = net.connect("127.0.0.1", securePortOf() + total % 10)
+    var privC = keyExchange.privateKey()
+    var hs = fetchHandshake(c, privC)
+    var t = fetchFileSecure(c, dst, resume, "share-rc", "devB", hs.get(4), hs.get(5))
+    c.close()
+    await worker
+    l.close()
+    var out = File(dst).readBytes()
+    File(src).delete()
+    File(dst).delete()
+    return out
+}
+
+main() {
+    var ok = true
+    var total = 5000
+    var data = makeSource(total)
+
+    var mid = plainRun(total, 2000)
+    ok = ok && identical(mid, data)
+    println("midPlain=" + identical(mid, data))
+
+    var doneTail = plainRun(total, total)
+    ok = ok && identical(doneTail, data)
+    println("donePlain=" + identical(doneTail, data))
+
+    var midS = secureRun(total, 2000)
+    ok = ok && identical(midS, data)
+    println("midSecure=" + identical(midS, data))
+
+    // refusal, plain: an offset beyond the file must be refused BY NAME on
+    // the client and must not corrupt the local .part
+    var src = "resume-refuse-src.bin"
+    var dst = "resume-refuse-dst.part"
+    File(src).writeBytes(data)
+    File(dst).writeBytes(prefix(data, 2000))
+    var l = net.listen(portOf() + 7)
+    var worker = spawn {
+        var s = l.accept()
+        var served = serveFile(s, src, 6000, "k0")
+        println("serverServed=" + served)
+        s.close()
+    }
+    var refused = ""
+    try {
+        var c = net.connect("127.0.0.1", portOf() + 7)
+        fetchFile(c, dst, 6000, "share-rf", "devA", "k0")
+        c.close()
+    } catch (String e) {
+        refused = e
+    }
+    await worker
+    l.close()
+    var partUntouched = identical(File(dst).readBytes(), prefix(data, 2000))
+    println("refusePlain=" + (refused.indexOf("RESUME-ERR: server file shorter than requested offset") >= 0))
+    println("partUntouched=" + partUntouched)
+    ok = ok && (refused.indexOf("RESUME-ERR: server file shorter than requested offset") >= 0)
+    ok = ok && partUntouched
+    File(src).delete()
+    File(dst).delete()
+
+    // refusal, sealed: the same name after the crypto handshake
+    File(src).writeBytes(data)
+    File(dst).writeBytes(prefix(data, 2000))
+    var l2 = net.listen(securePortOf() + 7)
+    var worker2 = spawn {
+        var sv = l2.accept()
+        var privS = keyExchange.privateKey()
+        var served2 = serveFileSecure(sv, src, 6000, privS, "a1b2c3d4e5f60718")
+        println("secServerServed=" + served2)
+        sv.close()
+    }
+    var refused2 = ""
+    try {
+        var c2 = net.connect("127.0.0.1", securePortOf() + 7)
+        var privC = keyExchange.privateKey()
+        var hs2 = fetchHandshake(c2, privC)
+        fetchFileSecure(c2, dst, 6000, "share-rf", "devB", hs2.get(4), hs2.get(5))
+        c2.close()
+    } catch (String e) {
+        refused2 = e
+    }
+    await worker2
+    l2.close()
+    var partUntouched2 = identical(File(dst).readBytes(), prefix(data, 2000))
+    println("refuseSecure=" + (refused2.indexOf("RESUME-ERR: server file shorter than requested offset") >= 0))
+    println("secPartUntouched=" + partUntouched2)
+    ok = ok && (refused2.indexOf("RESUME-ERR: server file shorter than requested offset") >= 0)
+    ok = ok && partUntouched2
+    File(src).delete()
+    File(dst).delete()
+
+    // pure matrix (both ends' view of the rule)
+    ok = ok && (resumeVerify(2000, 5000) == "OK")
+    ok = ok && (resumeVerify(5000, 5000) == "OK")
+    ok = ok && (resumeVerify(6000, 5000) == "RESUME-ERR: server file shorter than requested offset")
+    ok = ok && (resumeVerify(0 - 1, 5000) == "RESUME-ERR: negative offset")
+
+    if (!ok) {
+        println("RESUMECHECK-FAIL")
+        throw "kofshare: RESUMECHECK-FAIL"
+    }
+    println("RESUMECHECK-OK")
+}

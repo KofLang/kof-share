@@ -9,6 +9,7 @@ import kofshare.control.auth
 import kof.http
 import kof.time
 import kofshare.session
+import kofshare.protocol
 import kofshare.relay
 import kof.json
 import kof.crypto
@@ -218,15 +219,18 @@ Int runCheck() {
     var reg = registryLeg()
     var plain = plainLeg()
     var secure = secureLeg()
+    var persist = persistLeg()
     println("registry=" + reg)
-    println("persist=" + persistLeg())
+    println("persist=" + persist)
     println("plain=" + plain)
     println("secure=" + secure)
     var share = shareLeg()
     println("share=" + share)
     var auth = authLeg()
     println("auth=" + auth)
-    if (reg && plain && secure && share && auth) {
+    var resume = resumeLeg()
+    println("resume=" + resume)
+    if (reg && persist && plain && secure && share && auth && resume) {
         println("CHECK-OK")
         return 0
     }
@@ -312,6 +316,20 @@ String tokenOf(String seed) {
 // `--check` leg 5 — the C3 bearer model (pure): issue/identity/revocation
 // matrix + JWT mint/verify/parse round-trip (jwt over the control secret);
 // corrupt load refuses by name. The wire-level gate is httpcheck's job.
+// `--check` leg 7 — A3 resume negotiation, pure matrix (Script-safe; the
+// wire refusal cases live in `resumecheck/checkresume.kf`, JVM goldens).
+Bool resumeLeg() {
+    var ok = true
+    ok = ok && (resumeVerify(0, 5000) == "OK")
+    ok = ok && (resumeVerify(2000, 5000) == "OK")
+    ok = ok && (resumeVerify(5000, 5000) == "OK")
+    ok = ok && (resumeVerify(6000, 5000) == "RESUME-ERR: server file shorter than requested offset")
+    ok = ok && (resumeVerify(0 - 1, 5000) == "RESUME-ERR: negative offset")
+    ok = ok && (helloIndex() == 1073741822)
+    ok = ok && (resumeErrIndex() == 1073741821)
+    return ok
+}
+
 Bool authLeg() {
     var accounts = new Map<String, Account>()
     var ok = true
