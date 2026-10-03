@@ -1,0 +1,92 @@
+package kofshare.control
+
+import kof.json
+
+// Control-plane registry (implementation-plan.md §2 Fatia 1). PURE domain:
+// the maps are passed in and mutated in place (no IO, no time, no randomness
+// — ids and addresses are arguments, which is what makes the golden stable).
+// HTTP handlers (fatia 2) wrap exactly these verbs; CLI (fatia 3) drives them.
+
+record DeviceInfo(String id, String name, String address)
+record OfferInfo(String id, String deviceId, String path, Int size, String sha256Hex)
+
+String controlRegister(Map<String, DeviceInfo> devices, DeviceInfo d) {
+    if (d.id.length() == 0) {
+        return "REG001: empty device id"
+    }
+    if (d.address.length() == 0) {
+        return "REG002: empty device address"
+    }
+    devices.put(d.id, d)
+    return "OK"
+}
+
+DeviceInfo? controlResolve(Map<String, DeviceInfo> devices, String id) {
+    return devices.get(id)
+}
+
+String controlDevicesJson(Map<String, DeviceInfo> devices) {
+    var out = new List<DeviceInfo>()
+    var ids = devices.keys()
+    ids.sort()  // golden-stable: map order is not a contract
+    for (var id in ids) {
+        var d: DeviceInfo? = devices.get(id)
+        if (d != null) {
+            out.add(d)
+        }
+    }
+    return json.encode(out)
+}
+
+String controlOffer(Map<String, OfferInfo> offers, Map<String, DeviceInfo> devices, OfferInfo o) {
+    if (o.id.length() == 0) {
+        return "REG003: empty offer id"
+    }
+    var dev: DeviceInfo? = devices.get(o.deviceId)
+    if (dev == null) {
+        return "REG004: unknown device " + o.deviceId
+    }
+    if (o.path.length() == 0) {
+        return "REG005: empty offer path"
+    }
+    if (o.size <= 0) {
+        return "REG006: non-positive offer size"
+    }
+    if (o.sha256Hex.length() != 64) {
+        return "REG007: digest must be 64 hex chars"
+    }
+    offers.put(o.id, o)
+    return "OK"
+}
+
+OfferInfo? controlResolveOffer(Map<String, OfferInfo> offers, String id) {
+    return offers.get(id)
+}
+
+String controlOffersJson(Map<String, OfferInfo> offers, String deviceId) {
+    var out = new List<OfferInfo>()
+    var ids = offers.keys()
+    ids.sort()  // golden-stable: map order is not a contract
+    for (var id in ids) {
+        var o: OfferInfo? = offers.get(id)
+        if (o != null && (deviceId.length() == 0 || o.deviceId == deviceId)) {
+            out.add(o)
+        }
+    }
+    return json.encode(out)
+}
+
+String controlRevoke(Map<String, OfferInfo> offers, String id) {
+    var o: OfferInfo? = offers.get(id)
+    if (o == null) {
+        return "REG008: unknown offer " + id
+    }
+    offers.remove(id)
+    return "OK"
+}
+
+// Malformed JSON must die by NAME (R6), never silently half-decode.
+String controlDecodeDevice(String body) {
+    var d = json.decode<DeviceInfo>(body)
+    return "decoded=" + d.id()
+}

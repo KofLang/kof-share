@@ -1,0 +1,87 @@
+package kofshare.control
+
+import kofshare.control.registry
+import kof.crypto
+
+// Fatia 1 runner (implementation-plan.md §2): golden transcript over the PURE
+// registry — same source on --target jvm and --target script. Every boolean
+// line must read true; the REG lines are the named refusals (R6).
+main() {
+    var devices = new Map<String, DeviceInfo>()
+    var offers = new Map<String, OfferInfo>()
+
+    println("reg1=" + (controlRegister(devices, DeviceInfo("d1", "alpha", "192.168.1.10:8021")) == "OK"))
+    println("reg2=" + (controlRegister(devices, DeviceInfo("d2", "beta", "192.168.1.11:8021")) == "OK"))
+    println("emptyId=" + (controlRegister(devices, DeviceInfo("", "x", "1.2.3.4:1")) == "REG001: empty device id"))
+    println("emptyAddr=" + (controlRegister(devices, DeviceInfo("d3", "x", "")) == "REG002: empty device address"))
+
+    var r1 = controlResolve(devices, "d1")
+    println("resolveName=" + (r1 != null && r1.name == "alpha"))
+    println("resolveGhost=" + (controlResolve(devices, "zz") == null))
+
+    var dj = controlDevicesJson(devices)
+    println("devicesCount=" + (jsonArrayLen(dj) == 2))
+    println("devicesSorted=" + (dj.indexOf("d1") >= 0 && dj.indexOf("d1") < dj.indexOf("d2")))
+
+    var ghostOffer = controlOffer(offers, devices, OfferInfo("o0", "ghost", "/p", 10, registryDigest("/p")))
+    println("offerUnknownDevice=" + (ghostOffer == "REG004: unknown device ghost"))
+    println("offerEmptyId=" + (controlOffer(offers, devices, OfferInfo("", "d1", "/p", 10, registryDigest("/p"))) == "REG003: empty offer id"))
+    println("offerEmptyPath=" + (controlOffer(offers, devices, OfferInfo("oX", "d1", "", 10, registryDigest("/p"))) == "REG005: empty offer path"))
+    println("offerSize=" + (controlOffer(offers, devices, OfferInfo("oX", "d1", "/p", 0, registryDigest("/p"))) == "REG006: non-positive offer size"))
+    println("offerDigest=" + (controlOffer(offers, devices, OfferInfo("oX", "d1", "/p", 10, "deadbeef")) == "REG007: digest must be 64 hex chars"))
+
+    println("offer1=" + (controlOffer(offers, devices, OfferInfo("o1", "d1", "/srv/a.bin", 2048, registryDigest("/srv/a.bin"))) == "OK"))
+    println("offer2=" + (controlOffer(offers, devices, OfferInfo("o2", "d2", "/srv/b.bin", 4096, registryDigest("/srv/b.bin"))) == "OK"))
+
+    var oj = controlOffersJson(offers, "")
+    println("offersAll=" + (jsonArrayLen(oj) == 2))
+    var od2 = controlOffersJson(offers, "d2")
+    println("offersFilter=" + (jsonArrayLen(od2) == 1 && od2.indexOf("o2") >= 0 && od2.indexOf("o1") < 0))
+
+    var back = controlResolveOffer(offers, "o1")
+    println("resolveOffer=" + (back != null && back.size == 2048 && back.deviceId == "d1"))
+
+    println("revokeGhost=" + (controlRevoke(offers, "nope") == "REG008: unknown offer nope"))
+    println("revoke1=" + (controlRevoke(offers, "o1") == "OK"))
+    println("gone=" + (controlResolveOffer(offers, "o1") == null))
+    println("offersAfterRevoke=" + (jsonArrayLen(controlOffersJson(offers, "")) == 1))
+
+    var threw = false
+    try {
+        var d = controlDecodeDevice("{not json at all")
+        println("phantom=" + d)
+    } catch (String e) {
+        threw = true
+    }
+    println("decodeMalformedThrew=" + threw)
+
+    println("REGCHECK-OK")
+}
+
+// sha256 gives the 64-hex digest shape the contract demands.
+String registryDigest(String path) {
+    return crypto.sha256(path)
+}
+
+// Minimal, honest "is this a JSON array of N records?" probe: count top-level
+// objects by brace depth (the control plane never parses hostile JSON here —
+// the decode path is exercised by controlDecodeDevice).
+Int jsonArrayLen(String body) {
+    var depth = 0
+    var count = 0
+    var i = 0
+    while (i < body.length()) {
+        var c = body.substring(i, i + 1)
+        if (c == "{") {
+            depth = depth + 1
+            if (depth == 1) {
+                count = count + 1
+            }
+        }
+        if (c == "}") {
+            depth = depth - 1
+        }
+        i = i + 1
+    }
+    return count
+}
