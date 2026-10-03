@@ -1,0 +1,66 @@
+package kofshare.control
+
+import kofshare.control.registry
+import kof.json
+
+// Control-plane HTTP surface (architecture.md §4, implementation-plan slice 2).
+// The app owns NOTHING: the registries are passed in, so the pure registry
+// slice 1 stays the domain authority and this file is transport sugar.
+// listen() blocks — callers run it inside `spawn { ... }`.
+
+void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferInfo> offers) {
+    var app = web.app()
+
+    app.get("/devices") {
+        return controlDevicesJson(devices)
+    }
+
+    app.get("/devices/:id") {
+        var d: DeviceInfo? = controlResolve(devices, param("id"))
+        if (d == null) {
+            return "DEVICE-NOT-FOUND: " + param("id")
+        }
+        return json.encode(d)
+    }
+
+    app.post("/devices") {
+        var d = json.decode<DeviceInfo>(body())
+        var r = controlRegister(devices, d)
+        if (r != "OK") {
+            return r
+        }
+        return "REGISTERED: " + d.id()
+    }
+
+    app.get("/offers") {
+        var dv: String? = query("device")
+        var filter = ""
+        if (dv != null) {
+            filter = dv
+        }
+        return controlOffersJson(offers, filter)
+    }
+
+    app.post("/offers") {
+        var o = json.decode<OfferInfo>(body())
+        var r = controlOffer(offers, devices, o)
+        if (r != "OK") {
+            return r
+        }
+        return "OFFERED: " + o.id()
+    }
+
+    app.delete("/offers/:id") {
+        var r = controlRevoke(offers, param("id"))
+        if (r != "OK") {
+            return r
+        }
+        return "REVOKED: " + param("id")
+    }
+
+    app.get("/health") {
+        return "OK"
+    }
+
+    app.listen(port)
+}

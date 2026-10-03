@@ -1,0 +1,97 @@
+package kofshare.httpcheck
+
+import kofshare.control.app
+import kofshare.control.registry
+import kofshare.control.registry
+import kof.http
+import kof.json
+import kof.crypto
+
+// Slice 2 runner (implementation-plan §2): the control-plane HTTP surface over
+// the pure registry, REAL sockets on loopback. Target JVM (web listen blocks;
+// the server rides spawn). The Script leg was MEASURED 02/10: `web` handlers
+// answer HTTP 500 under the interpreter (§574 OPEN) — this golden therefore
+// runs on JVM only; the pure registry (check.kf) keeps covering JVM+Script.
+main() {
+    var devices = new Map<String, DeviceInfo>()
+    var offers = new Map<String, OfferInfo>()
+    var base = "http://127.0.0.1:18322"
+
+    spawn {
+        controlServe(18322, devices, offers)
+    }
+
+    var up = ""
+    var i = 0
+    while (i < 100) {
+        try {
+            up = http.get(base + "/devices")
+            i = 100
+        } catch (String e) {
+            i = i + 1
+        }
+    }
+    println("serverUp=" + (up == "[]"))
+    println("health=" + (http.get(base + "/health") == "OK"))
+
+    var regBody = json.encode(DeviceInfo("d1", "alpha", "192.168.1.10:8021"))
+    var regRes = http.post(base + "/devices", regBody)
+    println("register=" + (regRes == "REGISTERED: d1"))
+
+    var badReg = http.post(base + "/devices", json.encode(DeviceInfo("", "x", "a:1")))
+    println("registerRefused=" + (badReg == "REG001: empty device id"))
+
+    var one = http.get(base + "/devices/d1")
+    println("resolveOne=" + (one.indexOf("\"alpha\"") >= 0 && one.indexOf("\"d1\"") >= 0))
+    var ghost = http.get(base + "/devices/zz")
+    println("resolveGhost=" + (ghost == "DEVICE-NOT-FOUND: zz"))
+
+    http.post(base + "/devices", json.encode(DeviceInfo("d2", "beta", "192.168.1.11:8021")))
+    var dlist = http.get(base + "/devices")
+    println("devicesBoth=" + (countObjects(dlist) == 2))
+
+    var dig = cryptoDigest("/srv/a.bin")
+    var off = http.post(base + "/offers", json.encode(OfferInfo("o1", "d1", "/srv/a.bin", 2048, dig)))
+    println("offer=" + (off == "OFFERED: o1"))
+    var offBad = http.post(base + "/offers", json.encode(OfferInfo("oX", "ghost", "/p", 5, dig)))
+    println("offerUnknownDevice=" + (offBad == "REG004: unknown device ghost"))
+
+    var allOffers = http.get(base + "/offers")
+    println("offersAll=" + (countObjects(allOffers) == 1))
+    var q = http.get(base + "/offers?device=d2")
+    println("offersQueryEmpty=" + (q == "[]"))
+
+    var rev = http.delete(base + "/offers/o1")
+    println("revoke=" + (rev == "REVOKED: o1"))
+    var revGhost = http.delete(base + "/offers/o1")
+    println("revokeGhost=" + (revGhost == "REG008: unknown offer o1"))
+
+    var after = http.get(base + "/offers")
+    println("offersGone=" + (after == "[]"))
+
+    println("HTTPCHECK-OK")
+}
+
+String cryptoDigest(String path) {
+    return crypto.sha256(path)
+}
+
+Int countObjects(String body) {
+    var depth = 0
+    var count = 0
+    var i = 0
+    while (i < body.length()) {
+        var c = body.substring(i, i + 1)
+        if (c == "{") {
+            depth = depth + 1
+            if (depth == 1) {
+                count = count + 1
+            }
+        }
+        if (c == "}") {
+            depth = depth - 1
+        }
+        i = i + 1
+    }
+    return count
+}
