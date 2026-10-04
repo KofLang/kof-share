@@ -1,0 +1,193 @@
+package kofshare.servecheck
+
+import kofshare.transfer
+import kofshare.session
+import kofshare.domain
+import kof.process
+import kof.http
+import kof.json
+import kof.keyExchange
+import kof.net
+import kof.time
+
+// A5 golden — device-side `cli serve` between TWO REAL PROCESSES (JVM only;
+// the relay/restart goldens cover their own fronts). Proof lines:
+//   plainResume:  fetch --resume 1000 against a 3000-byte file served by a
+//                 detached process — the A3 HELLO offset negotiation crossing
+//                 the process boundary, tail-only bytes, result identical
+//   secureResume: same through the X25519 sealed envelope (handshake first)
+//   refuseOversize: offset beyond EOF refused BY NAME on the client, the
+//                 server exits rc=2 (SERVE-REFUSED), the .part untouched
+// The serve child is detached with `sh -c ... &` and synchronized through
+// its SERVE-LISTENING line before any connect.
+
+Int portOf() {
+    return 19341
+}
+
+String jar() {
+    // absolute: the detached child inherits an unknown cwd — pin the path
+    return "/home/mel/Kof4j/kof-cli/target/kof-cli-0.5.0-beta.jar"
+}
+
+String cliPath() {
+    return "src/main/kof/kofshare/cli/cli.kf"
+}
+
+Int[] makeData(Int n) {
+    var a = new Int[n]
+    var i = 0
+    while (i < n) {
+        a[i] = (i * 11 + 7) % 256
+        i = i + 1
+    }
+    return a
+}
+
+Int[] prefix(Int[] src, Int n) {
+    var out = new Int[n]
+    var i = 0
+    while (i < n) {
+        out[i] = src[i]
+        i = i + 1
+    }
+    return out
+}
+
+Bool identical(Int[] a, Int[] b) {
+    if (a.size != b.size) {
+        return false
+    }
+    var i = 0
+    while (i < a.size) {
+        if (a[i] != b[i]) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// Detach `cli serve ...` writing its log to `log`; wait for SERVE-LISTENING.
+Bool spawnServe(String log, List<String> serveArgs) {
+    // the child inherits whatever cwd the runner set — pin ours too
+    var cmd = "cd /home/mel/Documents/kof-share && java -jar " + jar()
+        + " run " + cliPath() + " serve"
+    for (var a in serveArgs) {
+        cmd = cmd + " " + a
+    }
+    cmd = cmd + " > " + log + " 2>&1 &"
+    process.spawn("sh", "-c", cmd)
+    var t0 = 0
+    while (t0 < 40) {
+        var f = File(log)
+        if (f.exists()) {
+            var txt = f.readText()
+            if (txt != null && txt.indexOf("SERVE-LISTENING") >= 0) {
+                return true
+            }
+        }
+        time.sleep(250)
+        t0 = t0 + 1
+    }
+    return false
+}
+
+main() {
+    var ok = true
+    var total = 3000
+    var data = makeData(total)
+
+    // ── plain + resume across processes ──
+    var src = "serve-src.bin"
+    File(src).writeBytes(data)
+    var dst = "serve-plain.part"
+    File(dst).writeBytes(prefix(data, 1000))
+    var logA = "serve-plain.log"
+    ok = ok && spawnServe(logA, listOf(src, "" + portOf(), "--key", "k0"))
+    var cA = net.connect("127.0.0.1", portOf())
+    var tA = fetchFile(cA, dst, 1000, "share-serve", "devS", "k0")
+    cA.close()
+    var outA = File(dst).readBytes()
+    var plainResume = identical(outA, data) && tA.offset == total
+    println("plainResume=" + plainResume)
+    ok = ok && plainResume
+
+    // ── secure + resume across processes ──
+    var dst2 = "serve-sec.part"
+    File(dst2).writeBytes(prefix(data, 1200))
+    var logB = "serve-sec.log"
+    ok = ok && spawnServe(logB, listOf(src, "" + (portOf() + 1), "--secure", "--salt", "0a0b0c0d0e0f1011"))
+    var cB = net.connect("127.0.0.1", portOf() + 1)
+    var privC = keyExchange.privateKey()
+    var hs = fetchHandshake(cB, privC)
+    var tB = fetchFileSecure(cB, dst2, 1200, "share-serve", "devS", hs.get(4), hs.get(5))
+    cB.close()
+    var outB = File(dst2).readBytes()
+    var secureResume = identical(outB, data) && tB.offset == total
+    println("secureResume=" + secureResume)
+    ok = ok && secureResume
+
+    // ── oversize resume refused BY NAME across processes ──
+    var dst3 = "serve-refuse.part"
+    File(dst3).writeBytes(prefix(data, 1000))
+    var logC = "serve-refuse.log"
+    ok = ok && spawnServe(logC, listOf(src, "" + (portOf() + 2), "--key", "k0"))
+    var refused = ""
+    try {
+        var cC = net.connect("127.0.0.1", portOf() + 2)
+        fetchFile(cC, dst3, 60000, "share-serve", "devS", "k0")
+        cC.close()
+    } catch (String e) {
+        refused = e
+    }
+    var refuseOversize = refused.indexOf("RESUME-ERR: server file shorter than requested offset") >= 0
+    println("refuseOversize=" + refuseOversize)
+    ok = ok && refuseOversize
+    var partKept = identical(File(dst3).readBytes(), prefix(data, 1000))
+    println("refusePartUntouched=" + partKept)
+    ok = ok && partKept
+    // the refused server saw the rejection too (rc-2 path), by name, in its log
+    var t1 = 0
+    var serverNamed = false
+    while (t1 < 40 && !serverNamed) {
+        var f = File(logC)
+        if (f.exists()) {
+            var txt = f.readText()
+            if (txt != null && txt.indexOf("SERVE-REFUSED") >= 0) {
+                serverNamed = true
+            }
+        }
+        time.sleep(250)
+        t1 = t1 + 1
+    }
+    println("serverRefusedNamed=" + serverNamed)
+    ok = ok && serverNamed
+
+    // served counts in the plain/secure logs close the loop
+    var t2 = 0
+    var servedPlain = false
+    while (t2 < 40 && !servedPlain) {
+        var f = File(logA)
+        if (f.exists()) {
+            var txt = f.readText()
+            if (txt != null && txt.indexOf("SERVED 2000") >= 0) {
+                servedPlain = true
+            }
+        }
+        time.sleep(250)
+        t2 = t2 + 1
+    }
+    println("servedPlainTail=2000=" + servedPlain)
+    ok = ok && servedPlain
+
+    File(src).delete()
+    File(dst).delete()
+    File(dst2).delete()
+    File(dst3).delete()
+    if (!ok) {
+        println("SERVECHECK-FAIL")
+        throw "kofshare: SERVECHECK-FAIL"
+    }
+    println("SERVECHECK-OK")
+}

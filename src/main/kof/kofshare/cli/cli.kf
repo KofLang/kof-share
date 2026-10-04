@@ -376,6 +376,7 @@ Int runDry() {
     println("  server [port] [--key <hex>]  -> control plane web.app() on port " + defaultControlPort())
     println("  offer <file>                 -> OfferInfo JSON (sha256Bytes over the file)")
     println("  fetch <host> <port> <dest> [--resume <n>] [--key <hex>] [--secure] [--relay <rhost> <rport>] -> kof.net pull")
+    println("  serve <path> <port> [--resume <n>] [--key <hex>] [--secure] [--salt <hex>] [--once] -> kof.net device-side serving (one session)")
     println("  relay <port> <peerHost> <peerPort> [--tamper] -> ciphertext-only relay")
     println("  share <host> <port> <offerId> [--once] [--read-only] [--ttl <ms>] -> mint grant")
     println("  revoke <host> <port> <shareId> [reason] | shares <host> <port>")
@@ -392,6 +393,82 @@ Int runDry() {
 // X25519/HKDF envelope; `--relay <host> <port>` routes through the
 // ciphertext-only relay (slice 5). Without `--relay` the client connects
 // directly to the peer.
+// Device side of the data plane (A5): serve ONE session of `path` on `port`
+// (single-session by design — one accept then exit; --once kept for help).
+// plain = serveFile with the shared key; --secure = X25519 envelope
+// (device-minted key, optional --salt hex). Prints SERVE-LISTENING before
+// accept so harnesses can sync, SERVED <bytes> (or SERVE-REFUSED rc 2 when
+// resumeVerify rejects the peer's HELLO offset) after the pump.
+Int runServe(List<String> args) {
+    var rest = tail(args, 1)
+    if (rest.size < 2) {
+        println("SERVE-ERR: usage: serve <path> <port> [--resume <n>] [--key <hex>] [--secure] [--salt <hex>] [--once]")
+        return 1
+    }
+    var path = rest.get(0)
+    var port = math.parseInt(rest.get(1))
+    var resume = 0
+    var key = defaultKey()
+    var secure = false
+    var salt = ""
+    var i = 2
+    while (i < rest.size) {
+        var a = argAt(rest, i)
+        if (a == "--resume") {
+            var nxt = argAt(rest, i + 1)
+            if (isDigits(nxt)) {
+                resume = math.parseInt(nxt)
+                i = i + 2
+            } else {
+                i = i + 1
+            }
+        } else {
+            if (a == "--key") {
+                key = argAt(rest, i + 1)
+                i = i + 2
+            } else {
+                if (a == "--secure") {
+                    secure = true
+                    i = i + 1
+                } else {
+                    if (a == "--salt") {
+                        salt = argAt(rest, i + 1)
+                        i = i + 2
+                    } else {
+                        i = i + 1
+                    }
+                }
+            }
+        }
+    }
+    if (!File(path).exists()) {
+        println("SERVE-ERR: file not found: " + path)
+        return 1
+    }
+    var l = net.listen(port)
+    println("SERVE-LISTENING " + port)
+    var s = l.accept()
+    var served = 0
+    if (secure) {
+        var priv = keyExchange.privateKey()
+        var saltHex = salt
+        if (saltHex.length() == 0) {
+            saltHex = security.randomHex(16)
+        }
+        served = serveFileSecure(s, path, resume, priv, saltHex)
+    } else {
+        served = serveFile(s, path, resume, key)
+    }
+    s.close()
+    l.close()
+    if (served == 0 - 3) {
+        println("SERVE-REFUSED: peer offset rejected (client-side RESUME-ERR names it)")
+        return 2
+    }
+    println("SERVED " + served)
+    return 0
+}
+
 Int runFetch(List<String> args) {
     var rest = tail(args, 1)
     if (rest.size < 3) {
@@ -818,6 +895,13 @@ main(args: List<String>) {
         var rc = runFetch(tail(args, start))
         if (rc != 0) {
             throw "kofshare: FETCH-ERR"
+        }
+        return
+    }
+    if (cmd == "serve") {
+        var rc = runServe(tail(args, start))
+        if (rc != 0) {
+            throw "kofshare: SERVE-ERR"
         }
         return
     }
