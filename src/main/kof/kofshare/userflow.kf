@@ -1,0 +1,122 @@
+package kofshare
+
+import kof.http
+import kof.json
+import kof.crypto
+import kof.net
+import kofshare.domain
+import kofshare.transfer
+import kofshare.control.registry
+import kofshare.control.share
+
+// A6 user flow — the last mile between the pieces and the person.
+// `upPublish` registers device + offer in the CONTROL PLANE over real HTTP
+// (the plane stamps offer freshness itself — A4 wire); `downFetch` takes the
+// SHARE TOKEN, resolves the grant through the public GET /s/<token> (the
+// token IS the possession authorization — C3), learns WHERE the file lives
+// (deviceAddress shipped inside the grant since C2), resumes from a local
+// .part through A3 negotiation, and REFUSES BY NAME if the bytes disagree
+// with the offer digest (v1 trust hole closed: content identity, not
+// transport luck). Same-package access: fetchFile/Transfer/SessionState are
+// kofshare's own; no duplication of the wire machine.
+
+Int indexOfChar(String s, Int from, Int ch) {
+    var i = from
+    while (i < s.length()) {
+        if (s.charAt(i) == ch) {
+            return i
+        }
+        i = i + 1
+    }
+    return 0 - 1
+}
+
+// "host:port" — the ONE address grammar of the plane (DeviceInfo.address).
+String hostOfAddress(String address) {
+    var c = indexOfChar(address, 0, 58)
+    if (c <= 0) {
+        throw "UF-ERR: malformed device address (want host:port): " + address
+    }
+    return address.substring(0, c)
+}
+
+Int portOfAddress(String address) {
+    var c = indexOfChar(address, 0, 58)
+    if (c <= 0 || c == address.length() - 1) {
+        throw "UF-ERR: malformed device address (want host:port): " + address
+    }
+    var port = 0
+    var i = c + 1
+    while (i < address.length()) {
+        var d = address.charAt(i)
+        if (d < 48 || d > 57) {
+            throw "UF-ERR: malformed device address (want host:port): " + address
+        }
+        port = port * 10 + (d - 48)
+        i = i + 1
+    }
+    if (port < 1 || port > 65535) {
+        throw "UF-ERR: malformed device address (want host:port): " + address
+    }
+    return port
+}
+
+// Publisher side, part 1. POSTs device then offer (OfferRequest wire — the
+// SERVER stamps createdAt; A4). `controlBase` = "http://host:port". Refusals
+// come back BY NAME (AUTH/REG bodies are surfaced, never swallowed).
+String upPublish(String controlBase, String deviceId, String name, String address,
+                 String filePath, String authHeader) {
+    if (!File(filePath).exists()) {
+        throw "UP-ERR: file not found: " + filePath
+    }
+    var data = File(filePath).readBytes()
+    if (data.size == 0) {
+        throw "UP-ERR: empty file: " + filePath
+    }
+    var digest = crypto.sha256Bytes(toBytes(data))
+    var offerId = "o-" + digest.substring(0, 12)
+    var reg = http.post(controlBase + "/devices",
+        json.encode(DeviceInfo(deviceId, name, address)), authHeader)
+    if (reg.indexOf("REGISTERED:") != 0) {
+        throw "UP-ERR: device registration refused: " + reg
+    }
+    var off = http.post(controlBase + "/offers",
+        json.encode(OfferRequest(offerId, deviceId, filePath, data.size, digest)), authHeader)
+    if (off.indexOf("OFFERED:") != 0) {
+        throw "UP-ERR: offer registration refused: " + off
+    }
+    return "UP-OK offer=" + offerId + " size=" + data.size + " sha256=" + digest
+}
+
+// Recipient side. GET /s/<token> (public — possession of the token IS the
+// authorization), decode the grant, resume from any local .part (bare
+// --resume semantics: the .part size IS the announced offset, A3 verifies it
+// server-side), transfer, then VERIFY THE DIGEST the offer promised.
+// Returns "DOWN-OK ..." on success; throws BY NAME otherwise.
+String downFetch(String controlBase, String token, String dest, String key) {
+    var body = http.get(controlBase + "/s/" + token)
+    if (body.indexOf("REG") == 0) {
+        throw "DOWN-ERR: grant refused: " + body
+    }
+    var g = json.decode<ShareGrant>(body)
+    var host = hostOfAddress(g.deviceAddress)
+    var port = portOfAddress(g.deviceAddress)
+    var resume = 0
+    if (File(dest).exists()) {
+        resume = File(dest).size() as Int
+    }
+    var c = net.connect(host, port)
+    var t = fetchFile(c, dest, resume, g.offerId, host, key)
+    c.close()
+    if (t.state != SessionState.Done) {
+        throw "DOWN-ERR: transfer not done: state=" + t.state + " offset=" + t.offset
+    }
+    if (t.totalBytes != g.size) {
+        throw "DOWN-ERR: size mismatch: grant says " + g.size + " transport saw " + t.totalBytes
+    }
+    var got = crypto.sha256Bytes(toBytes(File(dest).readBytes()))
+    if (got != g.sha256Hex) {
+        throw "DOWN-ERR: content digest mismatch: offer says " + g.sha256Hex + " got " + got
+    }
+    return "DOWN-OK offset=" + t.offset + "/" + t.totalBytes + " digest verified"
+}

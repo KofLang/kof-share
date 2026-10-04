@@ -11,6 +11,7 @@ import kof.time
 import kofshare.session
 import kofshare.protocol
 import kofshare.relay
+import kofshare.userflow
 import kof.json
 import kof.crypto
 import kof.keyExchange
@@ -60,20 +61,6 @@ String defaultKey() {
 }
 
 // File bytes (Int[] 0..255) → the wire Byte[] the digest/net faces take.
-Byte[] toBytes(Int[] src) {
-    var out = new Byte[src.size]
-    var i = 0
-    while (i < src.size) {
-        var v = src[i]
-        if (v < 0) {
-            v = v + 256
-        }
-        out[i] = v
-        i = i + 1
-    }
-    return out
-}
-
 // Deterministic 200000-byte source for the `--check` legs (same generator as
 // the e2e oracle, kept local so the product entry owns no e2e main()).
 Int[] makeSource() {
@@ -377,6 +364,8 @@ Int runDry() {
     println("  offer <file>                 -> OfferInfo JSON (sha256Bytes over the file)")
     println("  fetch <host> <port> <dest> [--resume <n>] [--key <hex>] [--secure] [--relay <rhost> <rport>] -> kof.net pull")
     println("  serve <path> <port> [--resume <n>] [--key <hex>] [--secure] [--salt <hex>] [--once] -> kof.net device-side serving (one session)")
+    println("  up <ctrlHost> <ctrlPort> <file> --id <dev> --serve <host:port> [--name <n>] [--bearer <jwt>] -> publish device+offer to the control plane")
+    println("  down <ctrlHost> <ctrlPort> <token> <dest> [--key <hex>] -> resolve /s/<token>, fetch from the grant's address, verify digest")
     println("  relay <port> <peerHost> <peerPort> [--tamper] -> ciphertext-only relay")
     println("  share <host> <port> <offerId> [--once] [--read-only] [--ttl <ms>] -> mint grant")
     println("  revoke <host> <port> <shareId> [reason] | shares <host> <port>")
@@ -393,6 +382,80 @@ Int runDry() {
 // X25519/HKDF envelope; `--relay <host> <port>` routes through the
 // ciphertext-only relay (slice 5). Without `--relay` the client connects
 // directly to the peer.
+// A6 user-flow verbs — thin wrappers over kofshare.userflow (golden-
+// proven). `up` PUBLISHES the story in one command: registers device+offer
+// in the control plane (bearer from --bearer or server-control.bearer),
+// prints the OFFER id. `down` RECEIVES it: resolves GET /s/<token> on the
+// control plane, learns the publisher address FROM THE GRANT, resumes from
+// any local .part, transfers and verifies the offer digest (DOWN-ERR by
+// name on mismatch — never silent).
+Int runUp(List<String> args) {
+    var rest = tail(args, 1)
+    if (rest.size < 4) {
+        println("UP-ERR: usage: up <controlHost> <controlPort> <file> --id <dev> [--name <n>] [--serve <host:port>] [--bearer <jwt>]")
+        return 1
+    }
+    var controlBase = "http://" + rest.get(0) + ":" + rest.get(1)
+    var filePath = rest.get(2)
+    var deviceId = ""
+    var name = deviceId
+    var serveAddr = ""
+    var i = 3
+    while (i < rest.size) {
+        var a = argAt(rest, i)
+        if (a == "--id") {
+            deviceId = argAt(rest, i + 1)
+            i = i + 2
+        } else {
+            if (a == "--name") {
+                name = argAt(rest, i + 1)
+                i = i + 2
+            } else {
+                if (a == "--serve") {
+                    serveAddr = argAt(rest, i + 1)
+                    i = i + 2
+                } else {
+                    i = i + 1
+                }
+            }
+        }
+    }
+    if (deviceId.length() == 0 || serveAddr.length() == 0) {
+        println("UP-ERR: up needs --id <device> and --serve <host:port> (the address the recipient will dial)")
+        return 1
+    }
+    if (name.length() == 0) {
+        name = deviceId
+    }
+    var out = upPublish(controlBase, deviceId, name, serveAddr, filePath,
+        "Authorization: Bearer " + bearerArg(rest, 3))
+    println(out)
+    return 0
+}
+
+Int runDown(List<String> args) {
+    var rest = tail(args, 1)
+    if (rest.size < 3) {
+        println("DOWN-ERR: usage: down <controlHost> <controlPort> <token> <dest> [--key <hex>]")
+        return 1
+    }
+    var controlBase = "http://" + rest.get(0) + ":" + rest.get(1)
+    var token = rest.get(2)
+    var dest = rest.get(3)
+    var key = defaultKey()
+    var i = 4
+    while (i < rest.size) {
+        if (argAt(rest, i) == "--key") {
+            key = argAt(rest, i + 1)
+            i = i + 2
+        } else {
+            i = i + 1
+        }
+    }
+    println(downFetch(controlBase, token, dest, key))
+    return 0
+}
+
 // Device side of the data plane (A5): serve ONE session of `path` on `port`
 // (single-session by design — one accept then exit; --once kept for help).
 // plain = serveFile with the shared key; --secure = X25519 envelope
@@ -601,6 +664,16 @@ Int runServer(List<String> args) {
     var aload = authLoadList(accounts, apath)
     if (aload.indexOf("AUTH043") == 0) {
         println(aload)
+        return 1
+    }
+    // measured 04/10 (A6 golden): READY must never print before the bind
+    // succeeds — a lying READY let an interrupted plane hijack the port and
+    // the fresh bearer 401ed against the STALE process. Probe first.
+    try {
+        var probe = net.listen(port)
+        probe.close()
+    } catch (String e) {
+        println("SERVER-ERR: control port " + port + " already bound: " + e)
         return 1
     }
     var controlSecret = loadControlSecret()
@@ -902,6 +975,20 @@ main(args: List<String>) {
         var rc = runServe(tail(args, start))
         if (rc != 0) {
             throw "kofshare: SERVE-ERR"
+        }
+        return
+    }
+    if (cmd == "up") {
+        var rc = runUp(tail(args, start))
+        if (rc != 0) {
+            throw "kofshare: UP-ERR"
+        }
+        return
+    }
+    if (cmd == "down") {
+        var rc = runDown(tail(args, start))
+        if (rc != 0) {
+            throw "kofshare: DOWN-ERR"
         }
         return
     }

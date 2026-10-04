@@ -2,6 +2,7 @@ package kofshare
 
 import kofshare.domain
 import kofshare.protocol
+import kofshare.session
 import kof.security
 
 // KofShare plain transfer — D-KOFSHARE-100KOF: 100% Kof over the kof.net

@@ -1,0 +1,309 @@
+package kofshare.usercheck
+
+import kof.http
+import kof.json
+import kof.crypto
+import kof.shell
+import kof.net
+import kof.process
+import kof.time
+import kofshare.userflow
+import kofshare.transfer
+import kofshare.domain
+import kofshare.control.registry
+import kofshare.control.share
+
+// A6 golden — the whole user story over REAL processes and the REAL control
+// plane. The plane and the publisher `serve` ride DETACHED processes (the A5
+// shape: `serve` is one-shot by design, so every leg that transfers spawns
+// its own); grant minting / link resolution cross real HTTP. Proof lines:
+//   addrMatrix      -> pure hostOfAddress/portOfAddress + UF-ERR refusals
+//   planeUp         -> detached `cli server` announces SERVER-READY
+//   publish         -> upPublish POSTs /devices + /offers (OfferRequest wire)
+//   mint            -> POST /shares returns SHARED <id> <token>
+//   serveUp         -> detached `cli serve` announces SERVE-LISTENING
+//   down            -> downFetch resolves GET /s/<token>, learns the address
+//                      FROM THE GRANT, transfers, verifies sha256 + bytes
+//   downResume      -> respawned one-shot serve; a 1000-byte .part completes
+//                      through A3 negotiation; grant is multi-use (maxUses 0)
+//   tamperRefuse    -> offer lies about content (digest of file A, serving
+//                      file B on a second device): DOWN-ERR BY NAME
+// The plane writes gitignored runtime state (server-control.*, 
+// server-registry.*.json) in the repo CWD — wiped before and after.
+
+Int portOf() {
+    return 19360
+}
+
+String jar() {
+    return "/home/mel/Kof4j/kof-cli/target/kof-cli-0.5.0-beta.jar"
+}
+
+Int[] makeData(Int n) {
+    var a = new Int[n]
+    var i = 0
+    while (i < n) {
+        a[i] = (i * 13 + 5) % 256
+        i = i + 1
+    }
+    return a
+}
+
+Int[] prefix(Int[] src, Int n) {
+    var out = new Int[n]
+    var i = 0
+    while (i < n) {
+        out[i] = src[i]
+        i = i + 1
+    }
+    return out
+}
+
+Bool identical(Int[] a, Int[] b) {
+    if (a.size != b.size) {
+        return false
+    }
+    var i = 0
+    while (i < a.size) {
+        if (a[i] != b[i]) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// Detach `cli <verb> ...` with log sync on a marker line.
+Bool spawnCli(String log, String marker, List<String> verbArgs) {
+    var cmd = "cd /home/mel/Documents/kof-share && java -jar " + jar()
+        + " run src/main/kof/kofshare/cli/cli.kf"
+    for (var a in verbArgs) {
+        cmd = cmd + " " + a
+    }
+    cmd = cmd + " > " + log + " 2>&1 &"
+    process.spawn("sh", "-c", cmd)
+    var t0 = 0
+    while (t0 < 120) {
+        var f = File(log)
+        if (f.exists()) {
+            var txt = f.readText()
+            if (txt != null && txt.indexOf(marker) >= 0) {
+                return true
+            }
+        }
+        time.sleep(250)
+        t0 = t0 + 1
+    }
+    return false
+}
+
+// Golden-owned ports (19360-19362): anything LISTENing on them is a stale
+// plane/serve from an interrupted run. pkill -f proved unreliable here
+// (measured 04/10: matched wrapper shells, raced its own pattern); ownership
+// via `ss -tlnp` is deterministic. KILL ONLY ON MY PORTS.
+Int[] myPorts() {
+    var a = new Int[3]
+    a[0] = 19360
+    a[1] = 19361
+    a[2] = 19362
+    return a
+}
+
+sweepPorts() {
+    var lines = shell.cmd("ss", listOf("-tlnp"))
+    for (var line in lines) {
+        if (line.indexOf("LISTEN") < 0) {
+            continue
+        }
+        var mine = false
+        for (var mp in myPorts()) {
+            if (line.indexOf(":" + mp + " ") >= 0 || line.indexOf(":" + mp) >= 0) {
+                mine = true
+            }
+        }
+        if (!mine) {
+            continue
+        }
+        var pi = line.indexOf("pid=")
+        if (pi < 0) {
+            continue
+        }
+        var num = ""
+        var i = pi + 4
+        while (i < line.length()) {
+            var ch = line.charAt(i)
+            if (ch < 48 || ch > 57) {
+                break
+            }
+            num = num + line.substring(i, i + 1)
+            i = i + 1
+        }
+        if (num.length() > 0) {
+            shell.cmd("kill", listOf(num))
+        }
+    }
+}
+
+main() {
+    var ok = true
+
+    // self-sweep (measured 04/10): an interrupted run leaves a zombie plane
+    // holding 19360 — the next run's fresh bearer then 401s against the STALE
+    // secret. Kill any prior plane/serve from THIS golden's command shapes and
+    // wipe its scratch + plane state before booting (gitignored files only).
+    // bracket trick: the pattern must NOT match this golden's own argv, or
+    // pkill (-f) kills the caller too — measured 04/10 (planeUp=false on a
+    // self-killed golden). "[c]li" matches the child's cmdline, never ours.
+    sweepPorts()
+    // wait for the CONDITION (port actually released), not a fixed sleep —
+    // a dying JVM can hold the bind longer than any timeout we could guess.
+    var t9 = 0
+    var freed = false
+    while (t9 < 80 && !freed) {
+        try {
+            var probe = net.listen(portOf())
+            probe.close()
+            freed = true
+        } catch (String e) {
+            sweepPorts()
+            time.sleep(250)
+            t9 = t9 + 1
+        }
+    }
+    println("portsFreed=" + freed)
+    var scratch = listOf("serve-plane.log", "serve-user1.log", "serve-user2.log",
+        "serve-liar.log", "user-src.bin", "user-full.bin", "user-part.bin",
+        "user-wrong.bin", "user-tamper.bin", "server-control.apikey",
+        "server-control.bearer", "server-control.ed25519",
+        "server-registry.devices.json", "server-registry.offers.json",
+        "server-registry.shares.json", "server-registry.accounts.json")
+    for (var f in scratch) {
+        if (File(f).exists()) {
+            File(f).delete()
+        }
+    }
+
+    var addrOk = hostOfAddress("10.0.0.1:8080") == "10.0.0.1"
+        && portOfAddress("10.0.0.1:8080") == 8080
+    var malformed = ""
+    try {
+        portOfAddress("host:port")
+    } catch (String e) {
+        malformed = e
+    }
+    var addrMatrix = addrOk && malformed.indexOf("UF-ERR: malformed device address") >= 0
+    println("addrMatrix=" + addrMatrix)
+    ok = ok && addrMatrix
+
+    var planePort = portOf()
+    var base = "http://127.0.0.1:" + planePort
+    var planeUp = spawnCli("serve-plane.log", "SERVER-READY",
+        listOf("server", "" + planePort))
+    println("planeUp=" + planeUp)
+    if (!planeUp) {
+        println("USERCHECK-FAIL")
+        throw "kofshare: USERCHECK-FAIL"
+    }
+    ok = ok && planeUp
+    var bearerTxt = File("server-control.bearer").readText()
+    var auth = "Authorization: Bearer " + bearerTxt
+
+    // publisher story — device + offer through the wire the CLIENT may send
+    File("user-src.bin").writeBytes(makeData(3000))
+    var pubRes = upPublish(base, "dev-user", "publisher",
+        "127.0.0.1:" + (planePort + 1), "user-src.bin", auth)
+    var publish = pubRes.indexOf("UP-OK offer=o-") == 0
+    println("publish=" + publish)
+    ok = ok && publish
+
+    var offerId = pubRes.substring(12, pubRes.indexOf(" ", 12))
+    var sh = http.post(base + "/shares",
+        json.encode(ShareRequest(offerId, 0, 0, false)), auth)
+    var bits = sh.split(" ")
+    var token = ""
+    if (sh.indexOf("SHARED ") == 0) {
+        token = bits[2]
+    }
+    var mint = token.length() == 64
+    println("mint=" + mint)
+    ok = ok && mint
+
+    // leg 1: full transfer (one-shot serve)
+    var serveUp = spawnCli("serve-user1.log", "SERVE-LISTENING",
+        listOf("serve", "user-src.bin", "" + (planePort + 1), "--key", "k0"))
+    println("serveUp=" + serveUp)
+    ok = ok && serveUp
+    if (serveUp) {
+        var downMsg = downFetch(base, token, "user-full.bin", "k0")
+        var down = downMsg.indexOf("DOWN-OK") == 0
+            && identical(File("user-full.bin").readBytes(), makeData(3000))
+        println("down=" + down)
+        ok = ok && down
+    }
+
+    // leg 2: resume — the SAME grant (multi-use), a FRESH one-shot serve on
+    // the SAME address, a 1000-byte .part announced via A3 HELLO
+    File("user-part.bin").writeBytes(prefix(makeData(3000), 1000))
+    var serveUp2 = spawnCli("serve-user2.log", "SERVE-LISTENING",
+        listOf("serve", "user-src.bin", "" + (planePort + 1), "--key", "k0"))
+    var downResume = false
+    if (serveUp2) {
+        var resumeMsg = downFetch(base, token, "user-part.bin", "k0")
+        downResume = resumeMsg.indexOf("DOWN-OK") == 0
+            && identical(File("user-part.bin").readBytes(), makeData(3000))
+    }
+    println("serveUp2=" + serveUp2)
+    println("downResume=" + downResume)
+    ok = ok && serveUp2 && downResume
+
+    // leg 3: the offer LIES about content (digest of user-src.bin, but the
+    // liar device serves user-wrong.bin) — DOWN-ERR BY NAME, never OK
+    var wrongData = makeData(3000)
+    var w = 0
+    while (w < 3000) {
+        wrongData[w] = (wrongData[w] + 1) % 256
+        w = w + 1
+    }
+    File("user-wrong.bin").writeBytes(wrongData)
+    http.post(base + "/devices",
+        json.encode(DeviceInfo("dev-liar", "liar", "127.0.0.1:" + (planePort + 2))), auth)
+    var regLie = http.post(base + "/offers", json.encode(OfferRequest(
+        "o-tamper", "dev-liar", "user-src.bin", 3000,
+        crypto.sha256Bytes(toBytes(File("user-src.bin").readBytes())))), auth)
+    var offerLie = regLie.indexOf("OFFERED:") == 0
+    println("offerLie=" + offerLie)
+    ok = ok && offerLie
+    var liarShare = http.post(base + "/shares",
+        json.encode(ShareRequest("o-tamper", 0, 0, false)), auth)
+    var liarTok = liarShare.split(" ")[2]
+    var serveUp3 = spawnCli("serve-liar.log", "SERVE-LISTENING",
+        listOf("serve", "user-wrong.bin", "" + (planePort + 2), "--key", "k0"))
+    var tamperRefuse = false
+    if (serveUp3) {
+        var tamperMsg = ""
+        try {
+            downFetch(base, liarTok, "user-tamper.bin", "k0")
+            tamperMsg = "NO-REFUSAL"
+        } catch (String e) {
+            tamperMsg = e
+        }
+        tamperRefuse = tamperMsg.indexOf("DOWN-ERR: content digest mismatch") >= 0
+    }
+    println("tamperRefuse=" + tamperRefuse)
+    ok = ok && serveUp3 && tamperRefuse
+
+    File("user-src.bin").delete()
+    File("user-full.bin").delete()
+    File("user-part.bin").delete()
+    File("user-wrong.bin").delete()
+    if (File("user-tamper.bin").exists()) {
+        File("user-tamper.bin").delete()
+    }
+    // stop the detached plane (the one-shot serve children already exited)
+    sweepPorts()
+    if (!ok) {
+        println("USERCHECK-FAIL")
+        throw "kofshare: USERCHECK-FAIL"
+    }
+    println("USERCHECK-OK")
+}

@@ -28,3 +28,15 @@ Boolean shareActive(Share s, String nowIso) {
   if (exp == null) { return true }
   return isoBefore(nowIso, exp)
 }
+
+// domain home of the ONE byte-array conversion — cli and userflow both had
+// a copy; same-package collision forced the merge (measured 04/10).
+Byte[] toBytes(Int[] src) {
+    var out = new Byte[src.size]
+    var i = 0
+    while (i < src.size) {
+        out[i] = src[i] as Byte
+        i = i + 1
+    }
+    return out
+}
