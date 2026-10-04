@@ -19,7 +19,12 @@ import kof.time
 //   refuseOversize: offset beyond EOF refused BY NAME on the client, the
 //                 server exits rc=2 (SERVE-REFUSED), the .part untouched
 // The serve child is detached with `sh -c ... &` and synchronized through
-// its SERVE-LISTENING line before any connect.
+// its SERVE-LISTENING line before any connect. TIMING MEASURED 04/10: the
+// whole golden runs ~4-6 min on this host (each detached child re-JITs the
+// CLI compilation — cold start dominates, NOT the transfer); the bounded
+// waits below use 30 s ceilings (120 x 250 ms). If an interrupted run leaves
+// orphan `cli serve` children holding 1934x, kill by port (ss -tlnp | pid)
+// before re-running — a held port is refused BY NAME at the phase entry.
 
 Int portOf() {
     return 19341
@@ -69,6 +74,10 @@ Bool identical(Int[] a, Int[] b) {
 }
 
 // Detach `cli serve ...` writing its log to `log`; wait for SERVE-LISTENING.
+// Returns true when the child announced SERVE-LISTENING; refuses BY NAME
+// (caller aborts before any connect) when the child never came up — measured
+// 04/10: an orphan serve from an interrupted run held the port and a blind
+// connect rode a foreign socket and hanged the golden.
 Bool spawnServe(String log, List<String> serveArgs) {
     // the child inherits whatever cwd the runner set — pin ours too
     var cmd = "cd /home/mel/Documents/kof-share && java -jar " + jar()
@@ -79,7 +88,7 @@ Bool spawnServe(String log, List<String> serveArgs) {
     cmd = cmd + " > " + log + " 2>&1 &"
     process.spawn("sh", "-c", cmd)
     var t0 = 0
-    while (t0 < 40) {
+    while (t0 < 120) {
         var f = File(log)
         if (f.exists()) {
             var txt = f.readText()
@@ -104,7 +113,10 @@ main() {
     var dst = "serve-plain.part"
     File(dst).writeBytes(prefix(data, 1000))
     var logA = "serve-plain.log"
-    ok = ok && spawnServe(logA, listOf(src, "" + portOf(), "--key", "k0"))
+    if (!spawnServe(logA, listOf(src, "" + portOf(), "--key", "k0"))) {
+        println("SERVECHECK-FAIL: plain server did not come up (port held?)")
+        throw "kofshare: SERVECHECK-FAIL"
+    }
     var cA = net.connect("127.0.0.1", portOf())
     var tA = fetchFile(cA, dst, 1000, "share-serve", "devS", "k0")
     cA.close()
@@ -117,7 +129,10 @@ main() {
     var dst2 = "serve-sec.part"
     File(dst2).writeBytes(prefix(data, 1200))
     var logB = "serve-sec.log"
-    ok = ok && spawnServe(logB, listOf(src, "" + (portOf() + 1), "--secure", "--salt", "0a0b0c0d0e0f1011"))
+    if (!spawnServe(logB, listOf(src, "" + (portOf() + 1), "--secure", "--salt", "0a0b0c0d0e0f1011"))) {
+        println("SERVECHECK-FAIL: sealed server did not come up (port held?)")
+        throw "kofshare: SERVECHECK-FAIL"
+    }
     var cB = net.connect("127.0.0.1", portOf() + 1)
     var privC = keyExchange.privateKey()
     var hs = fetchHandshake(cB, privC)
@@ -132,7 +147,10 @@ main() {
     var dst3 = "serve-refuse.part"
     File(dst3).writeBytes(prefix(data, 1000))
     var logC = "serve-refuse.log"
-    ok = ok && spawnServe(logC, listOf(src, "" + (portOf() + 2), "--key", "k0"))
+    if (!spawnServe(logC, listOf(src, "" + (portOf() + 2), "--key", "k0"))) {
+        println("SERVECHECK-FAIL: refuse server did not come up (port held?)")
+        throw "kofshare: SERVECHECK-FAIL"
+    }
     var refused = ""
     try {
         var cC = net.connect("127.0.0.1", portOf() + 2)
@@ -150,7 +168,7 @@ main() {
     // the refused server saw the rejection too (rc-2 path), by name, in its log
     var t1 = 0
     var serverNamed = false
-    while (t1 < 40 && !serverNamed) {
+    while (t1 < 120 && !serverNamed) {
         var f = File(logC)
         if (f.exists()) {
             var txt = f.readText()
@@ -167,7 +185,7 @@ main() {
     // served counts in the plain/secure logs close the loop
     var t2 = 0
     var servedPlain = false
-    while (t2 < 40 && !servedPlain) {
+    while (t2 < 120 && !servedPlain) {
         var f = File(logA)
         if (f.exists()) {
             var txt = f.readText()
@@ -180,6 +198,21 @@ main() {
     }
     println("servedPlainTail=2000=" + servedPlain)
     ok = ok && servedPlain
+    var t3 = 0
+    var servedSecure = false
+    while (t3 < 120 && !servedSecure) {
+        var f = File(logB)
+        if (f.exists()) {
+            var txt = f.readText()
+            if (txt != null && txt.indexOf("SERVED 1800") >= 0) {
+                servedSecure = true
+            }
+        }
+        time.sleep(250)
+        t3 = t3 + 1
+    }
+    println("servedSecureTail=1800=" + servedSecure)
+    ok = ok && servedSecure
 
     File(src).delete()
     File(dst).delete()

@@ -7,3 +7,8 @@ check-auth.*
 check-share.*
 persist-test.*
 share-test.*
+
+# servecheck scratch (A5 golden; removed by the happy path, never committed)
+serve-src.bin
+serve-*.part
+serve-*.log
