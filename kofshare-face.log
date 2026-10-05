@@ -1,3 +1,0 @@
-app.kf:122:5: warning: L-05: resource 'app' from 'web.app()' is never closed in this scope and never handed to anyone — call 'app.close()' or return/transfer the handle (MEM014) [MEM014]
-client.kf:195:5: warning: L-05: resource 'app' from 'web.app()' is never closed in this scope and never handed to anyone — call 'app.close()' or return/transfer the handle (MEM014) [MEM014]
-SERVE-LISTENING 19431

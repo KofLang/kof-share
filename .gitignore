@@ -27,3 +27,6 @@ httpserver*.log
 kofshare-resources.json
 ux-*
 kofshare-cli.config
+kofshare-face.log
+kofshare-server.log
+kofshare-app.log
