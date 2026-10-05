@@ -94,6 +94,15 @@ String upPublish(String controlBase, String deviceId, String name, String addres
 // server-side), transfer, then VERIFY THE DIGEST the offer promised.
 // Returns "DOWN-OK ..." on success; throws BY NAME otherwise.
 String downFetch(String controlBase, String token, String dest, String key) {
+    return downFetch(controlBase, token, dest, key, "", 0)
+}
+
+// Relay leg (D4=A — manual by vote, the SAME path `fetch --relay` takes):
+// dial the RELAY instead of the grant address; the A3 HELLO negotiation and
+// the tag checks ride through the byte pump untouched (ciphertext-only relay
+// — it never sees the content). relayHost empty == direct dial.
+String downFetch(String controlBase, String token, String dest, String key,
+                 String relayHost, Int relayPort) {
     var body = http.get(controlBase + "/s/" + token)
     if (body.indexOf("REG") == 0) {
         throw "DOWN-ERR: grant refused: " + body
@@ -101,6 +110,10 @@ String downFetch(String controlBase, String token, String dest, String key) {
     var g = json.decode<ShareGrant>(body)
     var host = hostOfAddress(g.deviceAddress)
     var port = portOfAddress(g.deviceAddress)
+    if (relayHost.length() > 0) {
+        host = relayHost
+        port = relayPort
+    }
     var resume = 0
     if (File(dest).exists()) {
         resume = File(dest).size() as Int

@@ -13,7 +13,7 @@ Lado compilador (Kof4j), 04/10: o leak do analisador `json.decode<T>` do §583 e
 | Controle | registro devices/offers puro Kof (recusas nomeadas REG001–008) | `control/check.kf` → `REGCHECK-OK` JVM+Script (24/24) |
 | HTTP | rotas §4 (`POST/GET /devices[:id]`, `GET/POST/DELETE /offers[:id]`, `/health`) + C2 (`POST/GET /shares`, `GET /s/<token>`, `POST /shares/:id/revoke`) | `httpcheck/checkhttp.kf` → `HTTPCHECK-OK` 21/21 nas 3 combinações JVM/Script servidor×cliente |
 | Relay | byte-pump ciphertext-only; flip de 1 byte no relay → tag morre, zero bytes gravados | `relaycheck/checkrelay.kf` → `RELAY-OK` JVM+Script |
-| CLI | `server`/`offer`/`up`/`down`/`fetch`/`serve [--resume --key --secure --salt --once]`/`relay`/`account`/`--check`/`--dry` | `cli/cli.kf --check` → `registry=true persist=true plain=true secure=true CHECK-OK` JVM+Script |
+| CLI | `server`/`offer`/`up`/`down [--relay]`/`fetch`/`serve [--resume --key --secure --salt --once]`/`relay`/`account`/`--check`/`--dry` | `cli/cli.kf --check` → `registry=true persist=true plain=true secure=true CHECK-OK` JVM+Script |
 | Empacotamento | `kof.toml` + árvore + README | `--check` verde com o manifesto presente |
 
 ## Como validar (uma sessão)

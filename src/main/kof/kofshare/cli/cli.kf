@@ -365,7 +365,7 @@ Int runDry() {
     println("  fetch <host> <port> <dest> [--resume <n>] [--key <hex>] [--secure] [--relay <rhost> <rport>] -> kof.net pull")
     println("  serve <path> <port> [--resume <n>] [--key <hex>] [--secure] [--salt <hex>] [--once] -> kof.net device-side serving (one session)")
     println("  up <ctrlHost> <ctrlPort> <file> --id <dev> --serve <host:port> [--name <n>] [--bearer <jwt>] -> publish device+offer to the control plane")
-    println("  down <ctrlHost> <ctrlPort> <token> <dest> [--key <hex>] -> resolve /s/<token>, fetch from the grant's address, verify digest")
+    println("  down <ctrlHost> <ctrlPort> <token> <dest> [--key <hex>] [--relay <rhost> <rport>] -> resolve /s/<token>, fetch (direct or relayed), verify digest")
     println("  relay <port> <peerHost> <peerPort> [--tamper] -> ciphertext-only relay")
     println("  share <host> <port> <offerId> [--once] [--read-only] [--ttl <ms>] -> mint grant")
     println("  revoke <host> <port> <shareId> [reason] | shares <host> <port>")
@@ -436,23 +436,32 @@ Int runUp(List<String> args) {
 Int runDown(List<String> args) {
     var rest = tail(args, 1)
     if (rest.size < 3) {
-        println("DOWN-ERR: usage: down <controlHost> <controlPort> <token> <dest> [--key <hex>]")
+        println("DOWN-ERR: usage: down <controlHost> <controlPort> <token> <dest> [--key <hex>] [--relay <rhost> <rport>]")
         return 1
     }
     var controlBase = "http://" + rest.get(0) + ":" + rest.get(1)
     var token = rest.get(2)
     var dest = rest.get(3)
     var key = defaultKey()
+    var relayHost = ""
+    var relayPort = 0
     var i = 4
     while (i < rest.size) {
-        if (argAt(rest, i) == "--key") {
+        var a = argAt(rest, i)
+        if (a == "--key") {
             key = argAt(rest, i + 1)
             i = i + 2
         } else {
-            i = i + 1
+            if (a == "--relay") {
+                relayHost = argAt(rest, i + 1)
+                relayPort = math.parseInt(argAt(rest, i + 2))
+                i = i + 3
+            } else {
+                i = i + 1
+            }
         }
     }
-    println(downFetch(controlBase, token, dest, key))
+    println(downFetch(controlBase, token, dest, key, relayHost, relayPort))
     return 0
 }
 

@@ -8,6 +8,7 @@ import kof.net
 import kof.process
 import kof.time
 import kofshare.userflow
+import kofshare.relay
 import kofshare.transfer
 import kofshare.domain
 import kofshare.control.registry
@@ -102,15 +103,21 @@ Bool spawnCli(String log, String marker, List<String> verbArgs) {
 // (measured 04/10: matched wrapper shells, raced its own pattern); ownership
 // via `ss -tlnp` is deterministic. KILL ONLY ON MY PORTS.
 Int[] myPorts() {
-    var a = new Int[3]
+    var a = new Int[4]
     a[0] = 19360
     a[1] = 19361
     a[2] = 19362
+    a[3] = 19363
     return a
 }
 
 sweepPorts() {
-    var lines = shell.cmd("ss", listOf("-tlnp"))
+    // shell.cmd only BUILDS argv (KofShell.java:43 — kof_shell_argv); the
+    // executor is shell.run → kof.process.Result.stdout. The first version
+    // iterated cmd's output and "freed" 0 ports: a FALSE portsFreed=true
+    // measured 04/10 (it only passed when no zombie existed).
+    var res = shell.run("ss", listOf("-tlnp"))
+    var lines = res.stdout.split("\n")
     for (var line in lines) {
         if (line.indexOf("LISTEN") < 0) {
             continue
@@ -139,7 +146,10 @@ sweepPorts() {
             i = i + 1
         }
         if (num.length() > 0) {
-            shell.cmd("kill", listOf(num))
+            // measured 04/10: the plane JVM can IGNORE SIGTERM (the blocking
+            // app.listen never reaches a shutdown hook) — these ports are
+            // OURS, the holders are OUR prior children: KILL -9, deterministic.
+            shell.run("kill", listOf("-9", num))
         }
     }
 }
@@ -173,7 +183,7 @@ main() {
     println("portsFreed=" + freed)
     var scratch = listOf("serve-plane.log", "serve-user1.log", "serve-user2.log",
         "serve-liar.log", "user-src.bin", "user-full.bin", "user-part.bin",
-        "user-wrong.bin", "user-tamper.bin", "server-control.apikey",
+        "user-wrong.bin", "user-tamper.bin", "user-relay.bin", "server-control.apikey",
         "server-control.bearer", "server-control.ed25519",
         "server-registry.devices.json", "server-registry.offers.json",
         "server-registry.shares.json", "server-registry.accounts.json")
@@ -256,6 +266,27 @@ main() {
     println("downResume=" + downResume)
     ok = ok && serveUp2 && downResume
 
+    // leg 2b: RELAYED down (D4=A manual path — same --relay grammar fetch
+    // has). The device serve is again a detached one-shot process; the relay
+    // rides an in-process spawn thread byte-pumping BOTH directions — the A3
+    // HELLO negotiation and tag checks cross the pump untouched.
+    File("user-relay.bin").writeBytes(prefix(makeData(3000), 500))
+    var serveUpR = spawnCli("serve-relay.log", "SERVE-LISTENING",
+        listOf("serve", "user-src.bin", "" + (planePort + 1), "--key", "k0"))
+    var downRelay = false
+    if (serveUpR) {
+        var relayL = net.listen(planePort + 3)
+        var rw = spawn { relayServeOn(relayL, "127.0.0.1", planePort + 1) }
+        var relayMsg = downFetch(base, token, "user-relay.bin", "k0",
+            "127.0.0.1", planePort + 3)
+        await rw
+        downRelay = relayMsg.indexOf("DOWN-OK") == 0
+            && identical(File("user-relay.bin").readBytes(), makeData(3000))
+    }
+    println("serveUpRelay=" + serveUpR)
+    println("downRelay=" + downRelay)
+    ok = ok && serveUpR && downRelay
+
     // leg 3: the offer LIES about content (digest of user-src.bin, but the
     // liar device serves user-wrong.bin) — DOWN-ERR BY NAME, never OK
     var wrongData = makeData(3000)
@@ -296,6 +327,9 @@ main() {
     File("user-full.bin").delete()
     File("user-part.bin").delete()
     File("user-wrong.bin").delete()
+    if (File("user-relay.bin").exists()) {
+        File("user-relay.bin").delete()
+    }
     if (File("user-tamper.bin").exists()) {
         File("user-tamper.bin").delete()
     }
