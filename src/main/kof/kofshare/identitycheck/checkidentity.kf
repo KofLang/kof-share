@@ -1,0 +1,333 @@
+package kofshare.identitycheck
+
+import kof.http
+import kof.json
+import kof.keyExchange
+import kof.net
+import kof.process
+import kof.shell
+import kof.time
+import kofshare.identity
+import kofshare.userflow
+import kofshare.control.registry
+import kofshare.control.share
+
+// TRACK A golden — device identity as the product means it: one Ed25519 key
+// per installation, id DERIVED from the public key, enrollment self-signed
+// (TOFU), offers verified with the PUBLIC half only, revocation by name, and
+// the v1 lanes UNTOUCHED (Track M: keyless devices keep working — the rule is
+// contextual, Track I). Plane and serving are REAL second/third processes
+// (spawnCli), the plane is restarted over its own persisted state, and every
+// refusal is asserted BY NAME (R6). Ports 19370-19372 are golden-owned.
+
+String jar() {
+    return "/home/mel/Kof4j/kof-cli/target/kof-cli-0.5.0-beta.jar"
+}
+
+Int portOf() {
+    return 19370
+}
+
+Int[] myPorts() {
+    var a = new Int[3]
+    a[0] = 19370
+    a[1] = 19371
+    a[2] = 19372
+    return a
+}
+
+sweepPorts() {
+    var res = shell.run("ss", listOf("-tlnp"))
+    var lines = res.stdout.split("\n")
+    for (var line in lines) {
+        if (line.indexOf("LISTEN") < 0) {
+            continue
+        }
+        var mine = false
+        for (var mp in myPorts()) {
+            if (line.indexOf(":" + mp) >= 0) {
+                mine = true
+            }
+        }
+        if (!mine) {
+            continue
+        }
+        var pi = line.indexOf("pid=")
+        if (pi < 0) {
+            continue
+        }
+        var num = ""
+        var i = pi + 4
+        while (i < line.length()) {
+            var ch = line.charAt(i)
+            if (ch < 48 || ch > 57) {
+                break
+            }
+            num = num + line.substring(i, i + 1)
+            i = i + 1
+        }
+        if (num.length() > 0) {
+            shell.run("kill", listOf("-9", num))
+        }
+    }
+}
+
+Bool spawnCli(String log, String marker, List<String> verbArgs) {
+    var cmd = "cd /home/mel/Documents/kof-share && java -jar " + jar()
+        + " run src/main/kof/kofshare/cli/cli.kf"
+    for (var a in verbArgs) {
+        cmd = cmd + " " + a
+    }
+    cmd = cmd + " > " + log + " 2>&1 &"
+    process.spawn("sh", "-c", cmd)
+    var t0 = 0
+    while (t0 < 160) {
+        var f = File(log)
+        if (f.exists()) {
+            var txt = f.readText()
+            if (txt != null && txt.indexOf(marker) >= 0) {
+                return true
+            }
+        }
+        time.sleep(250)
+        t0 = t0 + 1
+    }
+    return false
+}
+
+Int[] makeData(Int n) {
+    var out = new Int[n]
+    var i = 0
+    while (i < n) {
+        out[i] = (i * 37 + 11) % 251
+        i = i + 1
+    }
+    return out
+}
+
+Bool identical(Int[] a, Int[] b) {
+    if (a.size != b.size) {
+        return false
+    }
+    var i = 0
+    while (i < a.size) {
+        if (a[i] != b[i]) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+String offerIdOf(String upMsg) {
+    var i = upMsg.indexOf("offer=")
+    if (i < 0) {
+        return ""
+    }
+    var st = i + 6
+    return upMsg.substring(st, upMsg.indexOf(" ", st))
+}
+
+main() {
+    var ok = true
+
+    sweepPorts()
+    var t9 = 0
+    var freed = false
+    while (t9 < 80 && !freed) {
+        try {
+            var probe = net.listen(portOf())
+            probe.close()
+            freed = true
+        } catch (String e) {
+            sweepPorts()
+            time.sleep(250)
+            t9 = t9 + 1
+        }
+    }
+    println("portsFreed=" + freed)
+    var scratch = listOf("ident-plane.log", "ident-plane2.log", "ident-serve.log",
+        "ident-src.bin", "ident-legacy.bin", "ident-out.bin", "ident-dead.bin", "ident-dev1.ed25519", "ident-dev2.ed25519",
+        "check-identity.ed25519", "server-control.apikey", "server-control.bearer",
+        "server-control.ed25519", "server-registry.devices.json",
+        "server-registry.offers.json", "server-registry.shares.json",
+        "server-registry.accounts.json", "server-registry.devkeys.json")
+    for (var f in scratch) {
+        if (File(f).exists()) {
+            File(f).delete()
+        }
+    }
+
+    // ── leg 1: identity pure (boot/persist/derive/verify/tamper) ──
+    var sk1 = identityBoot("ident-dev1.ed25519")
+    var pub1 = identityPub(sk1)
+    var id1 = identityDeviceId(pub1)
+    var again = identityBoot("ident-dev1.ed25519")
+    var pureMatrix = pub1.length() == 64 && id1.indexOf("d-") == 0
+        && identityPub(again) == pub1
+        && verifyReg(pub1, id1, "dev1", "127.0.0.1:19371", signReg(sk1, id1, "dev1", "127.0.0.1:19371", pub1))
+        && !verifyReg(pub1, id1, "dev1", "127.0.0.1:19372", signReg(sk1, id1, "dev1", "127.0.0.1:19371", pub1))
+    println("pureMatrix=" + pureMatrix)
+    ok = ok && pureMatrix
+
+    var planePort = portOf()
+    var base = "http://127.0.0.1:" + planePort
+    var planeUp = spawnCli("ident-plane.log", "SERVER-READY", listOf("server", "" + planePort))
+    println("planeUp=" + planeUp)
+    if (!planeUp) {
+        println("IDENTITYCHECK-FAIL")
+        throw "kofshare: IDENTITYCHECK-FAIL"
+    }
+    var auth = "Authorization: Bearer " + File("server-control.bearer").readText()
+    File("ident-src.bin").writeBytes(makeData(2500))
+
+    // ── leg 2: enrollment — good, bad sig, no bearer, lying id ──
+    var addr1 = "127.0.0.1:" + (planePort + 1)
+    var reg1 = http.post(base + "/devices/register",
+        json.encode(DeviceRegister(id1, "dev1", addr1, pub1, signReg(sk1, id1, "dev1", addr1, pub1))), auth)
+    var enrollOk = reg1.indexOf("REGISTERED: " + id1) == 0
+    println("enrollOk=" + enrollOk)
+
+    var regBad = http.post(base + "/devices/register",
+        json.encode(DeviceRegister(id1, "dev1", addr1, pub1, signReg(sk1, id1, "dev1", "10.9.9.9:1", pub1))), auth)
+    var badSigNamed = regBad.indexOf("DEV002") == 0
+
+    var regNoAuth = http.post(base + "/devices/register",
+        json.encode(DeviceRegister(id1, "dev1", addr1, pub1, signReg(sk1, id1, "dev1", addr1, pub1))), "")
+    var noBearer = regNoAuth.indexOf("AUTH001") == 0
+
+    var regLie = http.post(base + "/devices/register",
+        json.encode(DeviceRegister("d-wrongid00000000", "dev1", addr1, pub1, signReg(sk1, "d-wrongid00000000", "dev1", addr1, pub1))), auth)
+    var idMismatch = regLie.indexOf("DEV005") == 0
+    println("enrollRefusals=" + (badSigNamed && noBearer && idMismatch))
+    ok = ok && enrollOk && badSigNamed && noBearer && idMismatch
+
+    // ── leg 3: signed publish (Track A userflow lane) + offer refusals ──
+    var pubRes = upPublishSigned(base, sk1, "dev1", addr1, "ident-src.bin", auth)
+    var publish = pubRes.indexOf("UP-OK id=" + id1 + " offer=o-") == 0
+    println("publish=" + publish)
+    ok = ok && publish
+    var offerId = offerIdOf(pubRes)
+
+    var lied = http.post(base + "/offers", json.encode(
+        OfferRequest("o-lie", id1, "ident-src.bin", 2500, "0000000000000000000000000000000000000000000000000000000000000000",
+            signOffer(sk1, "o-lie", id1, "ident-src.bin", 2500, "ab"))), auth)
+    var offerLied = lied.indexOf("DEV002") == 0
+    var unsig = http.post(base + "/offers", json.encode(
+        OfferRequest("o-lie2", id1, "ident-src.bin", 2500, "ab", "")), auth)
+    var offerUnsigned = unsig.indexOf("DEV004") == 0
+    println("offerRefusals=" + (offerLied && offerUnsigned))
+    ok = ok && offerLied && offerUnsigned
+
+    // ── leg 4: v1 lane intact (keyless device, hand-picked id). NOTE the
+    // file MUST differ from ident-src.bin: offer ids are content-addressed
+    // (o-<sha256[0:12]) — same bytes would OVERWRITE dev1's slot in the
+    // shared offers map (v1 semantics, measured 05/10 when this golden's
+    // revocation leg caught it), masking the very revocation we assert next.
+    File("ident-legacy.bin").writeBytes(makeData(1100))
+    var legacy = upPublish(base, "dev-legacy", "v1", "127.0.0.1:" + (planePort + 2), "ident-legacy.bin", auth)
+    var legacyOk = legacy.indexOf("UP-OK offer=o-") == 0
+    println("legacyV1=" + legacyOk)
+    ok = ok && legacyOk
+
+    // ── leg 5: revocation — device revoked refuses enrollment AND offers ──
+    var rev = http.post(base + "/devices/" + id1 + "/revoke", "{}", auth)
+    var revoked = rev.indexOf("DEVICE-REVOKED: " + id1) == 0
+    var repub = ""
+    try {
+        repub = upPublishSigned(base, sk1, "dev1", addr1, "ident-src.bin", auth)
+    } catch (String e) {
+        repub = e
+    }
+    var republishRefused = repub.indexOf("DEV003") >= 0
+    // revocation must reach the DATA path: the share mint is account-side,
+    // but the GRANT resolves through the device — GET /s refuses DEV003 and
+    // downFetch surfaces it (never a silent bogus decode).
+    var shR = http.post(base + "/shares", json.encode(ShareRequest(offerId, 0, 0, false)), auth)
+    var tokR = ""
+    var bitsR = shR.split(" ")
+    if (shR.indexOf("SHARED ") == 0 && bitsR.size > 2) {
+        tokR = bitsR[2]
+    }
+    var grantDead = false
+    if (tokR.length() == 64) {
+        try {
+            downFetch(base, tokR, "ident-dead.bin", "k0")
+        } catch (String e) {
+            grantDead = e.indexOf("DOWN-ERR: grant refused: DEV003") == 0
+        }
+    }
+    println("revoke=" + (revoked && republishRefused && grantDead))
+    ok = ok && revoked && republishRefused && grantDead
+
+    // ── leg 6: full story on a FRESH enrolled device — mint, real serving
+    // process, downFetch, digest verified (identity lane end-to-end) ──
+    var sk2 = identityBoot("ident-dev2.ed25519")
+    var pub2 = identityPub(sk2)
+    var id2 = identityDeviceId(pub2)
+    var addr2 = "127.0.0.1:" + (planePort + 1)
+    var pubRes2 = upPublishSigned(base, sk2, "dev2", addr2, "ident-src.bin", auth)
+    var offerId2 = offerIdOf(pubRes2)
+    var sh = http.post(base + "/shares", json.encode(ShareRequest(offerId2, 0, 0, false)), auth)
+    var token = ""
+    var bits = sh.split(" ")
+    if (sh.indexOf("SHARED ") == 0 && bits.size > 2) {
+        token = bits[2]
+    }
+    var mint = token.length() == 64
+    var serveUp = spawnCli("ident-serve.log", "SERVE-LISTENING",
+        listOf("serve", "ident-src.bin", "" + (planePort + 1), "--key", "k0"))
+    var downMsg = ""
+    if (serveUp && mint) {
+        downMsg = downFetch(base, token, "ident-out.bin", "k0")
+    }
+    var downOk = downMsg.indexOf("DOWN-OK") == 0
+        && identical(File("ident-out.bin").readBytes(), makeData(2500))
+    println("mint=" + mint)
+    println("serveUp=" + serveUp)
+    println("fullFlow=" + downOk)
+    ok = ok && mint && serveUp && downOk
+
+    // ── leg 7: restart — the plane reloads its devkeys (revocation SURVIVES) ──
+    sweepPorts()
+    var t8 = 0
+    var portBack = false
+    while (t8 < 60 && !portBack) {
+        try {
+            var pr = net.listen(planePort)
+            pr.close()
+            portBack = true
+        } catch (String e) {
+            sweepPorts()
+            time.sleep(250)
+            t8 = t8 + 1
+        }
+    }
+    var plane2 = spawnCli("ident-plane2.log", "SERVER-READY", listOf("server", "" + planePort))
+    var keysAfter = ""
+    if (plane2) {
+        keysAfter = http.get(base + "/device-keys/" + id1)
+    }
+    var survive = keysAfter.indexOf("PUB: " + pub1 + " STATUS: revoked") == 0
+    println("restartKeys=" + survive)
+    ok = ok && plane2 && survive
+
+    // teardown: plane is OUR child — kill by pid on OUR ports only
+    sweepPorts()
+    for (var f in listOf("ident-src.bin", "ident-legacy.bin", "ident-out.bin", "ident-dead.bin", "ident-dev1.ed25519",
+            "ident-dev2.ed25519", "server-control.bearer", "server-control.apikey",
+            "server-control.ed25519", "server-registry.devices.json",
+            "server-registry.offers.json", "server-registry.shares.json",
+            "server-registry.accounts.json", "server-registry.devkeys.json")) {
+        if (File(f).exists()) {
+            File(f).delete()
+        }
+    }
+
+    if (ok) {
+        println("IDENTITYCHECK-OK")
+    } else {
+        println("IDENTITYCHECK-FAIL")
+        throw "kofshare: IDENTITYCHECK-FAIL"
+    }
+}

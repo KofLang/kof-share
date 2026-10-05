@@ -27,6 +27,11 @@ main() {
         controlSaveList("server-registry.offers.json", controlOffersJson(offers, ""))
     }
 
+    var devkeys = new Map<String, DeviceKey>()
+    var kload = controlLoadDevkeys(devkeys, "server-registry.devkeys.json")
+    if (kload.indexOf("REG009") == 0) {
+        throw kload
+    }
     var shares = new Map<String, ShareInfo>()
     var spath = "server-registry.shares.json"
     var load = shareLoadList(shares, spath)
@@ -62,7 +67,8 @@ main() {
 
     controlServe(18322, devices, offers,
         "server-registry.devices.json", "server-registry.offers.json",
-        shares, spath, controlKey, accounts, apath, controlSecret)
+        shares, spath, controlKey, accounts, apath, controlSecret,
+        devkeys, "server-registry.devkeys.json")
 }
 
 // C3: the control secret signs every bearer JWT. Minted ONCE via

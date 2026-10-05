@@ -3,6 +3,8 @@ package kofshare
 import kof.http
 import kof.json
 import kof.crypto
+import kof.keyExchange
+import kof.secrets
 import kof.net
 import kofshare.domain
 import kofshare.transfer
@@ -81,11 +83,44 @@ String upPublish(String controlBase, String deviceId, String name, String addres
         throw "UP-ERR: device registration refused: " + reg
     }
     var off = http.post(controlBase + "/offers",
-        json.encode(OfferRequest(offerId, deviceId, filePath, data.size, digest)), authHeader)
+        json.encode(OfferRequest(offerId, deviceId, filePath, data.size, digest, "")), authHeader)
     if (off.indexOf("OFFERED:") != 0) {
         throw "UP-ERR: offer registration refused: " + off
     }
     return "UP-OK offer=" + offerId + " size=" + data.size + " sha256=" + digest
+}
+
+// TRACK A publisher lane (product evolution 05/10). Same story, real
+// identity: the device id is DERIVED from the public key (no hand-picked
+// names on the wire), enrollment carries the self-signature, and the offer
+// is signed over the canonical string so the plane can refuse a lie by name
+// (DEV002/DEV003/DEV004 — surfaced as UP-ERR like every other refusal).
+String upPublishSigned(String controlBase, Secret sk, String name, String address,
+                       String filePath, String authHeader) {
+    if (!File(filePath).exists()) {
+        throw "UP-ERR: file not found: " + filePath
+    }
+    var data = File(filePath).readBytes()
+    if (data.size == 0) {
+        throw "UP-ERR: empty file: " + filePath
+    }
+    var pub = identityPub(sk)
+    var deviceId = identityDeviceId(pub)
+    var digest = crypto.sha256Bytes(toBytes(data))
+    var offerId = "o-" + digest.substring(0, 12)
+    var regSig = signReg(sk, deviceId, name, address, pub)
+    var reg = http.post(controlBase + "/devices/register",
+        json.encode(DeviceRegister(deviceId, name, address, pub, regSig)), authHeader)
+    if (reg.indexOf("REGISTERED:") != 0) {
+        throw "UP-ERR: device enrollment refused: " + reg
+    }
+    var offerSig = signOffer(sk, offerId, deviceId, filePath, data.size, digest)
+    var off = http.post(controlBase + "/offers",
+        json.encode(OfferRequest(offerId, deviceId, filePath, data.size, digest, offerSig)), authHeader)
+    if (off.indexOf("OFFERED:") != 0) {
+        throw "UP-ERR: offer registration refused: " + off
+    }
+    return "UP-OK id=" + deviceId + " offer=" + offerId + " size=" + data.size + " sha256=" + digest
 }
 
 // Recipient side. GET /s/<token> (public — possession of the token IS the
@@ -104,7 +139,10 @@ String downFetch(String controlBase, String token, String dest, String key) {
 String downFetch(String controlBase, String token, String dest, String key,
                  String relayHost, Int relayPort) {
     var body = http.get(controlBase + "/s/" + token)
-    if (body.indexOf("REG") == 0) {
+    // ANY non-JSON body is a refusal by name (the plane's refusals — REG*,
+    // DEV* since Track A — never start with "{"). Checking only "REG" would
+    // let a DEV003 fall through into a bogus decode.
+    if (body.indexOf("{") != 0) {
         throw "DOWN-ERR: grant refused: " + body
     }
     var g = json.decode<ShareGrant>(body)

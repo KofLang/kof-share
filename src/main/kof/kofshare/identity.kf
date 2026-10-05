@@ -1,0 +1,91 @@
+package kofshare
+
+import kof.crypto
+import kof.keyExchange
+import kof.secrets
+
+// Track A (product evolution, 05/10): ONE Ed25519 identity PER INSTALLATION.
+// The account bearer says WHO the user is; this key says WHICH DEVICE. The
+// private half never leaves the device — enrollment/offer signatures are
+// verified with the PUBLIC half only (64-hex raw, D-KOF-SIGN contract in
+// Kof4j: crypto.verify accepts secrets.of(pub64)). The device id is DERIVED
+// from the public key, so a copied identity gets a different id — identity
+// duplication across machines is impossible BY CONSTRUCTION (DEV005 remains
+// as defense in depth against a client that LIES about its derived id).
+// Named refusals (R6): ID005 corrupt/unreadable identity file.
+
+Secret identityBoot(String path) {
+    var f = File(path)
+    if (f.exists()) {
+        var txt = f.readText()
+        if (txt == null) {
+            throw "ID005: unreadable identity file " + path
+        }
+        if (txt.length() != 184) {
+            throw "ID005: identity file must hold a 184-hex Ed25519 secret: " + path
+        }
+        return secrets.of(txt)
+    }
+    var sk = keyExchange.privateKey("Ed25519")
+    var tmp = path + ".tmp"
+    var wf = File(tmp)
+    if (!wf.writeText(sk.reveal())) {
+        throw "ID005: cannot write identity file " + tmp
+    }
+    var old = File(path)
+    if (old.exists()) {
+        old.delete()
+    }
+    if (!wf.moveTo(path)) {
+        throw "ID005: cannot finalize identity file " + path
+    }
+    return sk
+}
+
+// Raw 32-byte public key, 64 hex — the SAME wire format as the X25519 hello.
+String identityPub(Secret sk) {
+    return keyExchange.publicKey(sk)
+}
+
+String identityDeviceId(String pubHex) {
+    return "d-" + crypto.sha256(pubHex).substring(0, 16)
+}
+
+// ── canonical signed forms (version-pinned; field-joined; NO nesting) ──
+// Changing either string is a wire change — bump the v1 prefix then, and
+// every enrolled device re-enrolls (documented, not silent).
+
+String regCanonical(String deviceId, String name, String address, String pub) {
+    return "v1|reg|" + deviceId + "|" + name + "|" + address + "|" + pub
+}
+
+String offerCanonical(String offerId, String deviceId, String name, Int size, String digest) {
+    return "v1|offer|" + offerId + "|" + deviceId + "|" + name + "|" + size + "|" + digest
+}
+
+Byte[] idBytes(String text) {
+    var out = new Byte[text.length]
+    var i = 0
+    while (i < text.length) {
+        out[i] = text.charAt(i)
+        i = i + 1
+    }
+    return out
+}
+
+String signReg(Secret sk, String deviceId, String name, String address, String pub) {
+    return crypto.sign(sk, idBytes(regCanonical(deviceId, name, address, pub)))
+}
+
+String signOffer(Secret sk, String offerId, String deviceId, String name, Int size, String digest) {
+    return crypto.sign(sk, idBytes(offerCanonical(offerId, deviceId, name, size, digest)))
+}
+
+// Public-half verification — the plane holds ONLY the pub (never a secret).
+Bool verifyReg(String pubHex, String deviceId, String name, String address, String sig) {
+    return crypto.verify(secrets.of(pubHex), idBytes(regCanonical(deviceId, name, address, pubHex)), sig)
+}
+
+Bool verifyOffer(String pubHex, String offerId, String deviceId, String name, Int size, String digest, String sig) {
+    return crypto.verify(secrets.of(pubHex), idBytes(offerCanonical(offerId, deviceId, name, size, digest)), sig)
+}

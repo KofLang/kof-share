@@ -3,6 +3,10 @@ server-control.apikey
 server-control.bearer
 server-control.ed25519
 server-registry.*.json
+kofshare-device.ed25519
+check-identity.ed25519
+ident-*
+probe-*
 check-auth.*
 check-share.*
 persist-test.*

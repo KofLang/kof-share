@@ -52,3 +52,102 @@ O relay cobre "ambos os peers alcançáveis pelo host de controle"; NÃO cobre d
 
 Pousado: **A1 persistência** (`PERSIST-OK` ×2 + sonda de restart); **C1 face Ed25519** no Kof4j (contrato congelado `D-KOF-SIGN`: `crypto.sign/verify` sobre `Secret`+`Byte[]`, hex da casa, gap nomeado SECN013, `CryptoSignE2ETest` 3/3); **C2 modelo `share.kf` completo** (token = `security.randomHex(32)`, `expiresAt`/`maxUses`/`--once`/`readOnly`/revogação, gate `GET /s/<token>` via `shareTouch` — só `OK` serve metadados — recusas REG030–REG041, expiração A4 dobrada via `sharesPurgeExpired`; goldens `SHARECHECK-OK` 22/22 JVM+Script + `HTTPCHECK-OK` 21/21 ao vivo + `RESTART-OK`; o produto achou + corrigiu o bug de ctor empacotado §582 e registrou o bug vivo §583 — depois CONSERTADO no compilador 03/10 (`json.decode<T>` chegava UNKNOWN ao analisador SEM enquanto o emit conhecia T — SEM012 pulado → VerifyError no dispatch; o analisador agora espelha o emit, `JsonDecodeLongAssignE2ETest` 3/3; a forma typed-Long do produto segue correta de qualquer jeito)). Depois, em ordem: **A2** ponte SSE/WS — POUSADA 03/10 (`ScriptSseWsE2ETest` 1/1: `app.sse` interpretado transmite por socket real; `app.ws` interpretado completa handshake 101 + eco; linha de escopo do §574 aposentada) → **C3** bearer auth — LANDED 03/10 (voto D3=B; implementada na camada JWT nativa do runtime: segredo de controle mintado via `security.apiKeyGenerate` + `auth.secret`, bearer = JWT assinado `{sub,name,roles}`, gate por requisição `auth.authenticated()` + checagem na tabela (AUTH001–AUTH006, AUTH043 arquivo corrompido; Authorization violada recebe o 401 medido do runtime antes do handler); auto-inscrição só com tabela vazia; goldens `HTTPCHECK-OK` 28/28 com marcador gateado + `RESTART-OK` 6/6 com revogação sobrevivendo ao restart) → **A3** resume negotiation. `--check` acumula uma perna por fatia pousada (agora seis: `registry persist plain secure share` todas verdadeiras). B2/B3 ficam votado-A (relay manual, destinatário CLI).
 Frente compilador fechada 04/10: o **§591** aposentou os falsos-REDs cross-arch (gate as+ld+qemu + `has()` ciente de `KOF_CROSS_PREFIX`); suíte completa do `lab` medida 5180/2F/661S, as únicas 2F são corridas de cancelamento do `InteropTimeoutE2ETest` sob carga da suíte — 0F sozinhas (condição da frente interop, não do produto). Jar do produto reconstruído do tip final; todos os goldens re-varridos verdes, incl. SERVECHECK-OK dois processos e HTTPCHECK-OK+RESTART-OK com estado limpo do control plane.
+
+## 5. EVOLUÇÃO DE PRODUTO (v2 — prompt da mantenedora 05/10)
+
+KofShare deixa de ser prova de planos e vira O PRODUTO: "um link, um cliente,
+uma autorização, uma conexão direta". O baseline v1 é CONTRATO: os goldens
+existentes (USERCHECK/SERVECHECK/HTTPCHECK/RESTART/SHARE/RESUME/PERSIST/RELAY
++ as oito pernas CHECK) devem permanecer verdes a cada passo; o que funcionava
+e para de funcionar é BUG da implementação NOVA (regra R6 estendida ao
+programa v2).
+
+Ordem obrigatória (uma trilha por fatia: implementar → testar → golden →
+regressão → documentar → commit; uma limitação do compilador PAROU a feature
+e ABRE tarefa explícita no Kof4j — nunca workaround arquitetural silencioso):
+
+```text
+1. Identidade/device          POUSADA 05/10 (v2-Track A, IDENTITYCHECK-OK)
+2. Abstração de recurso       (FileResource: id/nome/tamanho/hash/tipo — nunca
+                               path remoto no wire)
+3. Diretórios                 (árvore lógica, integridade por arquivo + digest
+                               da coleção; empacotar pode ser interno, NUNCA
+                               contrato do protocolo)
+4. Sessão/sinalização         (CREATED→OFFERED→CLAIMED→NEGOTIATING→CONNECTED→
+                               TRANSFERRING→COMPLETED/FAILED/CANCELLED/
+                               EXPIRED; transição inválida = recusa por nome;
+                               o plano NUNCA carrega bytes de arquivo)
+5. Conectividade automática   (ConnectionStrategy DIRECTA→NAT→TRAVERSAL→RELAY;
+                               relay continua ciphertext-only; o --relay manual
+                               votado (D4) vira perna de fallback, não caminho
+                               do usuário)
+6. Destinatário browser       (página kofshare.app/s/<token> dirige o cliente
+                               local — EXIGE primeiro as primitivas no Kof4j:
+                               kof.net + keyExchange em JS; NETN001/SECN012
+                               recusam por NOME hoje e devem ser fechados NA
+                               LINGUAGEM, jamais por hack JS externo)
+7. UX/simplificação CLI       (`share ./arquivo --expires 24h --once` →
+                               SHARE-LINK; nada de portas/host/tokens para o
+                               humano; verbos antigos viram aliases internos —
+                               Track M: nada removido sem migração documentada
+                               + teste de regressão)
+8. Integração total           (testes de conectividade com dois processos
+                               reais; todos os goldens; flakes de cold-start
+                               documentados)
+9. Documentação               (README = a história completa do produto:
+                               limites honestos — P2P ≠ disponibilidade com o
+                               dono offline (DEVICE-OFFLINE), o plano de
+                               controle é infraestrutura real, tráfego de
+                               relay existe)
+10. Release candidate         (critério final de sucesso do prompt)
+```
+
+Não-agora, dito pelo prompt: billing, GUI desktop, Android, storage central.
+A arquitetura não pode PRECLUÍ-los (Account/Organization/Policy/Usage/
+RelayQuota/Audit devem ser adicionáveis sem reescrever o protocolo) — as
+tabelas de binding da v2-Track A são exatamente esse tipo de costura.
+### v2-Track A — identidade por device (POUSADA 05/10, `IDENTITYCHECK-OK`)
+
+Uma identidade Ed25519 POR INSTALAÇÃO, separada do bearer da conta (a lei do
+prompt: "a conta autentica o usuário; a chave identifica o dispositivo").
+`kofshare/identity.kf`: boot (gera uma vez, persiste o secret 184-hex
+quase-atomicamente, sobrevive a restart — mesma disciplina da chave de
+controle; ID005 por nome em arquivo corrompido), deviceId DERIVADO como
+`d-<sha256(pub64)[0:16]>` (copiar identidade entre máquinas gera id diferente
+— duplicação recusada POR CONSTRUÇÃO; DEV005 ainda guarda contra cliente que
+mente o id derivado), strings canônicas com versão (`v1|reg|…`, `v1|offer|…`)
+assinadas com a metade privada e verificadas com a pública SOZINHA
+(`crypto.verify(secrets.of(pub64),…)` — contrato D-KOF-SIGN; o secret nunca
+sai do device). Plano de controle (`registry.kf` + `app.kf`): tabela de
+binding deviceId→{pub,status} persistida (`server-registry.devkeys.json`,
+REG009 corrompido), rota NOVA POST /devices/register (TOFU — a primeira
+inscrição confia na auto-assinatura, toda operação posterior verifica contra a
+chave guardada), GET /device-keys/:id, POST /devices/:id/revoke; o gate de
+oferta roda ANTES da inserção (medido antes de pousar: a ordem ingênua —
+controlOffer insere, depois verifica — meia-inseria uma oferta recusada) e é
+CONTEXTUAL (Track I): devices inscritos DEVEM assinar (DEV002 inválida /
+DEV004 ausente / DEV003 revogado), devices v1 sem chave passam INTACTOS
+(Track M: POST /devices, ids à mão, bodies sem o campo — as pernas v1 estão
+verdes nas legs legacyV1/RESTART-OK/HTTPCHECK-OK do golden). A revogação
+chega ao CAMINHO DE DADOS: GET /s/<token> recusa DEV003 por nome (autorização
+consumida está MORTA, não apenas ausente no futuro). `downFetch` corrigido no
+caminho (só checou prefixo "REG"; qualquer body não-`{` é recusa nomeada — um
+DEV003 seria decodificado como lixo). userflow `upPublishSigned` (id derivado,
+inscrição assinada, oferta assinada); CLI: `up` sem `--id` pega a lane de
+identidade (boot `kofshare-device.ed25519`, imprime o id derivado), `--id`
+mantém a lane v1; verbo NOVO `device new|enroll|revoke|list`; `--check` ganhou
+a perna 8 `identity=` (matriz pura, verde JVM E Script — keyExchange/sign/
+verify funcionam no interpretador; SECN012 segue gap só de Native/JS). Golden
+`identitycheck/checkidentity.kf` — 14 impressões com processos reais extras
+(plano spawn, serve spawn, RESTART do plano sobre devkeys persistidas) e
+recusas nomeadas AUTH001/DEV002/DEV003/DEV004/DEV005 em inscrição, oferta,
+republicação, grant e sobrevivência a restart; pegou também uma VERDADE de
+produto no RED: ids de oferta são content-addressed (o-<digest[0:12]>) — um
+segundo device publicando os MESMOS bytes sobrepõe o slot da primeira oferta;
+semântica v1, documentada no golden, é a Track 2/3 (identidade de recurso) que
+revisita isso. Sem regressão: HTTPCHECK-OK + RESTART-OK (ciclo seed→restart→
+verify completo contra server.kf standalone com controlServe de 12 args),
+USERCHECK-OK 13 pernas, SHARECHECK-OK, SERVECHECK-OK, RELAY-OK,
+RESUMECHECK-OK, PERSIST-OK, CHECK-OK ×8 pernas JVM+Script, 25/25 arquivos
+check-clean isolados.
+

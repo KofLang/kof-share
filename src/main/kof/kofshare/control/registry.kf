@@ -1,6 +1,7 @@
 package kofshare.control
 
 import kof.json
+import kofshare.identity
 
 // Control-plane registry (implementation-plan.md §2 Fatia 1). PURE domain:
 // the maps are passed in and mutated in place (no IO, no time, no randomness
@@ -12,7 +13,7 @@ record OfferInfo(String id, String deviceId, String path, Int size, String sha25
 
 // A4 wire contract: what the CLIENT may send. The server stamps createdAt
 // itself — a client cannot fake freshness or resurrect expired ids.
-record OfferRequest(String id, String deviceId, String path, Int size, String sha256Hex)
+record OfferRequest(String id, String deviceId, String path, Int size, String sha256Hex, String offerSig)
 
 Long offerTtlMs() {
     return 86400000
@@ -167,6 +168,143 @@ String controlLoadList(String path, Map<String, DeviceInfo> devices, Map<String,
         }
     } catch (String e) {
         return "REG009: corrupt registry " + path + ": " + e
+    }
+    return "OK"
+}
+
+// ── TRACK A — device identity binding (product evolution 05/10) ──────────
+// The v1 surfaces above stay EXACTLY as they are (Track M): DeviceInfo's wire
+// does not change, POST /devices with a v1 body still registers without a
+// key. The identity story lives in a PARALLEL binding table: deviceId ->
+// DeviceKey{pub,status}. Enrollment is TOFU (first enrollment trusts the
+// self-signed proof; every later op must verify against the stored PUBLIC
+// half only). Named refusals (R6): DEV001 no key bound · DEV002 signature
+// invalid · DEV003 device revoked · DEV004 signature required ·
+// DEV005 deviceId does not match public key.
+
+record DeviceKey(String deviceId, String pub, String status)
+
+// What the NEW client posts on /devices (superset of DeviceInfo; a v1 body
+// decodes with null pub/regSig — the app route treats that as the LEGACY
+// path. Missing fields decode as null, measured 05/10 — normalize first).
+record DeviceRegister(String id, String name, String address, String pub, String regSig)
+
+
+String controlEnroll(Map<String, DeviceInfo> devices, Map<String, DeviceKey> devkeys, DeviceRegister r) {
+    var id = r.id
+    var name = r.name
+    var address = r.address
+    var pub = r.pub
+    var sig = r.regSig
+    if (id == null) {
+        id = ""
+    }
+    if (name == null) {
+        name = ""
+    }
+    if (address == null) {
+        address = ""
+    }
+    if (pub == null) {
+        pub = ""
+    }
+    if (sig == null) {
+        sig = ""
+    }
+    if (id.length() == 0) {
+        return "REG001: empty device id"
+    }
+    if (address.length() == 0) {
+        return "REG002: empty device address"
+    }
+    if (pub.length() != 64) {
+        return "DEV005: public key must be 64 hex chars"
+    }
+    if (identityDeviceId(pub) != id) {
+        return "DEV005: deviceId " + id + " does not match public key"
+    }
+    var existing: DeviceKey? = devkeys.get(id)
+    if (existing != null && existing.status == "revoked") {
+        return "DEV003: device revoked " + id
+    }
+    if (sig.length() == 0) {
+        return "DEV004: enrollment requires a signature over the registration"
+    }
+    if (!verifyReg(pub, id, name, address, sig)) {
+        return "DEV002: enrollment signature invalid"
+    }
+    if (existing != null && existing.pub != pub) {
+        return "DEV005: device id already bound to a different public key"
+    }
+    devices.put(id, DeviceInfo(id, name, address))
+    devkeys.put(id, DeviceKey(id, pub, "active"))
+    return "OK"
+}
+
+// The TRACK A identity gate for offers — ONE pure function, used by the HTTP
+// route BEFORE insertion (a refused signature must never half-insert). Keyless
+// v1 devices are untouched (Track M); an ENROLLED device must present a valid
+// signature over the canonical offer string. offerSig arrives null from v1
+// bodies (missing field decodes as null — measured 05/10), normalized here.
+String controlOfferChecked(Map<String, DeviceKey> devkeys, OfferRequest q) {
+    var key: DeviceKey? = devkeys.get(q.deviceId)
+    if (key == null) {
+        return "OK"
+    }
+    if (key.status == "revoked") {
+        return "DEV003: device revoked " + q.deviceId
+    }
+    var sig = q.offerSig
+    if (sig == null) {
+        sig = ""
+    }
+    if (sig.length() == 0) {
+        return "DEV004: signed offer requires a signature"
+    }
+    if (!verifyOffer(key.pub, q.id, q.deviceId, q.path, q.size, q.sha256Hex, sig)) {
+        return "DEV002: offer signature invalid"
+    }
+    return "OK"
+}
+
+String controlDeviceRevoke(Map<String, DeviceKey> devkeys, String id) {
+    var key: DeviceKey? = devkeys.get(id)
+    if (key == null) {
+        return "DEV001: no public key for device " + id
+    }
+    devkeys.put(id, DeviceKey(key.deviceId, key.pub, "revoked"))
+    return "OK"
+}
+
+String controlDevkeysJson(Map<String, DeviceKey> devkeys) {
+    var out = new List<DeviceKey>()
+    var ids = devkeys.keys()
+    ids.sort()
+    for (var id in ids) {
+        var k: DeviceKey? = devkeys.get(id)
+        if (k != null) {
+            out.add(k)
+        }
+    }
+    return json.encode(out)
+}
+
+String controlLoadDevkeys(Map<String, DeviceKey> devkeys, String path) {
+    var f = File(path)
+    if (!f.exists()) {
+        return "OK"
+    }
+    var txt = f.readText()
+    if (txt == null) {
+        return "REG009: unreadable devkeys registry " + path
+    }
+    try {
+        var list: List<DeviceKey> = json.decode<List<DeviceKey>>(txt)
+        for (var k in list) {
+            devkeys.put(k.deviceId, k)
+        }
+    } catch (String e) {
+        return "REG009: corrupt devkeys registry " + path + ": " + e
     }
     return "OK"
 }

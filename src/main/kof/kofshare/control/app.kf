@@ -21,7 +21,7 @@ import kof.auth
 // /s/<token> is the authorization gate (shareTouch decides; only "OK"
 // serves offer metadata). The SECRET stays a Secret handle end to end.
 
-void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferInfo> offers, String dpath, String opath, Map<String, ShareInfo> shares, String spath, Secret controlKey, Map<String, Account> accounts, String apath, String controlSecret) {
+void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferInfo> offers, String dpath, String opath, Map<String, ShareInfo> shares, String spath, Secret controlKey, Map<String, Account> accounts, String apath, String controlSecret, Map<String, DeviceKey> devkeys, String kpath) {
     var app = web.app()
 
     app.get("/devices") {
@@ -52,6 +52,55 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
         return "REGISTERED: " + d.id()
     }
 
+    // TRACK A enrollment lane (product evolution 05/10). The v1 route above
+    // is UNCHANGED (Track M): keyless DeviceInfo bodies still register. Here
+    // the device proves it HOLDS the private half over a canonical
+    // registration string; the plane stores ONLY the public 64-hex (TOFU:
+    // first enrollment trusts the self-signature, later ops verify against
+    // the stored key). Same persistence discipline as devices (quasi-atomic
+    // save after every mutation).
+    app.post("/devices/register") {
+        var g = controlAuthGate(accounts)
+        if (g != "OK") {
+            return g
+        }
+        var r = json.decode<DeviceRegister>(body())
+        var v = controlEnroll(devices, devkeys, r)
+        if (v != "OK") {
+            return v
+        }
+        if (dpath.length() > 0) {
+            controlSaveList(dpath, controlDevicesJson(devices))
+        }
+        if (kpath.length() > 0) {
+            controlSaveList(kpath, controlDevkeysJson(devkeys))
+        }
+        return "REGISTERED: " + r.id()
+    }
+
+    app.get("/device-keys/:id") {
+        var k: DeviceKey? = devkeys.get(param("id"))
+        if (k == null) {
+            return "DEV001: no public key for device " + param("id")
+        }
+        return "PUB: " + k.pub + " STATUS: " + k.status
+    }
+
+    app.post("/devices/:id/revoke") {
+        var g = controlAuthGate(accounts)
+        if (g != "OK") {
+            return g
+        }
+        var v = controlDeviceRevoke(devkeys, param("id"))
+        if (v != "OK") {
+            return v
+        }
+        if (kpath.length() > 0) {
+            controlSaveList(kpath, controlDevkeysJson(devkeys))
+        }
+        return "DEVICE-REVOKED: " + param("id")
+    }
+
     app.get("/offers") {
         var dv: String? = query("device")
         var filter = ""
@@ -67,6 +116,15 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
             return g
         }
         var q = json.decode<OfferRequest>(body())
+        // TRACK A gate FIRST (measured before landing: the naive order ran
+        // controlOffer — which INSERTS — before the signature check, leaving
+        // a refused offer half-present in the registry): a device that
+        // ENROLLED a key signs its offers. Contextual rule (Track I:
+        // "token válido ≠ acesso ilimitado") — keyless v1 devices pass.
+        var ig = controlOfferChecked(devkeys, q)
+        if (ig != "OK") {
+            return ig
+        }
         // A4: the SERVER stamps freshness — the client cannot fake createdAt
         // or resurrect an expired id from the wire.
         var o = OfferInfo(q.id, q.deviceId, q.path, q.size, q.sha256Hex, time.now())
@@ -218,6 +276,13 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
         var d: DeviceInfo? = controlResolve(devices, o.deviceId)
         if (d == null) {
             return "REG032: unknown device " + o.deviceId
+        }
+        // TRACK A revocation reaches the DATA path here (not only future
+        // enrollments): the grant names a device; if that device's key is
+        // revoked, the authorization it carries is dead — by name.
+        var k: DeviceKey? = devkeys.get(o.deviceId)
+        if (k != null && k.status == "revoked") {
+            return "DEV003: device revoked " + o.deviceId
         }
         if (spath.length() > 0) {
             controlSaveList(spath, sharesJson(shares))

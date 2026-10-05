@@ -94,7 +94,7 @@ String offerJson(String path) {
         return "OFFER-ERR: empty file: " + path
     }
     var digest = crypto.sha256Bytes(toBytes(data))
-    var o = OfferRequest("o-" + digest.substring(0, 12), "local", path, data.size, digest)
+    var o = OfferRequest("o-" + digest.substring(0, 12), "local", path, data.size, digest, "")
     return json.encode(o)
 }
 
@@ -202,6 +202,33 @@ Boolean secureLeg() {
 }
 
 // `--check` — the one command that shows the whole product green.
+// `--check` leg 8 — Track A identity, pure single-process (Script-safe):
+// boot persists, id derives, canonical sign/verify round-trips through the
+// PUBLIC half alone, and both lies (tampered message, wrong key) refuse.
+// The identity file for this leg is scratch (deleted at the end).
+Bool identityLeg() {
+    var path = "check-identity.ed25519"
+    if (File(path).exists()) {
+        File(path).delete()
+    }
+    var sk = identityBoot(path)
+    var pub = identityPub(sk)
+    var id = identityDeviceId(pub)
+    var again = identityBoot(path)
+    var persisted = identityPub(again) == pub
+    var sig = signReg(sk, id, "n", "127.0.0.1:1", pub)
+    var verified = verifyReg(pub, id, "n", "127.0.0.1:1", sig)
+    var tampered = verifyReg(pub, id, "n", "127.0.0.1:2", sig)
+    var sk2 = keyExchange.privateKey("Ed25519")
+    var wrongKey = verifyReg(identityPub(sk2), id, "n", "127.0.0.1:1", sig)
+    var osig = signOffer(sk, "o-1", id, "f.bin", 10, "ab")
+    var everified = verifyOffer(pub, "o-1", id, "f.bin", 10, "ab", osig)
+    var elied = verifyOffer(pub, "o-1", id, "f.bin", 11, "ab", osig)
+    File(path).delete()
+    return pub.length() == 64 && id.indexOf("d-") == 0 && persisted && verified
+        && !tampered && !wrongKey && everified && !elied
+}
+
 Int runCheck() {
     var reg = registryLeg()
     var plain = plainLeg()
@@ -217,7 +244,9 @@ Int runCheck() {
     println("auth=" + auth)
     var resume = resumeLeg()
     println("resume=" + resume)
-    if (reg && persist && plain && secure && share && auth && resume) {
+    var identity = identityLeg()
+    println("identity=" + identity)
+    if (reg && persist && plain && secure && share && auth && resume && identity) {
         println("CHECK-OK")
         return 0
     }
@@ -389,10 +418,88 @@ Int runDry() {
 // control plane, learns the publisher address FROM THE GRANT, resumes from
 // any local .part, transfers and verifies the offer digest (DOWN-ERR by
 // name on mismatch — never silent).
+Int runDevice(List<String> args) {
+    if (args.size < 1) {
+        println("DEVICE-ERR: usage: device new | device enroll <ctrlHost> <ctrlPort> [--name <n>] [--bearer <jwt>] | device revoke <ctrlHost> <ctrlPort> <deviceId> [--bearer <jwt>] | device list <ctrlHost> <ctrlPort> [--bearer <jwt>]")
+        return 1
+    }
+    var sub = args.get(0)
+    if (sub == "new") {
+        var sk = identityBoot("kofshare-device.ed25519")
+        var pub = identityPub(sk)
+        println("DEVICE-ID " + identityDeviceId(pub))
+        println("PUB " + pub)
+        return 0
+    }
+    if (sub == "enroll") {
+        if (args.size < 3) {
+            println("DEVICE-ERR: enroll needs <ctrlHost> <ctrlPort>")
+            return 1
+        }
+        var base = "http://" + args.get(1) + ":" + args.get(2)
+        var name = "device"
+        var bearer = ""
+        var i = 3
+        while (i < args.size) {
+            var a = argAt(args, i)
+            if (a == "--name") {
+                name = argAt(args, i + 1)
+                i = i + 2
+            } else {
+                if (a == "--bearer") {
+                    bearer = argAt(args, i + 1)
+                    i = i + 2
+                } else {
+                    i = i + 1
+                }
+            }
+        }
+        var addr = argAt(args, 1) + ":" + argAt(args, 2)
+        var sk = identityBoot("kofshare-device.ed25519")
+        var pub = identityPub(sk)
+        var id = identityDeviceId(pub)
+        var out = http.post(base + "/devices/register",
+            json.encode(DeviceRegister(id, name, addr, pub, signReg(sk, id, name, addr, pub))),
+            "Authorization: Bearer " + bearer)
+        println(out)
+        return 0
+    }
+    if (sub == "revoke") {
+        if (args.size < 4) {
+            println("DEVICE-ERR: revoke needs <ctrlHost> <ctrlPort> <deviceId>")
+            return 1
+        }
+        var base = "http://" + args.get(1) + ":" + args.get(2)
+        var bearer = ""
+        if (args.size > 4 && argAt(args, 4) == "--bearer") {
+            bearer = argAt(args, 5)
+        }
+        var out = http.post(base + "/devices/" + args.get(3) + "/revoke", "{}",
+            "Authorization: Bearer " + bearer)
+        println(out)
+        return 0
+    }
+    if (sub == "list") {
+        if (args.size < 3) {
+            println("DEVICE-ERR: list needs <ctrlHost> <ctrlPort>")
+            return 1
+        }
+        var base = "http://" + args.get(1) + ":" + args.get(2)
+        var bearer = ""
+        if (args.size > 3 && argAt(args, 3) == "--bearer") {
+            bearer = argAt(args, 4)
+        }
+        println(http.get(base + "/devices"))
+        return 0
+    }
+    println("DEVICE-ERR: unknown device subcommand " + sub)
+    return 1
+}
+
 Int runUp(List<String> args) {
     var rest = tail(args, 1)
     if (rest.size < 4) {
-        println("UP-ERR: usage: up <controlHost> <controlPort> <file> --id <dev> [--name <n>] [--serve <host:port>] [--bearer <jwt>]")
+        println("UP-ERR: usage: up <ctrlHost> <ctrlPort> <file> --serve <host:port> [--id <dev>] [--name <n>] [--bearer <jwt>]  (--id present = v1 keyless lane; absent = Track A signed identity)")
         return 1
     }
     var controlBase = "http://" + rest.get(0) + ":" + rest.get(1)
@@ -420,15 +527,27 @@ Int runUp(List<String> args) {
             }
         }
     }
-    if (deviceId.length() == 0 || serveAddr.length() == 0) {
-        println("UP-ERR: up needs --id <device> and --serve <host:port> (the address the recipient will dial)")
+    if (serveAddr.length() == 0) {
+        println("UP-ERR: up needs --serve <host:port> (the address the recipient will dial)")
         return 1
     }
     if (name.length() == 0) {
         name = deviceId
     }
-    var out = upPublish(controlBase, deviceId, name, serveAddr, filePath,
-        "Authorization: Bearer " + bearerArg(rest, 3))
+    var bearer = "Authorization: Bearer " + bearerArg(rest, 3)
+    var out = ""
+    if (deviceId.length() > 0) {
+        // v1 lane (Track M): hand-picked id, keyless registration
+        out = upPublish(controlBase, deviceId, name, serveAddr, filePath, bearer)
+    } else {
+        // TRACK A lane: one Ed25519 identity per installation, id derived
+        // from the public key, enrollment+offer signed by the device.
+        var sk = identityBoot("kofshare-device.ed25519")
+        if (name.length() == 0) {
+            name = "device"
+        }
+        out = upPublishSigned(controlBase, sk, name, serveAddr, filePath, bearer)
+    }
     println(out)
     return 0
 }
@@ -659,6 +778,12 @@ Int runServer(List<String> args) {
     var offers = new Map<String, OfferInfo>()
     controlLoadList("server-registry.devices.json", devices, null)
     controlLoadList("server-registry.offers.json", null, offers)
+    var devkeys = new Map<String, DeviceKey>()
+    var kload = controlLoadDevkeys(devkeys, "server-registry.devkeys.json")
+    if (kload.indexOf("REG009") == 0) {
+        println(kload)
+        return 1
+    }
     var shares = new Map<String, ShareInfo>()
     var spath = "server-registry.shares.json"
     var load = shareLoadList(shares, spath)
@@ -690,7 +815,8 @@ Int runServer(List<String> args) {
     println("SERVER-READY port=" + port + " key=" + key + " devices=" + devices.size() + " offers=" + offers.size() + " shares=" + shares.size() + " accounts=" + accounts.size())
     controlServe(port, devices, offers,
         "server-registry.devices.json", "server-registry.offers.json",
-        shares, spath, controlKey, accounts, apath, controlSecret)
+        shares, spath, controlKey, accounts, apath, controlSecret,
+        devkeys, "server-registry.devkeys.json")
     return 0
 }
 
@@ -998,6 +1124,13 @@ main(args: List<String>) {
         var rc = runDown(tail(args, start))
         if (rc != 0) {
             throw "kofshare: DOWN-ERR"
+        }
+        return
+    }
+    if (cmd == "device") {
+        var rc = runDevice(tail(args, start))
+        if (rc != 0) {
+            throw "kofshare: DEVICE-ERR"
         }
         return
     }
