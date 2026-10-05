@@ -71,9 +71,10 @@ e ABRE tarefa explícita no Kof4j — nunca workaround arquitetural silencioso):
 2. Abstração de recurso       POUSADA 05/10 (v2-Track F,
                                RESOURCECHECK-OK; FileResource: id/nome/tamanho/hash/tipo — nunca
                                path remoto no wire)
-3. Diretórios                 (árvore lógica, integridade por arquivo + digest
-                               da coleção; empacotar pode ser interno, NUNCA
-                               contrato do protocolo)
+3. Diretórios                 POUSADO 05/10 (v2-Track G, FOLDERCHECK-OK; árvore
+                               lógica, integridade por arquivo + digest da
+                               coleção; NADA empacotado no wire — o contrato
+                               segue um arquivo por grant)
 4. Sessão/sinalização         POUSADA 05/10 (v2-Track C, SESSIONCHECK-OK;
                                estados reais CREATED→CLAIMED→NEGOTIATING→CONNECTED→
                                TRANSFERRING→COMPLETED/FAILED/CANCELLED/
@@ -397,3 +398,82 @@ RELAY-OK, SHARECHECK-OK, HTTPCHECK-OK + RESTART-OK (caminhos inalterados,
 varredura standalone), CHECK-OK 11 pernas × JVM+Script, 33/33 arquivos
 check-clean isolados.
 
+
+
+### v2-Track G — diretórios como coleções lógicas (POUSADO 05/10, `FOLDERCHECK-OK`)
+
+O voto (D6=A, reaberto pelo prompt v2) exigia diretórios como COLEÇÕES de
+Resources — nunca tarball, nunca protocolo de empacotamento. O que pousou:
+
+- `directory.kf` é o domínio: `DirEntry{resourceId,logicalPath,type,size,
+  hash,modifiedAt}`; o record do manifest chama-se `DirTree` (o nome nu
+  `Directory` pertence à primitiva de filesystem — sombreá-lo quebrou o
+  cliente app, medido). Cada filho mantém seu id de recurso da Track F.
+- LEI DA ORDEM: `sortEntries` põe a linha-RAIZ primeiro, depois ordem
+  lexicográfica estrita por caminho lógico. A ordenação crua colocava a raiz
+  DEPOIS de "raiz/a.txt" porque `'/'` é o ordinal 47 — um contrato de índice
+  não pode ser acidente da ordem ASCII dos separadores (pegado pelo RED; o
+  golden afirma raiz-primeiro).
+- LEI DO DIGEST: `directoryDigest = sha256("v1|dir|<raiz>|<linhas-filhas>")`
+  cobre APENAS as FILHAS. O id da linha-raiz deriva do digest; incluí-la seria
+  circularidade. A raiz permanece no manifest pela forma da árvore — apenas
+  não se hashia a si mesma.
+- O PLANO GATEIA ANTES DE INSERIR: `REG015` (id de entrada fora do formato de
+  recurso, segmentos de traversal/vazios/`.`/`..`, `\` ou `:` em segmento,
+  tipo desconhecido, caminho lógico duplicado) e `REG016` (digest recomputado
+  divergente — o plano hashia o manifest sozinho; tamanho ≠ contagem de
+  entradas). Assinaturas verificam primeiro (ordem da Track A).
+- MODELO DE CAPACIDADE: um token de share para a árvore. `/s/<token>` (sem
+  seletor) = grant DIRECTORY (manifest no wire: ids por filho + caminhos
+  lógicos + BASENAMES — o layout do criador nunca atravessa);
+  `/s/<token>?child=N` = grant FILE do N-ésimo arquivo do manifest ordenado.
+  Diretórios não têm bytes e não são selecionáveis. `shareTouch` roda ANTES de
+  qualquer resolução: maxUses permanece honesto entre seletores (prova: share
+  `--once` morre `REG038` na segunda resolução de qualquer forma). Revogação
+  mata todas as formas (`DEV003`), gate de presença incluso.
+- FACE DO DEVICE (`serve-dir`): cada conexão carrega `[offset]` + HELLO com
+  tipo `dirHelloBase()+filho` — wire ADITIVO (1073700000+filho fica estritamente
+  abaixo de qualquer sentinela v1; `helloIndex` puro mantém o significado de
+  arquivo único intocado). A face re-caminha a pasta, ordena pela mesma lei e
+  serve o filho pelo MESMO núcleo `sendChunks` do v1 — resume por arquivo,
+  tags por arquivo, um accept por filho, recusas por nome.
+- DESTINATÁRIO (CLI `updir`/`downdir`/`serve-dir`): um dial por filho, destino
+  = raiz ESCOLHIDA pelo destinatário + o caminho LÓGICO, digest por filho
+  (resume no meio: o tamanho do arquivo parcial É o offset anunciado — a lei
+  A3 por filho); `dirJoinSafe` re-gateia traversal no lado do destinatário (o
+  plano autoriza, o cliente é o segundo par de olhos).
+- LIMITES HONESTOS: relay e sessões seladas para árvores NÃO estão nesta lane
+  (a face de diretório usa o transporte plano; arquivos únicos mantêm
+  relay/secure — estender ambos é trabalho da Track H); publicar pasta sem
+  arquivos é recusado por nome.
+
+Golden `foldercheck/checkfolder.kf` — `FOLDERCHECK-OK` duas vezes seguidas,
+13 pernas, processos reais (portas 19420-19422): caminhada real + identidade
+de digest, publicação assinada de diretório, formas de grant pai/filho,
+`wireNoPaths`, transferência completa com nidificação sob a raiz do
+destinatário, resume por filho, recusa `dirJoinSafe`, manifest adulterado
+(`REG016`) e traversal (`REG015`) recusados no plano, usos honestos (`REG038`),
+restart do plano com manifest recarregado byte-idêntico (presença reconquistada
+por heartbeat — a lei da Track D), revogação matando resolução pai E filho.
+
+O RED pegou quatro bugs reais: caminhos lógicos sem o prefixo da raiz no
+`dirWalk`; o acidente de ordenação do `'/'`; HELLO lido duas vezes pela face
+(todo primeiro filho morria `RESUME-ERR` até o stream compartilhar o
+`sendChunks`); e um golden que mintava seu próprio `d-0123456789abcdef`
+enquanto a editora usava a identidade real. O golden agora compartilha a
+identidade E limpa o estado do plano antes de rodar — contaminação entre
+corridas não é flakiness.
+
+BUG DO KOF4J capturado e desviado legitimamente: parâmetro de tipo `T?`
+atravessando ramos derruba o backend JVM (`COMP002` / ASM `COMPUTE_FRAMES`,
+`Index -1`) — reproduzido minimamente, IR capturado, a ser reportado upstream.
+A forma do produto COALESCES a query nullable no chamador em `String` puro (a
+mesma disciplina dos rebinds de `json.decode`). A linguagem não mudou; nada
+foi fingido.
+
+Sem regressão na árvore final: FOLDERCHECK-OK (×2), RESOURCECHECK-OK,
+USERCHECK-OK, IDENTITYCHECK-OK, SESSIONCHECK-OK, CONNECTCHECK-OK,
+BROWSERCHECK-OK, SERVECHECK-OK, RESUMECHECK-OK, PERSIST-OK, RELAY-OK,
+SHARECHECK-OK, HTTPCHECK-OK + RESTART-OK (servidor externo na 18322 — lei
+anotada: sweeps matam APENAS as portas do próprio golden), CHECK-OK 13 pernas
+× JVM+Script, 36/36 arquivos check-clean isolados.

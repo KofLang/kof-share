@@ -86,7 +86,7 @@ String upPublish(String controlBase, String deviceId, String name, String addres
         throw "UP-ERR: device registration refused: " + reg
     }
     var off = http.post(controlBase + "/offers",
-        json.encode(OfferRequest(offerId, deviceId, filePath, data.size, digest, "", "", "", 0)), authHeader)
+        json.encode(OfferRequest(offerId, deviceId, filePath, data.size, digest, "", "", "", 0, "", "")), authHeader)
     if (off.indexOf("OFFERED:") != 0) {
         throw "UP-ERR: offer registration refused: " + off
     }
@@ -127,7 +127,7 @@ String upPublishSigned(String controlBase, Secret sk, String name, String addres
     var offerSig = signOffer(sk, offerId, deviceId, res.name, data.size, digest)
     var off = http.post(controlBase + "/offers",
         json.encode(OfferRequest(offerId, deviceId, res.name, data.size, digest, offerSig,
-            res.id, res.name, res.modifiedAt)), authHeader)
+            res.id, res.name, res.modifiedAt, "", "")), authHeader)
     if (off.indexOf("OFFERED:") != 0) {
         throw "UP-ERR: offer registration refused: " + off
     }
@@ -258,4 +258,262 @@ String downAuto(String controlBase, String token, String dest, String key,
     }
     return "DOWN-AUTO-OK transport=" + picked.transport + " sid=" + sid +
         " offset=" + t.offset + "/" + t.totalBytes + " digest verified"
+}
+
+// ─── v2-Track G: directories as logical collections ───────────────────────
+// The tree is DOMAIN data (dir.kf model): one DIRECTORY offer carries the
+// SORTED manifest; each child stays an individual Resource with its own
+// digest. NOTHING IS PACKED on the wire — per-file transfer, per-file
+// resume, per-file verification (the golden proves mid-child resume).
+
+List<DirEntry> dirWalk(String deviceId, String rootPath) {
+    var out = new List<DirEntry>()
+    var rootName = resourceName(rootPath)
+    out.add(DirEntry("r-" + crypto.sha256("dirself|" + deviceId + "|" + rootName).substring(0, 16),
+        rootName, "DIRECTORY", 0, "", File(rootPath).modifiedTime()))
+    dirWalkInto(deviceId, rootPath, rootName, out)
+    return out
+}
+
+dirWalkInto(String deviceId, String dir, String logicalPrefix, List<DirEntry> out) {
+    var names = Directory(dir).list()
+    var i = 0
+    while (i < names.size) {
+        var seg = names.get(i)
+        var full = dir + "/" + seg
+        var lpath = seg
+        if (logicalPrefix.length() > 0) {
+            lpath = logicalPrefix + "/" + seg
+        }
+        if (File(full).isDirectory()) {
+            out.add(DirEntry(resourceIdFor(deviceId, lpath, 0, ""), lpath, "DIRECTORY", 0, "",
+                File(full).modifiedTime()))
+            dirWalkInto(deviceId, full, lpath, out)
+        } else {
+            var data = File(full).readBytes()
+            var h = crypto.sha256Bytes(toBytes(data))
+            var sz = data.size
+            out.add(DirEntry(resourceIdFor(deviceId, lpath, sz, h), lpath, "FILE", sz, h,
+                File(full).modifiedTime()))
+        }
+        i = i + 1
+    }
+}
+
+String upPublishDir(String controlBase, Secret sk, String address, String rootPath, String authHeader) {
+    if (!Directory(rootPath).exists()) {
+        throw "UP-ERR: directory not found: " + rootPath
+    }
+    var pub = identityPub(sk)
+    var deviceId = identityDeviceId(pub)
+    var raw = dirWalk(deviceId, rootPath)
+    var entries = sortEntries(raw)
+    var files = 0
+    var i = 0
+    while (i < entries.size) {
+        if (entries.get(i).type == "FILE") {
+            files = files + 1
+        }
+        i = i + 1
+    }
+    if (files == 0) {
+        throw "UP-ERR: directory has no files: " + rootPath
+    }
+    var rootName = resourceName(rootPath)
+    var dirHash = directoryDigest(rootName, entries)
+    var rootId = resourceIdFor(deviceId, rootName, entries.size, dirHash)
+    // rewrite the root self-row with its REAL derived id (dirWalk emitted a
+    // placeholder; the digest never covered it, so this changes nothing).
+    var finalEntries = new List<DirEntry>()
+    var w = 0
+    while (w < entries.size) {
+        var ew = entries.get(w)
+        if (ew.logicalPath == rootName) {
+            finalEntries.add(DirEntry(rootId, ew.logicalPath, ew.type, ew.size, ew.hash, ew.modifiedAt))
+        } else {
+            finalEntries.add(ew)
+        }
+        w = w + 1
+    }
+    entries = finalEntries
+    var offerId = offerIdFor(deviceId, rootId)
+    var regSig = signReg(sk, deviceId, rootName, address, pub)
+    var reg = http.post(controlBase + "/devices/register",
+        json.encode(DeviceRegister(deviceId, rootName, address, pub, regSig)), authHeader)
+    if (reg.indexOf("REGISTERED:") != 0) {
+        throw "UP-ERR: device enrollment refused: " + reg
+    }
+    var offerSig = signOffer(sk, offerId, deviceId, rootName, entries.size, dirHash)
+    var off = http.post(controlBase + "/offers",
+        json.encode(OfferRequest(offerId, deviceId, rootName, entries.size, dirHash, offerSig,
+            rootId, rootName, 0, "DIRECTORY", dirEntriesJson(entries))), authHeader)
+    if (off.indexOf("OFFERED:") != 0) {
+        throw "UP-ERR: directory offer refused: " + off
+    }
+    var beat = http.post(controlBase + "/devices/" + deviceId + "/heartbeat", "{}", authHeader)
+    var beatTag = "presence=ok"
+    if (beat.indexOf("HEARTBEAT-OK") != 0) {
+        beatTag = "presence=skipped(" + beat + ")"
+    }
+    dirBindLocal(rootPath, deviceId, rootId, offerId)
+    return "UP-OK id=" + deviceId + " offer=" + offerId + " resource=" + rootId +
+        " files=" + files + " entries=" + entries.size + " dirhash=" + dirHash.substring(0, 12) + " " + beatTag
+}
+
+// The device-side binding for a tree: one row per FILE child plus the root →
+// the LOCAL directory path (so `serve --dir` can rebuild any child from the
+// folder name alone). The binding file stays LOCAL — §7.
+String dirBindLocal(String rootPath, String deviceId, String rootId, String offerId) {
+    bindingPut("kofshare-resources.json", ResourceBinding(rootId, rootPath))
+    bindingPut("kofshare-resources.json", ResourceBinding("slot-" + offerId, rootPath))
+    return "OK"
+}
+
+ShareGrant grantDecodeChild(String controlBase, String token, Int child) {
+    var body = http.get(controlBase + "/s/" + token + "?child=" + child)
+    if (body.indexOf("{") != 0) {
+        throw "DOWN-ERR: grant refused: " + body
+    }
+    return json.decode<ShareGrant>(body)
+}
+
+// Device-side DIRECTORY face: one accept per child request; HELLO carries the
+// child selector AND the resume offset in the same head (v1 HELLO unchanged
+// for single files — a plain 0-offset HELLO keeps meaning "this session's
+// only file"). Refusals name themselves on SERVE-REFUSED lines; the listener
+// keeps serving.
+String serveDirLoop(String rootPath, Int port, String key) {
+    var l = net.listen(port)
+    println("SERVE-LISTENING port=" + port + " dir=" + resourceName(rootPath))
+    var served = 0
+    var guard = 0
+    while (guard < 64) {
+        var c = l.accept()
+        var first = recvRaw(c, 8)
+        if (first.length < 8) {
+            return "" + served
+        }
+        var typ = be32(first, 4)
+        var off = be32(first, 0)
+        var sel = 0 - 1
+        if (typ == helloIndex()) {
+            sel = 0
+        }
+        if (typ >= dirHelloBase() && typ < dirHelloBase() + 1000000) {
+            sel = typ - dirHelloBase()
+        }
+        var rootName = resourceName(rootPath)
+        var rel = pickNthFile(rootPath, rootName, sel)
+        if (rel.length() == 0) {
+            c.send(headFrame(0, resumeErrIndex()))
+        } else {
+            var rc = serveFilePicked(c, rootPath + "/" + rel, off, key)
+            println("SERVED " + rc + " child=" + sel)
+            served = served + 1
+        }
+        guard = guard + 1
+    }
+    return "" + served
+}
+
+// The device-side truth: rescan + sort yields the SAME order as the manifest
+// published at offer time (sorting by logicalPath is the contract); pick the
+// sel-th FILE and strip the root prefix from its logical path.
+// HELLO already consumed by the loop — stream the picked bytes directly
+// (serveFile would wait for a second handshake; v1 files keep that shape).
+Int serveFilePicked(Conn c, String path, Int off, String key) {
+    var data = File(path).readBytes()
+    var total = data.size
+    var v = resumeVerify(off, total)
+    if (v != "OK") {
+        c.send(headFrame(total, resumeErrIndex()))
+        return 0 - 3
+    }
+    return sendChunks(c, data, off, key)
+}
+
+String pickNthFile(String rootPath, String rootName, Int sel) {
+    if (sel < 0) {
+        return ""
+    }
+    var raws = dirWalk("", rootPath)
+    var entries = sortEntries(raws)
+    var fi = 0
+    var pick = -1
+    var k = 0
+    while (k < entries.size) {
+        if (entries.get(k).type == "FILE") {
+            if (fi == sel) {
+                pick = k
+            }
+            fi = fi + 1
+        }
+        k = k + 1
+    }
+    if (pick < 0) {
+        return ""
+    }
+    var lp = entries.get(pick).logicalPath
+    var pfx = rootName + "/"
+    if (lp.indexOf(pfx) != 0) {
+        return ""
+    }
+    return lp.substring(pfx.length(), lp.length())
+}
+
+// Recipient side. Parent grant (no selector) = manifest; then ONE dial per
+// file child, per-child resume from the destination's own head bytes, per-
+// child digest — the directory is a COLLECTION all the way down.
+String downDir(String controlBase, String token, String destRoot, String key) {
+    var pg = grantDecode(controlBase, token)
+    if (pg.type != "DIRECTORY") {
+        throw "DOWN-ERR: token is not a directory share"
+    }
+    var entries = sortEntries(dirEntriesFromJson(pg.entriesJson))
+    var host = hostOfAddress(pg.deviceAddress)
+    var port = portOfAddress(pg.deviceAddress)
+    var total = 0
+    var files = 0
+    var i = 0
+    while (i < entries.size) {
+        var e = entries.get(i)
+        // selector = ordinal among FILE rows — the same counting law the
+        // plane's ?child=N and the device face apply to the sorted manifest
+        if (e.type != "FILE") {
+            Directory(destRoot + "/" + parentOf(e.logicalPath)).createDirectories()
+            i = i + 1
+            continue
+        }
+        var rel = dirBaseName(e.logicalPath)
+        var full = destRoot + "/" + e.logicalPath
+        var mk = full
+        var cut = mk.lastIndexOf("/")
+        if (cut > 0) {
+            Directory(mk.substring(0, cut)).createDirectories()
+        }
+        var resume = 0
+        if (File(full).exists()) {
+            var pb = File(full).readBytes()
+            resume = pb.size
+        }
+        var c = net.connect(host, port)
+        fetchFileDir(c, full, resume, files, pg.offerId, host, key)
+        var fb = File(full).readBytes()
+        var got = crypto.sha256Bytes(toBytes(fb))
+        if (got != e.hash) {
+            throw "DOWN-ERR: child digest mismatch " + e.logicalPath
+        }
+        total = total + fb.size
+        files = files + 1
+        i = i + 1
+    }
+    return "DOWN-OK dir files=" + files + " bytes=" + total
+}
+
+String parentOf(String logicalPath) {
+    var cut = logicalPath.lastIndexOf("/")
+    if (cut < 0) {
+        return ""
+    }
+    return logicalPath.substring(0, cut)
 }

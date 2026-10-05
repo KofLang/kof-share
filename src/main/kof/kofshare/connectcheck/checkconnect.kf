@@ -261,7 +261,7 @@ main() {
     println("beatPresence=" + (beatOk && presOnline))
     ok = ok && beatOk && presOnline
     var offerId1 = offerIdOf(pub1)
-    var tok1 = tokenId(http.post(base + "/shares", json.encode(ShareRequest(offerId1, 0, 0, false)), auth))
+    var tok1 = tokenId(http.post(base + "/shares", json.encode(ShareRequest(offerId1, 0, 0, false, false)), auth))
     var clear1 = portClear(planePort + 1)
     var serve1 = clear1 && spawnCli("cn-serve1.log", "SERVE-LISTENING",
         listOf("serve", "cn-src.bin", "" + (planePort + 1), "--key", "k0"))
@@ -292,7 +292,7 @@ main() {
     var sk2 = identityBoot("cn-dev2.ed25519")
     var pub2 = upPublishSigned(base, sk2, "cn2", "127.0.0.1:19394", "cn-src2.bin", auth)
     var offerId2 = offerIdOf(pub2)
-    var tok2 = tokenId(http.post(base + "/shares", json.encode(ShareRequest(offerId2, 0, 0, false)), auth))
+    var tok2 = tokenId(http.post(base + "/shares", json.encode(ShareRequest(offerId2, 0, 0, false, false)), auth))
     var clear2 = portClear(planePort + 2)
     var serve2 = clear2 && spawnCli("cn-serve2.log", "SERVE-LISTENING",
         listOf("serve", "cn-src2.bin", "" + (planePort + 2), "--key", "k0"))

@@ -71,9 +71,10 @@ explicit Kof4j task — no silent architectural workaround):
 2. Resource abstraction         LANDED 05/10 (v2-Track F,
                                  RESOURCECHECK-OK; FileResource: id/name/size/hash/type — never
                                  a remote path on the wire)
-3. Directories                  (logical tree, per-file integrity + collection
-                                 digest; packing may be internal, NEVER the
-                                 protocol contract)
+3. Directories                  LANDED 05/10 (v2-Track G, FOLDERCHECK-OK;
+                                 logical tree, per-file integrity + collection
+                                 digest; NOTHING packed on the wire — the
+                                 protocol contract stays one file per grant)
 4. Session / signaling          LANDED 05/10 (v2-Track C, SESSIONCHECK-OK;
                                  actual states CREATED→CLAIMED→NEGOTIATING→
                                  CONNECTED→TRANSFERRING→COMPLETED/FAILED/
@@ -383,3 +384,83 @@ IDENTITYCHECK-OK, SESSIONCHECK-OK, CONNECTCHECK-OK, BROWSERCHECK-OK,
 SERVECHECK-OK, RESUMECHECK-OK, PERSIST-OK, RELAY-OK, SHARECHECK-OK,
 HTTPCHECK-OK + RESTART-OK (standalone cycle on 18322 with the grown records),
 CHECK-OK 12 legs × JVM+Script, 35/35 files check-clean standalone.
+
+### v2-Track G — directories as logical collections (LANDED 05/10, `FOLDERCHECK-OK`)
+
+The vote (D6=A, reopened by the v2 prompt) required directories to be
+COLLECTIONS of Resources — never tarballs, never a bespoke packing protocol.
+This is what landed:
+
+- `directory.kf` is the domain: `DirEntry{resourceId,logicalPath,type,size,
+  hash,modifiedAt}`; the manifest record is named `DirTree` (the bare name
+  `Directory` belongs to the filesystem primitive — shadowing it broke the
+  app client, measured). Children keep their real Track F resource ids.
+- THE ORDER LAW: `sortEntries` puts the ROOT self-row first, then strict
+  lexicographic by logicalPath. A raw lex sort placed the root AFTER
+  "root/a.txt" because `'/'` is ordinal 47 — an index contract must not be an
+  accident of ASCII separator order (RED-caught; golden asserts root-first).
+- THE DIGEST LAW: `directoryDigest = sha256("v1|dir|<root>|<child rows>")`
+  covers CHILDREN ONLY. The root row's id derives from the digest; including
+  it would be circular. The root stays in the manifest for tree shape, it
+  simply does not hash itself.
+- THE PLANE GATES BEFORE INSERTION: `REG015` (entry id not resource-shaped,
+  traversal/empty/`.`/`..` segments, `\` or `:` in a segment, unknown type,
+  duplicate logical path), `REG016` (recomputed digest mismatch — the plane
+  hashes the manifest itself; size ≠ entry count). Signatures verify first
+  (Track A ordering), so forged manifests die before parsing accidents.
+- THE CAPABILITY MODEL: one share token for the tree. `/s/<token>` (no
+  selector) = the DIRECTORY grant (manifest on the wire, per-child ids +
+  logical paths + BASENAMES — the creator's layout never crosses);
+  `/s/<token>?child=N` = a FILE grant for the N-th FILE row of the sorted
+  manifest. Directories carry no bytes and are not selectable. `shareTouch`
+  runs BEFORE any resolution: maxUses stays honest across selectors (proven:
+  a `--once` directory share dies `REG038` on the second resolution of any
+  shape). Revocation kills every shape (`DEV003`), presence gate included.
+- THE DEVICE FACE (`serve-dir`): each connection carries `[offset]` + HELLO
+  type `dirHelloBase()+child` — ADDITIVE wire (1073700000+child sits strictly
+  below every v1 sentinel; plain `helloIndex` keeps the single-file meaning
+  untouched). The face rescans the folder, sorts with the same law, serves
+  the sel-th FILE through the SAME `sendChunks` core as v1 — per-file resume,
+  per-file tags, one accept per child, refusals by name.
+- THE RECIPIENT (`downdir` / CLI `updir`/`downdir`/`serve-dir`): one dial per
+  child, destination = recipient's chosen root + the LOGICAL path, digest per
+  child (mid-child resume: a half file's size IS the announced offset — the
+  A3 law per child); `dirJoinSafe` re-gates traversal on the recipient side
+  (the plane is authorization, the client is a second pair of eyes).
+- KNOWN LIMITS, HONEST: relay and sealed sessions for directory trees are
+  NOT in this lane (v1 dir face is the plain transport; single files keep
+  relay/secure — extending both is Track H integration work); empty-folder
+  publishing is refused by name.
+
+Golden `foldercheck/checkfolder.kf` — `FOLDERCHECK-OK` twice in a row, 13
+legs, real processes (ports 19420-19422): real tree walk + digest identity,
+signed directory publish, parent/child grant shapes, `wireNoPaths`, full
+transfer with nesting preserved under the recipient's root, per-child resume,
+`dirJoinSafe` refusal, plane refusal of tampered (`REG016`) and traversal
+(`REG015`) manifests, honest `REG038` uses, plane restart with the manifest
+reloaded byte-identical (presence earned again by heartbeat — the Track D law),
+revocation killing parent AND child resolutions.
+
+RED caught four real bugs: rootless logical paths in `dirWalk`; the `'/'`
+sort accident; a HELLO parsed twice by the face (every first child died
+`RESUME-ERR` until the stream shared `sendChunks`); and a golden that minted
+its own `d-0123456789abcdef` while the publisher used the real identity —
+digests differed only in the child id field. The golden now shares the one
+identity AND cleans the plane state (server-registry/devkeys/bearer) before
+running — cross-run pollution (a revoked key persisting into the next golden)
+is contamination, not flakiness.
+
+A KOF4J BUG was caught and routed around legitimately: a `T?`-typed
+PARAMETER threaded through branches crashes the JVM backend
+(`COMP002` / ASM `COMPUTE_FRAMES`, `ArrayIndexOutOfBoundsException: Index -1`)
+— reproduced minimally, IR captured, to be filed upstream. The product shape
+COALESCES the nullable query at the caller into a plain `String` (the same
+narrowing discipline `json.decode` rebinds already use). The language itself
+is unchanged; no feature was faked.
+
+No-regression on the final tree: FOLDERCHECK-OK (×2), RESOURCECHECK-OK,
+USERCHECK-OK, IDENTITYCHECK-OK, SESSIONCHECK-OK, CONNECTCHECK-OK,
+BROWSERCHECK-OK, SERVECHECK-OK, RESUMECHECK-OK, PERSIST-OK, RELAY-OK,
+SHARECHECK-OK, HTTPCHECK-OK + RESTART-OK (external server on 18322 — noted
+law: those two tests need the operator-run process; sweeps must kill only
+MY ports), CHECK-OK 13 legs × JVM+Script, 36/36 files check-clean standalone.

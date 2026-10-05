@@ -195,7 +195,7 @@ main() {
     var di = pubRes.indexOf("id=") + 3
     var ownerId = pubRes.substring(di, pubRes.indexOf(" ", di))
 
-    var sh1 = http.post(base + "/shares", json.encode(ShareRequest(offerId, 0, 0, false)), auth)
+    var sh1 = http.post(base + "/shares", json.encode(ShareRequest(offerId, 0, 0, false, false)), auth)
     var tok = secondTok(sh1)
     var mint = tok.length() == 64
     println("mint=" + mint)
@@ -292,7 +292,7 @@ main() {
     ok = ok && sesTrans && serveUp && downOk && sesDone && terminal && slotFree
 
     // ── cancel path + restart persistence of the session table ──
-    var sh2 = http.post(base + "/shares", json.encode(ShareRequest(offerId, 0, 0, false)), auth)
+    var sh2 = http.post(base + "/shares", json.encode(ShareRequest(offerId, 0, 0, false, false)), auth)
     var tok2 = secondTok(sh2)
     var created2 = http.post(base + "/sessions", json.encode(SessionRequest(tok2, "recip-x", "")), auth)
     var sid2 = sessionBodyId(created2)

@@ -1,0 +1,207 @@
+package kofshare
+
+import kof.crypto
+import kof.json
+
+// v2-Track G — DIRECTORIES AS LOGICAL COLLECTIONS of Resources.
+// (the record is named DirTree — the bare name `Directory` belongs to the
+// filesystem primitive and shadowing it broke the app client; measured 05/10)
+//
+// The tree is DOMAIN data, not a packed file: each entry is its OWN Resource
+// (id/name/size/hash/modifiedAt) and the directory is the RELATION between
+// them (maintainer prompt §15: "empacotar pode ser interno, NUNCA contrato").
+// Nothing is zipped on the wire; each child transfers, resumes and verifies
+// INDIVIDUALLY (the golden proves mid-file resume per child).
+//
+// Identity laws inherited from Track F and NEVER relaxed:
+//   * entry.resourceId keeps r-<16 hex> shape (REG013 again);
+//   * logicalPath is the ONLY layout a peer ever sees — a '/'-joined chain of
+//     validated segments. A segment that is empty, ".", ".." or contains a
+//     separator is refused at the domain gate REG015 before insertion;
+//   * the tree hash (dirHash) covers the SORTED manifest — integrity of the
+//     COLLECTION, distinct from the children's own content hashes;
+//   * names are LOCAL presentation only — the recipient maps logicalPath
+//     under its chosen destination root; the creator's filesystem never
+//     crosses.
+//
+// Named refusals (registry-side, R6 family continuation):
+//   REG013 resource id must not be path-like      (Track F)
+//   REG014 resource id does not match derivation  (Track F)
+//   REG015 directory entry name/logicalPath is traversal-shaped or id is
+//            not resource-shaped — refused BEFORE insertion
+//   REG016 directory manifest digest disagrees with the offer's recorded
+//            digest (the dir offer signs size=dirHash; entries must agree)
+
+record DirEntry(String resourceId, String logicalPath, String type, Int size, String hash, Long modifiedAt)
+
+record DirTree(String id, String name, Int size, String hash, List<DirEntry> entries, Long modifiedAt)
+
+// Directory offers carry a content-like digest of the MANIFEST (so the C1
+// signature law transfers unchanged); the bytes ARE the sorted tree, not a
+// file — FOLDER-NOT-PACKED, by contract.
+String directoryDigest(String rootName, List<DirEntry> entries) {
+    var sorted = entries
+    var canon = "v1|dir|" + rootName
+    var i = 0
+    while (i < sorted.size) {
+        var e = sorted.get(i)
+        if (e.logicalPath == rootName) {
+            // THE LAW: the digest covers the CHILDREN only. The root row's
+            // own id derives from this digest — including it would be a
+            // circular definition. The root stays in the manifest for the
+            // tree shape; it is simply not part of its own hash.
+            i = i + 1
+            continue
+        }
+        canon = canon + "|" + e.resourceId + "|" + e.logicalPath + "|" + e.type + "|" + ("" + e.size) + "|" + e.hash
+        i = i + 1
+    }
+    return crypto.sha256(canon)
+}
+
+// Sort by logicalPath for canonical digests — map/list ORDER is not a
+// contract (same law as the registry's key sorting).
+// CANONICAL ORDER: the root self-row FIRST (structural convention — the
+// tree's identity is its head), then a strict lexicographic pass on the
+// remaining logical paths. A raw lex sort would place "fc-docs" AFTER
+// "fc-docs/a.txt" (47 < nothing: '/' has an ordinal below every printable),
+// making the root position an accident of separators — an index contract
+// must not depend on that.
+List<DirEntry> sortEntries(List<DirEntry> entries) {
+    var root = ""
+    var ri = 0
+    while (ri < entries.size) {
+        var er = entries.get(ri)
+        if (er.type == "DIRECTORY" && er.logicalPath.indexOf("/") < 0) {
+            root = er.logicalPath
+        }
+        ri = ri + 1
+    }
+    if (root.length() > 0) {
+        var head = new List<DirEntry>()
+        var rest = new List<DirEntry>()
+        var hi = 0
+        while (hi < entries.size) {
+            if (entries.get(hi).logicalPath == root) {
+                head.add(entries.get(hi))
+            } else {
+                rest.add(entries.get(hi))
+            }
+            hi = hi + 1
+        }
+        var sortedRest = sortEntries(rest)
+        var ji = 0
+        while (ji < sortedRest.size) {
+            head.add(sortedRest.get(ji))
+            ji = ji + 1
+        }
+        return head
+    }
+    var out = entries
+    var changed = true
+    while (changed) {
+        changed = false
+        var i = 0
+        while (i < out.size - 1) {
+            if (out.get(i + 1).logicalPath.compareTo(out.get(i).logicalPath) < 0) {
+                var a = out.get(i)
+                var b = out.get(i + 1)
+                out = outSet(outSet(out, i, b), i + 1, a)
+                changed = true
+            } else {
+                i = i + 1
+            }
+        }
+    }
+    return out
+}
+
+List<DirEntry> outSet(List<DirEntry> src, Int idx, DirEntry v) {
+    var out = new List<DirEntry>()
+    var i = 0
+    while (i < src.size) {
+        if (i == idx) {
+            out.add(v)
+        } else {
+            out.add(src.get(i))
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// The domain gate (called by controlOffer for DIRECTORY entries). Returns
+// "OK" or a named refusal. Every rule here exists because a RECIPIENT will
+// later join the string into its own filesystem — traversal must be
+// UNEXPRESSIBLE, not filtered.
+String dirValidate(List<DirEntry> entries, String dirHash) {
+    var seen = new List<String>()
+    var i = 0
+    while (i < entries.size) {
+        var e = entries.get(i)
+        if (e.resourceId.length() != 18 || e.resourceId.indexOf("r-") != 0) {
+            return "REG015: directory entry id is not resource-shaped"
+        }
+        var segs = e.logicalPath.split("/")
+        var k = 0
+        while (k < segs.size) {
+            var seg = segs[k]
+            if (seg.length() == 0 || seg == "." || seg == "..") {
+                return "REG015: directory entry path is traversal-shaped: " + e.logicalPath
+            }
+            if (seg.indexOf("\\") >= 0 || seg.indexOf(":") >= 0) {
+                return "REG015: directory entry path carries a separator: " + e.logicalPath
+            }
+            k = k + 1
+        }
+        if (e.type != "FILE" && e.type != "DIRECTORY") {
+            return "REG015: directory entry type unknown: " + e.type
+        }
+        if (seen.contains(e.logicalPath)) {
+            return "REG015: duplicate logical path: " + e.logicalPath
+        }
+        seen.add(e.logicalPath)
+        i = i + 1
+    }
+    if (dirHash.length() != 64) {
+        return "REG016: directory digest must be 64 hex chars"
+    }
+    return "OK"
+}
+
+// Recipient-side join: logicalPath under a DEST the RECIPIENT chose. The
+// gate runs AGAIN here — defense in depth: a malicious manifest never made
+// it past the plane, and the client still refuses to even build a traversal
+// destination (the plane is authorization, the client is a second pair of
+// eyes).
+String dirJoinSafe(String destRoot, String logicalPath) {
+    var segs = logicalPath.split("/")
+    var k = 0
+    while (k < segs.size) {
+        var seg = segs[k]
+        if (seg.length() == 0 || seg == "." || seg == "..") {
+            return ""
+        }
+        k = k + 1
+    }
+    if (destRoot.length() > 0 && logicalPath.indexOf("/") >= 0) {
+        return destRoot + "/" + logicalPath
+    }
+    return destRoot + "/" + logicalPath
+}
+
+String dirBaseName(String logicalPath) {
+    var i = logicalPath.lastIndexOf("/")
+    if (i < 0) {
+        return logicalPath
+    }
+    return logicalPath.substring(i + 1, logicalPath.length())
+}
+
+String dirEntriesJson(List<DirEntry> entries) {
+    return json.encode(entries)
+}
+
+List<DirEntry> dirEntriesFromJson(String txt) {
+    return json.decode<List<DirEntry>>(txt)
+}

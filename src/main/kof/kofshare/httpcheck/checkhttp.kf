@@ -67,11 +67,11 @@ main() {
     println("devicesBoth=" + vdevicesBoth)
 
     var dig = cryptoDigest("/srv/a.bin")
-    var off = http.post(base + "/offers", json.encode(OfferRequest("o1", "d1", "/srv/a.bin", 2048, dig, "", "", "", 0)), auth)
+    var off = http.post(base + "/offers", json.encode(OfferRequest("o1", "d1", "/srv/a.bin", 2048, dig, "", "", "", 0, "", "")), auth)
     var voffer = off == "OFFERED: o1"
     ok = ok && voffer
     println("offer=" + voffer)
-    var offBad = http.post(base + "/offers", json.encode(OfferRequest("oX", "ghost", "/p", 5, dig, "", "", "", 0)), auth)
+    var offBad = http.post(base + "/offers", json.encode(OfferRequest("oX", "ghost", "/p", 5, dig, "", "", "", 0, "", "")), auth)
     var vofferUnknownDevice = offBad == "REG004: unknown device ghost"
     ok = ok && vofferUnknownDevice
     println("offerUnknownDevice=" + vofferUnknownDevice)
@@ -85,7 +85,7 @@ main() {
     ok = ok && voffersQueryEmpty
     println("offersQueryEmpty=" + voffersQueryEmpty)
 
-    var sh = http.post(base + "/shares", json.encode(ShareRequest("o1", 0, 1, false)), auth)
+    var sh = http.post(base + "/shares", json.encode(ShareRequest("o1", 0, 1, false, false)), auth)
     var vshareMint = sh.indexOf("SHARED ") == 0
     ok = ok && vshareMint
     println("shareMint=" + vshareMint)
@@ -127,12 +127,12 @@ main() {
     // revoke-offer leg (offersGone), and a grant whose offer vanished is
     // REG034 — measured 05/10, the restart probe's first strict grant check
     // hit exactly that.
-    var off2 = http.post(base + "/offers", json.encode(OfferRequest("o2", "d1", "/srv/a.bin", 2048, dig, "", "", "", 0)), auth)
+    var off2 = http.post(base + "/offers", json.encode(OfferRequest("o2", "d1", "/srv/a.bin", 2048, dig, "", "", "", 0, "", "")), auth)
     var voffer2 = off2 == "OFFERED: o2"
     ok = ok && voffer2
     println("offer2=" + voffer2)
 
-    var sh2 = http.post(base + "/shares", json.encode(ShareRequest("o2", 0, 0, false)), auth)
+    var sh2 = http.post(base + "/shares", json.encode(ShareRequest("o2", 0, 0, false, false)), auth)
     var vsharePersist = sh2.indexOf("SHARED ") == 0
     ok = ok && vsharePersist
     println("sharePersist=" + vsharePersist)

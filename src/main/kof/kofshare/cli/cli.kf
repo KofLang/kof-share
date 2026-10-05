@@ -97,7 +97,7 @@ String offerJson(String path) {
         return "OFFER-ERR: empty file: " + path
     }
     var digest = crypto.sha256Bytes(toBytes(data))
-    var o = OfferRequest("o-" + digest.substring(0, 12), "local", path, data.size, digest, "", "", "", 0)
+    var o = OfferRequest("o-" + digest.substring(0, 12), "local", path, data.size, digest, "", "", "", 0, "", "")
     return json.encode(o)
 }
 
@@ -138,7 +138,7 @@ Boolean registryLeg() {
     var d1 = controlResolve(devices, "d1")
     ok = ok && (d1 != null && d1.name == "alpha")
     var dig = crypto.sha256("/srv/a.bin")
-    ok = ok && (controlOffer(offers, devices, OfferInfo("o1", "d1", "/srv/a.bin", 2048, dig, 1789000000000, "", "", 0)) == "OK")
+    ok = ok && (controlOffer(offers, devices, OfferInfo("o1", "d1", "/srv/a.bin", 2048, dig, 1789000000000, "", "", 0, "", "")) == "OK")
     var back = controlResolveOffer(offers, "o1")
     ok = ok && (back != null && back.size == 2048 && back.deviceId == "d1")
     ok = ok && (controlRevoke(offers, "o1") == "OK")
@@ -245,8 +245,8 @@ Bool sessionLeg() {
     var sessions = new Map<String, SessionInfo>()
     devices.put("d1", DeviceInfo("d1", "n", "127.0.0.1:1"))
     devices.put("d9", DeviceInfo("d9", "n", "127.0.0.9:9"))
-    shares.put("sh1", ShareInfo("sh1", "tok1", "d1", "o1", "read", 1, 0, 0, 0, "active", "", ""))
-    shares.put("sh2", ShareInfo("sh2", "tok2", "d9", "o2", "read", 1, 0, 0, 0, "active", "", ""))
+    shares.put("sh1", ShareInfo("sh1", "tok1", "d1", "o1", "read", 1, 0, 0, 0, "active", "", "", ""))
+    shares.put("sh2", ShareInfo("sh2", "tok2", "d9", "o2", "read", 1, 0, 0, 0, "active", "", "", ""))
     var ladder = new List<String>()
     ladder.add("CLAIMED")
     ladder.add("NEGOTIATING")
@@ -307,10 +307,10 @@ Bool resourceLeg() {
     controlRegister(devs, DeviceInfo(d1, "res-probe", "127.0.0.1:1"))
     controlRegister(devs, DeviceInfo(d2, "res-probe2", "127.0.0.1:2"))
     var leak = controlOffer(new Map<String, OfferInfo>(), devs,
-        OfferInfo("o9", d1, "/srv/a.bin", 10, h, 1789000000000, "/home/mel/a.bin", "", 0))
+        OfferInfo("o9", d1, "/srv/a.bin", 10, h, 1789000000000, "/home/mel/a.bin", "", 0, "", ""))
     var pathRefused = leak.indexOf("REG013") == 0
     var liarRefused = controlOffer(new Map<String, OfferInfo>(), devs,
-        OfferInfo("o8", d1, "a.bin", 10, h, 1789000000000, "r-ffffffffffffffff", "a.bin", 0))
+        OfferInfo("o8", d1, "a.bin", 10, h, 1789000000000, "r-ffffffffffffffff", "a.bin", 0, "", ""))
         .indexOf("REG014") == 0
     var metaOk = isPathLike("../../etc/passwd") && isPathLike("/etc/passwd") &&
         isPathLike("C:\\x") && !isPathLike("a.bin") &&
@@ -360,6 +360,37 @@ Bool connectLeg() {
     return directWins && relayFallback && allFail && cl1 && cl2 && cl3
 }
 
+Bool dirLeg() {
+    // Track G pure units: deterministic walk/sort/digest + named refusals.
+    var dev = "d-0123456789abcdef"
+    var e1 = DirEntry("r-aaaaaaaaaaaaaaaa", "docs/b.txt", "FILE", 3, "h3", 10)
+    var e2 = DirEntry("r-bbbbbbbbbbbbbbbb", "docs/a.txt", "FILE", 4, "h4", 11)
+    var e3 = DirEntry("r-cccccccccccccccc", "docs", "DIRECTORY", 0, "", 9)
+    var seed = new List<DirEntry>()
+    seed.add(e3)
+    seed.add(e1)
+    seed.add(e2)
+    var sorted = sortEntries(seed)
+    var orderOk = sorted.get(0).logicalPath == "docs" &&
+        sorted.get(1).logicalPath == "docs/a.txt" &&
+        sorted.get(2).logicalPath == "docs/b.txt"
+    var h1 = directoryDigest("docs", sorted)
+    var seed2 = new List<DirEntry>()
+    seed2.add(e1)
+    seed2.add(e2)
+    seed2.add(e3)
+    var h2 = directoryDigest("docs", sortEntries(seed2))
+    var digestOk = h1.length() == 64 && h1 == h2
+    var vOk = dirValidate(sorted, h1) == "OK"
+    var bad = new List<DirEntry>()
+    bad.add(DirEntry("r-aaaaaaaaaaaaaaaa", "../escape", "FILE", 3, "h3", 10))
+    var travOk = dirValidate(bad, directoryDigest("docs", bad)).indexOf("REG015") == 0
+    var baseOk = dirBaseName("docs/sub/a.txt") == "a.txt" && dirBaseName("a.txt") == "a.txt"
+    var jsonOk = dirEntriesFromJson(dirEntriesJson(sorted)).get(1).logicalPath == "docs/a.txt"
+    var idOk = resourceIdFor(dev, "docs/a.txt", 4, "h4").length() == 18
+    return orderOk && digestOk && vOk && travOk && baseOk && jsonOk && idOk
+}
+
 Int runCheck() {
     var reg = registryLeg()
     var plain = plainLeg()
@@ -385,7 +416,9 @@ Int runCheck() {
     println("app=" + app)
     var reso = resourceLeg()
     println("resource=" + reso)
-    if (reg && persist && plain && secure && share && auth && resume && identity && sess && conn && app && reso) {
+    var dir = dirLeg()
+    println("dir=" + dir)
+    if (reg && persist && plain && secure && share && auth && resume && identity && sess && conn && app && reso && dir) {
         println("CHECK-OK")
         return 0
     }
@@ -401,13 +434,13 @@ Bool shareLeg() {
     var pub = keyExchange.publicKey(sk)
     var shares = new Map<String, ShareInfo>()
     var ok = true
-    ok = ok && (shareIssue(shares, ShareInfo("s1", tokenOf("11"), "d1", "o1", "read", now, now + 10, 1, 0, "active", "", "")) == "OK")
+    ok = ok && (shareIssue(shares, ShareInfo("s1", tokenOf("11"), "d1", "o1", "read", now, now + 10, 1, 0, "active", "", "", "")) == "OK")
     var core = shareResolve(shares, tokenOf("11"))
     if (core == null) {
         return false
     }
     var st = shareSign(sk, core)
-    var signed = ShareInfo(core.id, core.token, core.deviceId, core.offerId, core.permissions, core.createdAt, core.expiresAt, core.maxUses, core.used, core.status, core.revocation, st)
+    var signed = ShareInfo(core.id, core.token, core.deviceId, core.offerId, core.permissions, core.createdAt, core.expiresAt, core.maxUses, core.used, core.status, core.revocation, st, "")
     shares.put("s1", signed)
     ok = ok && shareVerify(secrets.of(pub), signed)
     ok = ok && shareTouch(shares, signed.token, now) == "OK"
@@ -682,6 +715,66 @@ Int runDevice(List<String> args) {
     }
     println("DEVICE-ERR: unknown device subcommand " + sub)
     return 1
+}
+
+Int runUpDir(List<String> args) {
+    var rest = tail(args, 1)
+    if (rest.size < 4) {
+        println("UP-ERR: usage: updir <ctrlHost> <ctrlPort> <dir> --serve <host:port> [--bearer <jwt>]")
+        return 1
+    }
+    var controlBase = "http://" + rest.get(0) + ":" + rest.get(1)
+    var rootPath = rest.get(2)
+    var serveAddr = ""
+    var i = 3
+    while (i < rest.size) {
+        var a = argAt(rest, i)
+        if (a == "--serve") {
+            serveAddr = argAt(rest, i + 1)
+            i = i + 2
+        } else {
+            i = i + 1
+        }
+    }
+    if (serveAddr.length() == 0) {
+        println("UP-ERR: updir needs --serve <host:port> (the dir face the recipient dials)")
+        return 1
+    }
+    var bearer = "Authorization: Bearer " + bearerArg(rest, 3)
+    var sk = identityBoot("kofshare-device.ed25519")
+    var out = upPublishDir(controlBase, sk, serveAddr, rootPath, bearer)
+    println(out)
+    return 0
+}
+
+Int runDownDir(List<String> args) {
+    var rest = tail(args, 1)
+    if (rest.size < 4) {
+        println("DOWN-ERR: usage: downdir <ctrlHost> <ctrlPort> <token> <destRoot> [key]")
+        return 1
+    }
+    var controlBase = "http://" + rest.get(0) + ":" + rest.get(1)
+    var key = "k0"
+    if (rest.size >= 5) {
+        key = rest.get(4)
+    }
+    var out = downDir(controlBase, rest.get(2), rest.get(3), key)
+    println(out)
+    return 0
+}
+
+Int runServeDir(List<String> args) {
+    var rest = tail(args, 1)
+    if (rest.size < 2) {
+        println("SERVE-ERR: usage: serve-dir <root> <port> [key]")
+        return 1
+    }
+    var key = "k0"
+    if (rest.size >= 3) {
+        key = rest.get(2)
+    }
+    serveDirLoop(rest.get(0), math.parseInt(rest.get(1)), key)
+    return 0
 }
 
 Int runUp(List<String> args) {
@@ -1168,18 +1261,18 @@ Int runShare(List<String> args) {
         println("SHARE-ERR: usage: share <host> <port> <offerId> [--once] [--read-only] [--ttl <ms>]")
         return 1
     }
-    var req = ShareRequest(rest.get(2), 0, 0, false)
+    var req = ShareRequest(rest.get(2), 0, 0, false, false)
     var i = 3
     while (i < rest.size) {
         var a = argAt(rest, i)
         if (a == "--once") {
-            req = ShareRequest(req.offerId, req.ttlMs, 1, req.readOnly)
+            req = ShareRequest(req.offerId, req.ttlMs, 1, req.readOnly, false)
             i = i + 1
         } else if (a == "--read-only") {
-            req = ShareRequest(req.offerId, req.ttlMs, req.maxUses, true)
+            req = ShareRequest(req.offerId, req.ttlMs, req.maxUses, true, false)
             i = i + 1
         } else if (a == "--ttl") {
-            req = ShareRequest(req.offerId, req.ttlMs + ttlOf(argAt(rest, i + 1)), req.maxUses, req.readOnly)
+            req = ShareRequest(req.offerId, req.ttlMs + ttlOf(argAt(rest, i + 1)), req.maxUses, req.readOnly, false)
             i = i + 2
         } else {
             i = i + 1
@@ -1356,6 +1449,27 @@ main(args: List<String>) {
     if (cmd == "serve") {
         var rc = runServe(tail(args, start))
         if (rc != 0) {
+            throw "kofshare: SERVE-ERR"
+        }
+        return
+    }
+    if (cmd == "updir") {
+        var rcu = runUpDir(tail(args, start))
+        if (rcu != 0) {
+            throw "kofshare: UP-ERR"
+        }
+        return
+    }
+    if (cmd == "downdir") {
+        var rcd = runDownDir(tail(args, start))
+        if (rcd != 0) {
+            throw "kofshare: DOWN-ERR"
+        }
+        return
+    }
+    if (cmd == "serve-dir") {
+        var rcs = runServeDir(tail(args, start))
+        if (rcs != 0) {
             throw "kofshare: SERVE-ERR"
         }
         return

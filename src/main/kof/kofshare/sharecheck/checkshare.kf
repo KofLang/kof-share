@@ -12,7 +12,7 @@ import kof.secrets
 // same golden.
 
 ShareInfo mkShare(String id, String tokenTail, Long now, Long ttl, Int maxUses) {
-    return ShareInfo(id, hex64(tokenTail), "d1", "o1", "read", now, ttl, maxUses, 0, "active", "", "")
+    return ShareInfo(id, hex64(tokenTail), "d1", "o1", "read", now, ttl, maxUses, 0, "active", "", "", "")
 }
 
 String hex64(String seed) {
@@ -36,14 +36,14 @@ main() {
     var pub = keyExchange.publicKey(sk)
 
     var shares = new Map<String, ShareInfo>()
-    println("issueShort=" + (shareIssue(shares, ShareInfo("x", "abc", "d1", "o1", "read", now, 0, 0, 0, "active", "", "")) == "REG031: token must be 64 hex chars"))
-    println("issueNoDev=" + (shareIssue(shares, ShareInfo("x", hex64("a"), "", "o1", "read", now, 0, 0, 0, "active", "", "")) == "REG032: empty share device"))
+    println("issueShort=" + (shareIssue(shares, ShareInfo("x", "abc", "d1", "o1", "read", now, 0, 0, 0, "active", "", "", "")) == "REG031: token must be 64 hex chars"))
+    println("issueNoDev=" + (shareIssue(shares, ShareInfo("x", hex64("a"), "", "o1", "read", now, 0, 0, 0, "active", "", "", "")) == "REG032: empty share device"))
 
     var s1 = mkShare("s1", "11", now, now + 10000, 2)
-    s1 = ShareInfo(s1.id, s1.token, s1.deviceId, s1.offerId, s1.permissions, s1.createdAt, s1.expiresAt, s1.maxUses, s1.used, s1.status, s1.revocation, shareSign(sk, s1))
+    s1 = ShareInfo(s1.id, s1.token, s1.deviceId, s1.offerId, s1.permissions, s1.createdAt, s1.expiresAt, s1.maxUses, s1.used, s1.status, s1.revocation, shareSign(sk, s1), "")
     println("issueOk=" + (shareIssue(shares, s1) == "OK"))
     println("verifyOk=" + shareVerify(secrets.of(pub), s1))
-    var s1bad = ShareInfo(s1.id, s1.token, s1.deviceId, s1.offerId, s1.permissions, s1.createdAt, s1.expiresAt, 999999, s1.used, s1.status, s1.revocation, s1.sig)
+    var s1bad = ShareInfo(s1.id, s1.token, s1.deviceId, s1.offerId, s1.permissions, s1.createdAt, s1.expiresAt, 999999, s1.used, s1.status, s1.revocation, s1.sig, "")
     println("verifyTamper=" + !shareVerify(secrets.of(pub), s1bad))
 
     println("touch1=" + (shareTouch(shares, s1.token, now + 1) == "OK"))

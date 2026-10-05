@@ -211,10 +211,10 @@ main() {
 
     var lied = http.post(base + "/offers", json.encode(
         OfferRequest("o-lie", id1, "ident-src.bin", 2500, "0000000000000000000000000000000000000000000000000000000000000000",
-            signOffer(sk1, "o-lie", id1, "ident-src.bin", 2500, "ab"), "", "", 0)), auth)
+            signOffer(sk1, "o-lie", id1, "ident-src.bin", 2500, "ab"), "", "", 0, "", "")), auth)
     var offerLied = lied.indexOf("DEV002") == 0
     var unsig = http.post(base + "/offers", json.encode(
-        OfferRequest("o-lie2", id1, "ident-src.bin", 2500, "ab", "", "", "", 0)), auth)
+        OfferRequest("o-lie2", id1, "ident-src.bin", 2500, "ab", "", "", "", 0, "", "")), auth)
     var offerUnsigned = unsig.indexOf("DEV004") == 0
     println("offerRefusals=" + (offerLied && offerUnsigned))
     ok = ok && offerLied && offerUnsigned
@@ -243,7 +243,7 @@ main() {
     // revocation must reach the DATA path: the share mint is account-side,
     // but the GRANT resolves through the device — GET /s refuses DEV003 and
     // downFetch surfaces it (never a silent bogus decode).
-    var shR = http.post(base + "/shares", json.encode(ShareRequest(offerId, 0, 0, false)), auth)
+    var shR = http.post(base + "/shares", json.encode(ShareRequest(offerId, 0, 0, false, false)), auth)
     var tokR = ""
     var bitsR = shR.split(" ")
     if (shR.indexOf("SHARED ") == 0 && bitsR.size > 2) {
@@ -268,7 +268,7 @@ main() {
     var addr2 = "127.0.0.1:" + (planePort + 1)
     var pubRes2 = upPublishSigned(base, sk2, "dev2", addr2, "ident-src.bin", auth)
     var offerId2 = offerIdOf(pubRes2)
-    var sh = http.post(base + "/shares", json.encode(ShareRequest(offerId2, 0, 0, false)), auth)
+    var sh = http.post(base + "/shares", json.encode(ShareRequest(offerId2, 0, 0, false, false)), auth)
     var token = ""
     var bits = sh.split(" ")
     if (sh.indexOf("SHARED ") == 0 && bits.size > 2) {

@@ -1,0 +1,413 @@
+package kofshare.foldercheck
+
+import kof.crypto
+import kof.file
+import kof.fs
+import kof.http
+import kof.json
+import kof.math
+import kof.net
+import kof.process
+import kof.shell
+import kof.time
+import kofshare.domain
+import kofshare.identity
+import kofshare.userflow
+import kofshare.resource
+import kofshare.directory
+import kofshare.control.registry
+import kofshare.control.share
+
+// v2-Track G golden — DIRECTORIES AS LOGICAL COLLECTIONS over REAL processes.
+// Nothing is packed: the tree travels as INDIVIDUAL resources with a sorted
+// manifest on the plane. Proved (maintainer prompt §12):
+//   walkDigest      real tree walked, sorted, digest = hash of CHILDREN only
+//   dirPublish      one signed identity publishes DIRECTORY offer; UP-OK
+//                   names resource/entries/dirhash; bindings written LOCALLY
+//   parentGrant     /s/<token> (no selector) returns the DIRECTORY grant:
+//                   manifest on the wire, ZERO creator layout ("/home" absent)
+//   childGrant      /s/<token>?child=N returns per-child FILE grants; foreign
+//                   indices die REG015 by name
+//   fullTransfer    serve-dir face + downdir: every child digest-verified at
+//                   the destination, nesting preserved under the RECIPIENT's
+//                   chosen dest root (logical paths, not the creator's)
+//   perChildResume  a half-written child resumes by APPEND and still passes
+//                   its digest — resume is PER CHILD, never per tree
+//   manifestTamper  wrong dirhash dies REG016 at the plane; a traversal child
+//                   dies REG015 before insertion; dirJoinSafe refuses to even
+//                   BUILD a traversal destination
+//   exhausted       maxUses=1 share: parent resolve consumes it; next child
+//                   resolve dies REG038 (uses are honest across selectors)
+//   restart         plane dies and reloads: offer+manifest come back with the
+//                   SAME dirhash; a fresh share transfers again end-to-end
+//   revoked         device revoked: every /s resolution (parent or child)
+//                   is dead DEV003 — the data path dies with the identity
+
+String jar() {
+    return "/home/mel/Kof4j/kof-cli/target/kof-cli-0.5.0-beta.jar"
+}
+
+Int[] myPorts() {
+    var a = new Int[3]
+    a[0] = 19420
+    a[1] = 19421
+    a[2] = 19422
+    return a
+}
+
+sweepPorts() {
+    var res = shell.run("ss", listOf("-tlnp"))
+    var lines = res.stdout.split("\n")
+    for (var line in lines) {
+        if (line.indexOf("LISTEN") < 0) {
+            continue
+        }
+        var mine = false
+        for (var mp in myPorts()) {
+            if (line.indexOf(":" + mp) >= 0) {
+                mine = true
+            }
+        }
+        if (!mine) {
+            continue
+        }
+        var pi = line.indexOf("pid=")
+        if (pi < 0) {
+            continue
+        }
+        var num = ""
+        var i = pi + 4
+        while (i < line.length()) {
+            var ch = line.charAt(i)
+            if (ch < 48 || ch > 57) {
+                break
+            }
+            num = num + line.substring(i, i + 1)
+            i = i + 1
+        }
+        if (num.length() > 0) {
+            shell.run("kill", listOf("-9", num))
+        }
+    }
+}
+
+Bool spawnCli(String log, String marker, List<String> verbArgs) {
+    if (File(log).exists()) {
+        File(log).delete()
+    }
+    var cmd = "cd /home/mel/Documents/kof-share && java -jar " + jar()
+        + " run src/main/kof/kofshare/cli/cli.kf"
+    for (var a in verbArgs) {
+        cmd = cmd + " " + a
+    }
+    cmd = cmd + " > " + log + " 2>&1 &"
+    process.spawn("sh", "-c", cmd)
+    var t0 = 0
+    while (t0 < 240) {
+        var f = File(log)
+        if (f.exists()) {
+            var txt = f.readText()
+            if (txt != null && txt.indexOf(marker) >= 0) {
+                return true
+            }
+        }
+        time.sleep(250)
+        t0 = t0 + 1
+    }
+    return false
+}
+
+Bool portClear(Int port) {
+    var t0 = 0
+    while (t0 < 80) {
+        try {
+            var pr = net.listen(port)
+            pr.close()
+            return true
+        } catch (String e) {
+            sweepPorts()
+            time.sleep(250)
+            t0 = t0 + 1
+        }
+    }
+    return false
+}
+
+Int[] makeData(Int n) {
+    var out = new Int[n]
+    var i = 0
+    while (i < n) {
+        out[i] = (i * 71 + 9) % 249
+        i = i + 1
+    }
+    return out
+}
+
+Bool identical(Int[] a, Int[] b) {
+    if (a.size != b.size) {
+        return false
+    }
+    var i = 0
+    while (i < a.size) {
+        if (a[i] != b[i]) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+String fieldOf(String msg, String key) {
+    var i = msg.indexOf(key)
+    if (i < 0) {
+        return ""
+    }
+    var st = i + key.length()
+    var en = msg.indexOf(" ", st)
+    if (en < 0) {
+        en = msg.length()
+    }
+    return msg.substring(st, en)
+}
+
+String tokenId(String shared) {
+    if (shared.indexOf("SHARED ") != 0) {
+        return ""
+    }
+    var bits = shared.split(" ")
+    if (bits.size > 2) {
+        return bits[2]
+    }
+    return ""
+}
+
+buildTree() {
+    shell.run("rm", listOf("-rf", "fc-docs"))
+    Directory("fc-docs").createDirectories()
+    Directory("fc-docs/sub").createDirectories()
+    Directory("fc-docs/empty").createDirectories()
+    File("fc-docs/a.txt").writeBytes(makeData(410))
+    File("fc-docs/sub/b.txt").writeBytes(makeData(900))
+    File("fc-docs/sub/c.bin").writeBytes(makeData(1300))
+}
+
+main() {
+    var ok = true
+    sweepPorts()
+    var freed = false
+    var t9 = 0
+    while (t9 < 80 && !freed) {
+        try {
+            var probe = net.listen(19420)
+            probe.close()
+            freed = true
+        } catch (String e) {
+            sweepPorts()
+            time.sleep(250)
+            t9 = t9 + 1
+        }
+    }
+    println("portsFreed=" + freed)
+    ok = ok && freed
+
+    var scratch = listOf("fc-plane.log", "fc-plane2.log", "fc-face.log", "fc-face2.log",
+        "fc-dev.ed25519", "kofshare-resources.json",
+        "server-control.apikey", "server-control.bearer", "server-control.ed25519",
+        "server-registry.devices.json", "server-registry.offers.json",
+        "server-registry.shares.json", "server-registry.accounts.json",
+        "server-registry.devkeys.json", "server-registry.sessions.json",
+        "server-registry.presence.json")
+    for (var f in scratch) {
+        if (File(f).exists()) {
+            File(f).delete()
+        }
+    }
+    shell.run("rm", listOf("-rf", "fc-docs", "fc-dest", "fc-dest3"))
+
+    buildTree()
+    var sk = identityBoot("fc-dev.ed25519")
+    var dev = identityDeviceId(identityPub(sk))
+    var walk = dirWalk(dev, "fc-docs")
+    var sorted = sortEntries(walk)
+    var dh = directoryDigest("fc-docs", sorted)
+    var rot = sorted.get(0)
+    var walkOk = dh.length() == 64 && rot.logicalPath == "fc-docs"
+        && dirValidate(sorted, dh) == "OK"
+    var childCount = 0
+    var wi = 0
+    while (wi < sorted.size) {
+        if (sorted.get(wi).type == "FILE") {
+            childCount = childCount + 1
+        }
+        wi = wi + 1
+    }
+    walkOk = walkOk && childCount == 3
+    println("walkDigest=" + walkOk)
+    ok = ok && walkOk
+
+    var planeUp = spawnCli("fc-plane.log", "SERVER-READY", listOf("server", "19420"))
+    println("planeUp=" + planeUp)
+    if (!planeUp) {
+        println("FOLDERCHECK-FAIL")
+        throw "kofshare: FOLDERCHECK-FAIL"
+    }
+    var base = "http://127.0.0.1:19420"
+    var auth = "Authorization: Bearer " + File("server-control.bearer").readText()
+
+    if (File("kofshare-resources.json").exists()) {
+        File("kofshare-resources.json").delete()
+    }
+    var devId = dev
+    var pub = upPublishDir(base, sk, "127.0.0.1:19421", "fc-docs", auth)
+    var resId = fieldOf(pub, "resource=")
+    var offerId = fieldOf(pub, "offer=")
+    var dhTag = fieldOf(pub, "dirhash=")
+    var pubOk = pub.indexOf("UP-OK") == 0 && resId.length() == 18 && offerId.indexOf("o-") == 0
+        && dhTag == dh.substring(0, 12) && fieldOf(pub, "files=") == "3" && pub.indexOf("presence=ok") >= 0
+    if (!pubOk) {
+        println("PUB: " + pub)
+        println("GOLDEN: dh=" + dh.substring(0, 12) + " res=" + resId + " offer=" + offerId)
+    }
+    println("dirPublish=" + pubOk)
+    ok = ok && pubOk
+
+    var tok = tokenId(http.post(base + "/shares",
+        json.encode(ShareRequest(offerId, 0, 0, false, true)), auth))
+    var parentGrant = http.get(base + "/s/" + tok, "")
+    if (parentGrant.indexOf("{") != 0) {
+        println("GRANTERR: " + parentGrant)
+    }
+    var parentOk = parentGrant.indexOf("\"DIRECTORY\"") >= 0 && parentGrant.indexOf(dh) >= 0
+        && parentGrant.indexOf("fc-docs/sub/b.txt") >= 0 && parentGrant.indexOf("/home") < 0
+        && parentGrant.indexOf("sub/b.txt") >= 0
+    println("parentGrant=" + parentOk)
+    ok = ok && parentOk
+
+    var child0 = http.get(base + "/s/" + tok + "?child=0", "")
+    var child2 = http.get(base + "/s/" + tok + "?child=2", "")
+    var child9 = http.get(base + "/s/" + tok + "?child=9", "")
+    var childOk = child0.indexOf("\"FILE\"") >= 0 && child0.indexOf("logicalPath") >= 0
+        && child2.indexOf("\"FILE\"") >= 0 && child9.indexOf("REG015") == 0
+        && child0.indexOf("/home") < 0
+    println("childGrant=" + childOk)
+    ok = ok && childOk
+
+    var faceUp = portClear(19421) && spawnCli("fc-face.log", "SERVE-LISTENING",
+        listOf("serve-dir", "fc-docs", "19421", "k0"))
+    println("faceUp=" + faceUp)
+    if (!faceUp) {
+        println("FOLDERCHECK-FAIL")
+        throw "kofshare: FOLDERCHECK-FAIL"
+    }
+    shell.run("rm", listOf("-rf", "fc-dest"))
+    var down = downDir(base, tok, "fc-dest", "k0")
+    var aData = File("fc-docs/a.txt").readBytes()
+    var bData = File("fc-docs/sub/b.txt").readBytes()
+    var cData = File("fc-docs/sub/c.bin").readBytes()
+    var destA = File("fc-dest/fc-docs/a.txt").readBytes()
+    var destB = File("fc-dest/fc-docs/sub/b.txt").readBytes()
+    var destC = File("fc-dest/fc-docs/sub/c.bin").readBytes()
+    var transferOk = down.indexOf("DOWN-OK dir files=3") == 0
+        && identical(destA, aData) && identical(destB, bData) && identical(destC, cData)
+    println("fullTransfer=" + transferOk)
+    ok = ok && transferOk
+
+    // per-child resume: half the middle child pre-exists with its TRUE head
+    shell.run("rm", listOf("-rf", "fc-dest"))
+    Directory("fc-dest/fc-docs/sub").createDirectories()
+    File("fc-dest/fc-docs/a.txt").writeBytes(aData)
+    File("fc-dest/fc-docs/sub/b.txt").writeBytes(headOf(bData, 300))
+    var downR = downDir(base, tok, "fc-dest", "k0")
+    var resumeOk = downR.indexOf("DOWN-OK dir files=3") == 0
+        && identical(File("fc-dest/fc-docs/sub/b.txt").readBytes(), bData)
+    println("perChildResume=" + resumeOk)
+    ok = ok && resumeOk
+
+    // traversal gate on the recipient side: even a manifest that reached the
+    // client cannot build a traversal destination — dirJoinSafe answers ""
+    var joinOk = dirJoinSafe("fc-dest", "fc-docs/../../escape").length() == 0
+        && dirJoinSafe("fc-dest", "fc-docs/sub/ok.txt").indexOf("fc-dest/fc-docs/sub/ok.txt") == 0
+    println("joinRefusesTraversal=" + joinOk)
+    ok = ok && joinOk
+
+    // manifest tampering dies at the PLANE before insertion
+    var wrongHash = "0" + dh.substring(1, 64)
+    var badHash = signOffer(sk, "o-tamper", devId, "fc-docs", sorted.size, wrongHash)
+    var tamper = http.post(base + "/offers", json.encode(OfferRequest("o-tamper", devId,
+        "fc-docs", sorted.size, wrongHash, badHash,
+        resourceIdFor(devId, "fc-docs", sorted.size, wrongHash), "fc-docs", 0, "DIRECTORY",
+        dirEntriesJson(sorted))), auth)
+    var travEntries = new List<DirEntry>()
+    travEntries.add(DirEntry("r-aaaaaaaaaaaaaaaa", "fc-docs/../evil", "FILE", 5, "h5", 1))
+    var travHash = directoryDigest("fc-docs", travEntries)
+    var travSig = signOffer(sk, "o-trav", devId, "fc-docs", 1, travHash)
+    var trav = http.post(base + "/offers", json.encode(OfferRequest("o-trav", devId,
+        "fc-docs", 1, travHash, travSig, resourceIdFor(devId, "fc-docs", 1, travHash),
+        "fc-docs", 0, "DIRECTORY", dirEntriesJson(travEntries))), auth)
+    var tamperOk = tamper.indexOf("REG016") == 0 && trav.indexOf("REG015") == 0
+    println("planeRefusesManifests=" + tamperOk)
+    ok = ok && tamperOk
+
+    // honest use accounting: maxUses=1 — the PARENT resolution consumes the
+    // single use; the following child resolution dies REG038
+    var tok1 = tokenId(http.post(base + "/shares",
+        json.encode(ShareRequest(offerId, 0, 1, false, true)), auth))
+    var firstGet = http.get(base + "/s/" + tok1, "")
+    var secondGet = http.get(base + "/s/" + tok1 + "?child=0", "")
+    var usesOk = firstGet.indexOf("DIRECTORY") >= 0 && secondGet.indexOf("REG038") == 0
+    println("usesAreHonest=" + usesOk)
+    ok = ok && usesOk
+
+    // restart: the plane dies, the manifest comes back identical
+    sweepPorts()
+    var clearP = portClear(19420)
+    var plane2 = clearP && spawnCli("fc-plane2.log", "SERVER-READY", listOf("server", "19420"))
+    // Track D law: a restart demotes persisted ONLINE to OFFLINE until the
+    // device heartbeats again — the golden must EARN presence, not fake it.
+    var hb = http.post(base + "/devices/" + devId + "/heartbeat", "{}", auth)
+    var reload = plane2 && hb.indexOf("HEARTBEAT-OK") == 0
+        && http.get(base + "/offers?device=", "").indexOf(offerId) >= 0
+    var tokR = ""
+    if (reload) {
+        tokR = tokenId(http.post(base + "/shares",
+            json.encode(ShareRequest(offerId, 0, 0, false, true)), auth))
+    }
+    var faceClear = portClear(19421) && spawnCli("fc-face2.log", "SERVE-LISTENING",
+        listOf("serve-dir", "fc-docs", "19421", "k0"))
+    var down2 = ""
+    if (faceClear && tokR.length() > 0) {
+        shell.run("rm", listOf("-rf", "fc-dest3"))
+        down2 = downDir(base, tokR, "fc-dest3", "k0")
+    }
+    var restartOk = reload && faceClear && down2.indexOf("DOWN-OK dir files=3") == 0
+        && identical(File("fc-dest3/fc-docs/sub/c.bin").readBytes(), cData)
+    println("restartManifestSurvives=" + restartOk)
+    ok = ok && restartOk
+
+    // revocation kills the data path through EVERY resolution shape
+    var rev = http.post(base + "/devices/" + devId + "/revoke", "{}", auth)
+    var gAfter = http.get(base + "/s/" + tok + "?child=1", "")
+    var pAfter = http.get(base + "/s/" + tok, "")
+    var revOk = rev.indexOf("REVOKED") >= 0 && gAfter.indexOf("DEV003") == 0
+        && pAfter.indexOf("DEV003") == 0
+    println("revocationKillsDir=" + revOk)
+    ok = ok && revOk
+
+    sweepPorts()
+    if (ok) {
+        println("FOLDERCHECK-OK")
+    } else {
+        println("FOLDERCHECK-FAIL")
+        throw "kofshare: FOLDERCHECK-FAIL"
+    }
+}
+
+Int[] headOf(Int[] data, Int n) {
+    var out = new Int[n]
+    var i = 0
+    while (i < n && i < data.size) {
+        out[i] = data[i]
+        i = i + 1
+    }
+    return out
+}

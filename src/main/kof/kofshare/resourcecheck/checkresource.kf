@@ -285,19 +285,19 @@ main() {
     var lieSig = signOffer(sk1, "o-lie", identityDeviceId(identityPub(sk1)), "lie.bin", 64, digestH)
     var lie1 = http.post(base + "/offers", json.encode(OfferRequest("o-lie",
         identityDeviceId(identityPub(sk1)), "lie.bin", 64, digestH, lieSig,
-        resourceIdFor(devId2, "lie.bin", 64, digestH), "lie.bin", 0)), auth)
+        resourceIdFor(devId2, "lie.bin", 64, digestH), "lie.bin", 0, "", "")), auth)
     var liarRefused = lie1.indexOf("REG014") == 0
     var pathSig = signOffer(sk1, "o-path", identityDeviceId(identityPub(sk1)), "path.bin", 64, digestH)
     var lie2 = http.post(base + "/offers", json.encode(OfferRequest("o-path",
         identityDeviceId(identityPub(sk1)), "path.bin", 64, digestH, pathSig,
-        "/home/mel/path.bin", "path.bin", 0)), auth)
+        "/home/mel/path.bin", "path.bin", 0, "", "")), auth)
     var pathRefused = lie2.indexOf("REG013") == 0
     println("foreignResourceRefused=" + liarRefused)
     println("pathLikeIdRefused=" + pathRefused)
     ok = ok && liarRefused && pathRefused
 
     // ── grant through the resource: /s carries resourceId, never a layout ──
-    var tok1 = tokenId(http.post(base + "/shares", json.encode(ShareRequest(offer1, 0, 0, false)), auth))
+    var tok1 = tokenId(http.post(base + "/shares", json.encode(ShareRequest(offer1, 0, 0, false, false)), auth))
     var grantBody = http.get(base + "/s/" + tok1, "")
     var grantResource = grantBody.indexOf(res1) >= 0 && grantBody.indexOf("rc-src.bin") >= 0
         && grantBody.indexOf("/home") < 0 && grantBody.indexOf("\"path\":\"rc-src.bin\"") >= 0
@@ -372,7 +372,7 @@ main() {
 
     // ── relay over the resource lane: dead grant address, relay carries the
     // SAME resource bytes, session-less (v1 grant) but digest-verified ──
-    var deadTok = tokenId(http.post(base + "/shares", json.encode(ShareRequest(offer2, 0, 0, false)), auth))
+    var deadTok = tokenId(http.post(base + "/shares", json.encode(ShareRequest(offer2, 0, 0, false, false)), auth))
     var clearS3 = portClear(19411)
     var serveUp3 = clearS3 && spawnCli("rc-serve3.log", "SERVE-LISTENING",
         listOf("serve", "--resource", res1, "19411", "--key", "k0"))

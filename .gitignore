@@ -22,3 +22,6 @@ share-test.*
 serve-src.bin
 serve-*.part
 serve-*.log
+fc-*
+httpserver*.log
+kofshare-resources.json

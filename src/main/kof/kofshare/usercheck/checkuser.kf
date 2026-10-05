@@ -256,7 +256,7 @@ main() {
 
     var offerId = pubRes.substring(12, pubRes.indexOf(" ", 12))
     var sh = http.post(base + "/shares",
-        json.encode(ShareRequest(offerId, 0, 0, false)), auth)
+        json.encode(ShareRequest(offerId, 0, 0, false, false)), auth)
     var bits = sh.split(" ")
     var token = ""
     if (sh.indexOf("SHARED ") == 0) {
@@ -368,12 +368,12 @@ main() {
         json.encode(DeviceInfo("dev-liar", "liar", "127.0.0.1:" + (planePort + 2))), auth)
     var regLie = http.post(base + "/offers", json.encode(OfferRequest(
         "o-tamper", "dev-liar", "user-src.bin", 3000,
-        crypto.sha256Bytes(toBytes(File("user-src.bin").readBytes())), "", "", "", 0)), auth)
+        crypto.sha256Bytes(toBytes(File("user-src.bin").readBytes())), "", "", "", 0, "", "")), auth)
     var offerLie = regLie.indexOf("OFFERED:") == 0
     println("offerLie=" + offerLie)
     ok = ok && offerLie
     var liarShare = http.post(base + "/shares",
-        json.encode(ShareRequest("o-tamper", 0, 0, false)), auth)
+        json.encode(ShareRequest("o-tamper", 0, 0, false, false)), auth)
     var liarTok = liarShare.split(" ")[2]
     var clear4 = servePortClear(planePort + 1)
     var serveUp3 = clear4 && spawnCli("serve-liar.log", "SERVE-LISTENING",

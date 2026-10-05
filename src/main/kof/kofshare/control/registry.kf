@@ -3,6 +3,7 @@ package kofshare.control
 import kof.json
 import kofshare.identity
 import kofshare.resource
+import kofshare.directory
 
 // Control-plane registry (implementation-plan.md §2 Fatia 1). PURE domain:
 // the maps are passed in and mutated in place (no IO, no time, no randomness
@@ -10,7 +11,13 @@ import kofshare.resource
 // HTTP handlers (fatia 2) wrap exactly these verbs; CLI (fatia 3) drives them.
 
 record DeviceInfo(String id, String name, String address)
-record OfferInfo(String id, String deviceId, String path, Int size, String sha256Hex, Long createdAt, String resourceId, String name, Long modifiedAt)
+// v2-Track G: FILE offers keep exactly the Track F shape. DIRECTORY offers
+// reuse the SAME record honestly — path = directory NAME, size = number of
+// entries, sha256Hex = the MANIFEST digest (dirHash; the offer signs it like
+// content, C1 law transfers), type = "DIRECTORY", entriesJson = the sorted
+// manifest (the logical tree). Nothing is packed: each child stays its own
+// Resource with its own id/hash.
+record OfferInfo(String id, String deviceId, String path, Int size, String sha256Hex, Long createdAt, String resourceId, String name, Long modifiedAt, String type, String entriesJson)
 
 // A4 wire contract: what the CLIENT may send. The server stamps createdAt
 // itself — a client cannot fake freshness or resurrect expired ids.
@@ -18,7 +25,7 @@ record OfferInfo(String id, String deviceId, String path, Int size, String sha25
 // a v1 field — an old client sends none of the new ones and json.decode
 // defaults them to ""/0 (measured law: missing fields arrive as null/zero;
 // extra fields are IGNORED by old decoders). Wire-compatible both ways.
-record OfferRequest(String id, String deviceId, String path, Int size, String sha256Hex, String offerSig, String resourceId, String name, Long modifiedAt)
+record OfferRequest(String id, String deviceId, String path, Int size, String sha256Hex, String offerSig, String resourceId, String name, Long modifiedAt, String type, String entriesJson)
 
 Long offerTtlMs() {
     return 86400000
@@ -88,6 +95,22 @@ String controlOffer(Map<String, OfferInfo> offers, Map<String, DeviceInfo> devic
     if (o.resourceId.length() > 0 && o.resourceId != derived) {
         return "REG014: resource id does not match the plane derivation"
     }
+    // ── v2-Track G DIRECTORY gate (BEFORE insertion — refusal ORDER is a
+    // contract: nothing half-present in the registry) ──
+    if (o.type == "DIRECTORY") {
+        var entries = dirEntriesFromJson(o.entriesJson)
+        var vg = dirValidate(entries, o.sha256Hex)
+        if (vg != "OK") {
+            return vg
+        }
+        var recomputed = directoryDigest(resourceName(o.path), entries)
+        if (recomputed != o.sha256Hex) {
+            return "REG016: directory manifest digest mismatch (recomputed by the plane)"
+        }
+        if (o.size != entries.size) {
+            return "REG016: directory size must be the entry count"
+        }
+    }
     var stamp = o
     if (o.resourceId.length() == 0) {
         // legacy v1 lane: stamp the derivation anyway (device-scoped identity
@@ -95,7 +118,7 @@ String controlOffer(Map<String, OfferInfo> offers, Map<String, DeviceInfo> devic
         // offer re-listed after this boot); the CONTENT-SLOT id o.id stays as
         // the offer key for wire compatibility.
         stamp = OfferInfo(o.id, o.deviceId, o.path, o.size, o.sha256Hex, o.createdAt,
-            derived, dname, 0)
+            derived, dname, 0, "FILE", "")
     }
     offers.put(o.id, stamp)
     return "OK"

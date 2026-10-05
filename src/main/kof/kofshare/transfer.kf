@@ -37,6 +37,14 @@ Int serveFile(Conn c, String path, Int resumeOffset, String key) {
             return 0 - 3
         }
     }
+    return sendChunks(c, data, off, key)
+}
+
+// META + tagged chunks from `off` — shared by the plain serveFile and the
+// directory face (Track G), whose HELLO selector is consumed BEFORE the
+// stream starts (the face picks the file by ordinal, then streams).
+Int sendChunks(Conn c, Int[] data, Int off, String key) {
+    var total = data.size
     c.send(headFrame(total, metaIndex()))
     var sent = 0
     var index = 0
@@ -68,6 +76,17 @@ Int serveFile(Conn c, String path, Int resumeOffset, String key) {
 // reaches the file; mismatch refuses by name.
 Transfer fetchFile(Conn c, String dst, Int resumeOffset, String shareId, String peerId, String key) {
     c.send(headFrame(resumeOffset, helloIndex()))
+    return fetchRest(c, dst, resumeOffset, shareId, peerId, key)
+}
+
+// Directory child pull (Track G): HELLO's type field carries the selector
+// dirHelloBase()+child — additive wire; plain files keep helloIndex.
+Transfer fetchFileDir(Conn c, String dst, Int resumeOffset, Int child, String shareId, String peerId, String key) {
+    c.send(headFrame(resumeOffset, dirHelloBase() + child))
+    return fetchRest(c, dst, resumeOffset, shareId, peerId, key)
+}
+
+Transfer fetchRest(Conn c, String dst, Int resumeOffset, String shareId, String peerId, String key) {
     var meta = recvRaw(c, 8)
     if (be32(meta, 4) == resumeErrIndex()) {
         throw "kofshare: RESUME-ERR: server file shorter than requested offset"
@@ -124,4 +143,10 @@ Int firstMismatch(Int[] a, Int[] b) {
         i = i + 1
     }
     return 0 - 1
+}
+
+// Selector space: 1073700000..1073700999 — strictly below resumeErrIndex,
+// strictly above any chunk index; the directory child HELLO rides it.
+Int dirHelloBase() {
+    return 1073700000
 }

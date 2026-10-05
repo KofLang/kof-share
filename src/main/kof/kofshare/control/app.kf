@@ -1,6 +1,7 @@
 package kofshare.control
 
 import kofshare.control.registry
+import kofshare.directory
 import kofshare.control.share
 import kofshare.control.auth
 import kofshare.control.session
@@ -22,6 +23,100 @@ import kof.auth
 // security.randomHex(32), signed with the control Ed25519 key (C1 face);
 // /s/<token> is the authorization gate (shareTouch decides; only "OK"
 // serves offer metadata). The SECRET stays a Secret handle end to end.
+
+String handleGetShare(String token, String? childQuery, Map<String, ShareInfo> shares,
+                     Map<String, OfferInfo> offers, Map<String, DeviceInfo> devices,
+                     Map<String, DeviceKey> devkeys, Map<String, PresenceInfo> presences,
+                     String spath) {
+    var now = time.now()
+    var r = shareTouch(shares, token, now)
+    if (r != "OK") {
+        return r
+    }
+    var s = shareResolve(shares, token)
+    if (s == null) {
+        return "REG035: unknown share token"
+    }
+    // narrowing of the nullable SHARE then passed to the grant helpers — the
+    // direct `s.permissions`-as-argument read crashed the JVM backend with a
+    // COMP002 frame error (Kof4j bug, to be filed); binding the field after
+    // the null guard is the same idiom the working handlers use.
+    var perms = s.permissions
+    var cq = ""
+    if (childQuery != null) {
+        cq = childQuery
+    }
+    var o: OfferInfo? = controlResolveOffer(offers, s.offerId)
+    if (o == null) {
+        return "REG034: offer vanished " + s.offerId
+    }
+    var d: DeviceInfo? = controlResolve(devices, o.deviceId)
+    if (d == null) {
+        return "REG032: unknown device " + o.deviceId
+    }
+    var k: DeviceKey? = devkeys.get(o.deviceId)
+    if (k != null && k.status == "revoked") {
+        return "DEV003: device revoked " + o.deviceId
+    }
+    var pg = presenceGate(presences, o.deviceId, now)
+    if (pg != "OK") {
+        return pg
+    }
+    if (spath.length() > 0) {
+        controlSaveList(spath, sharesJson(shares))
+    }
+    if (o.type == "DIRECTORY") {
+        var out3 = dirGrantBody(o, cq, d.address, perms)
+        return out3
+    }
+    var out2 = fileGrantJson(o, perms, d.address)
+    return out2
+}
+
+// childQuery "" means "no selector" — the caller COALESCES the nullable
+// query up front; threading a narrowed Nullable-type parameter through the
+// branch crashed the JVM backend (COMP002 frame error — Kof4j bug being
+// filed; plain-String parameters have compiled since Track C).
+String dirGrantBody(OfferInfo o, String childQuery, String addr, String perms) {
+    if (childQuery.length() == 0) {
+        return json.encode(dirGrantJson(o, perms, addr))
+    }
+    var ci = math.parseInt(childQuery)
+    var entriesG = dirEntriesFromJson(o.entriesJson)
+    // THE CONTRACT: the child index is the ordinal among FILE entries of the
+    // SORTED manifest (directories carry no bytes — they are not selectable).
+    // The device face counts the same ordinals over the same sorted list.
+    var filesG = new List<DirEntry>()
+    var gi = 0
+    while (gi < entriesG.size) {
+        if (entriesG.get(gi).type == "FILE") {
+            filesG.add(entriesG.get(gi))
+        }
+        gi = gi + 1
+    }
+    if (ci < 0 || ci >= filesG.size) {
+        return "REG015: directory child index out of range"
+    }
+    var ce = filesG.get(ci)
+    var out1 = childGrantJson(ce, addr, perms)
+    return out1
+}
+
+String fileGrantJson(OfferInfo o, String perms, String addr) {
+    return json.encode(ShareGrant(o.id, o.path, o.size, o.sha256Hex, addr,
+        perms, o.resourceId, o.name, "FILE", "", "", ""))
+}
+
+String childGrantJson(DirEntry ce, String addr, String perms) {
+    return json.encode(ShareGrant(ce.resourceId, dirBaseName(ce.logicalPath), ce.size,
+        ce.hash, addr, perms, ce.resourceId, dirBaseName(ce.logicalPath),
+        "FILE", "", ce.logicalPath, ""))
+}
+
+ShareGrant dirGrantJson(OfferInfo o, String perms, String addr) {
+    return ShareGrant(o.id, o.name, o.size, o.sha256Hex, addr,
+        perms, o.resourceId, o.name, "DIRECTORY", o.entriesJson, "", "")
+}
 
 void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferInfo> offers, String dpath, String opath, Map<String, ShareInfo> shares, String spath, Secret controlKey, Map<String, Account> accounts, String apath, String controlSecret, Map<String, DeviceKey> devkeys, String kpath, Map<String, SessionInfo> sessions, String npath, Map<String, PresenceInfo> presences, String ppath) {
     var app = web.app()
@@ -130,7 +225,7 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
         // A4: the SERVER stamps freshness — the client cannot fake createdAt
         // or resurrect an expired id from the wire.
         var o = OfferInfo(q.id, q.deviceId, q.path, q.size, q.sha256Hex, time.now(),
-            q.resourceId, q.name, q.modifiedAt)
+            q.resourceId, q.name, q.modifiedAt, q.type, q.entriesJson)
         var r = controlOffer(offers, devices, o)
         if (r != "OK") {
             return r
@@ -242,11 +337,21 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
         if (req.ttlMs > 0) {
             expires = now + req.ttlMs
         }
-        var core = ShareInfo(id, token, o.deviceId, req.offerId, perms, now, expires, req.maxUses, 0, "active", "", "")
-        var signed = ShareInfo(core.id, core.token, core.deviceId, core.offerId, core.permissions, core.createdAt, core.expiresAt, core.maxUses, core.used, core.status, core.revocation, shareSign(controlKey, core))
+        var core = ShareInfo(id, token, o.deviceId, req.offerId, perms, now, expires, req.maxUses, 0, "active", "", "", "")
+        var signed = ShareInfo(core.id, core.token, core.deviceId, core.offerId, core.permissions, core.createdAt, core.expiresAt, core.maxUses, core.used, core.status, core.revocation, shareSign(controlKey, core), "")
         var r = shareIssue(shares, signed)
         if (r != "OK") {
             return r
+        }
+        // v2-Track G DIRECTORY gate: a dir share may ONLY be minted over a
+        // DIRECTORY offer — the parent token becomes the capability for the
+        // whole tree (children resolve through /s/<token>?child=N). NO child
+        // share-minting exists: the tree is data, the capability is one.
+        if (req.dirShare && o.type != "DIRECTORY") {
+            return "REG016: dirShare requested on a non-directory offer"
+        }
+        if (!req.dirShare && o.type == "DIRECTORY") {
+            return "REG016: directory offers require dirShare"
         }
         if (spath.length() > 0) {
             controlSaveList(spath, sharesJson(shares))
@@ -263,42 +368,8 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
     }
 
     app.get("/s/:token") {
-        var now = time.now()
-        var r = shareTouch(shares, param("token"), now)
-        if (r != "OK") {
-            return r
-        }
-        var s = shareResolve(shares, param("token"))
-        if (s == null) {
-            return "REG035: unknown share token"
-        }
-        var o: OfferInfo? = controlResolveOffer(offers, s.offerId)
-        if (o == null) {
-            return "REG034: offer vanished " + s.offerId
-        }
-        var d: DeviceInfo? = controlResolve(devices, o.deviceId)
-        if (d == null) {
-            return "REG032: unknown device " + o.deviceId
-        }
-        // TRACK A revocation reaches the DATA path here (not only future
-        // enrollments): the grant names a device; if that device's key is
-        // revoked, the authorization it carries is dead — by name.
-        var k: DeviceKey? = devkeys.get(o.deviceId)
-        if (k != null && k.status == "revoked") {
-            return "DEV003: device revoked " + o.deviceId
-        }
-        // TRACK D: an ENROLLED-or-known device that is explicitly OFFLINE
-        // refuses the grant BY NAME — never a fake success, never a lie of
-        // availability (the file is NOT storable here; the owner must be up).
-        var pg = presenceGate(presences, o.deviceId, time.now())
-        if (pg != "OK") {
-            return pg
-        }
-        if (spath.length() > 0) {
-            controlSaveList(spath, sharesJson(shares))
-        }
-        return json.encode(ShareGrant(o.id, o.path, o.size, o.sha256Hex, d.address, s.permissions,
-            o.resourceId, o.name))
+        return handleGetShare(param("token"), query("child"), shares, offers, devices,
+            devkeys, presences, spath)
     }
 
     app.post("/shares/:id/revoke") {

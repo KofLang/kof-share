@@ -249,7 +249,7 @@ main() {
     var publish = pub.indexOf("UP-OK") == 0
     println("publish=" + publish)
     ok = ok && publish
-    var tok = tokenId(http.post(base + "/shares", json.encode(ShareRequest(offerIdOf(pub), 0, 0, false)), auth))
+    var tok = tokenId(http.post(base + "/shares", json.encode(ShareRequest(offerIdOf(pub), 0, 0, false, false)), auth))
     var mint = tok.length() == 64
     println("mint=" + mint)
     ok = ok && mint
