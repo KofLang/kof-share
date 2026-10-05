@@ -31,7 +31,7 @@ import kof.json
 record SessionInfo(String id, String shareId, String token, String ownerDeviceId,
                   String offerId, String recipientDevice, String recipientAddr,
                   String ownerAddr, String state, Long createdAt, Long expiresAt,
-                  String transport)
+                  String transport, String resourceId)
 
 record SessionRequest(String token, String recipientDevice, String recipientAddr)
 
@@ -82,7 +82,10 @@ Bool sessionLegal(String from, String to) {
 // token plus a non-empty recipient device. SES005 keeps the rendezvous
 // single: while a session for this share is non-terminal nobody else claims
 // the slot (matches --once semantics).
-String sessionCreate(Map<String, SessionInfo> sessions, Map<String, ShareInfo> shares,
+// v2-Track F: the session now CARRIES the logical resource id (still read
+// transitively through the offer for v1 lanes). One added parameter at the
+// door; the STATE MACHINE is untouched (§8 law — no aesthetic changes).
+String sessionCreate(Map<String, SessionInfo> sessions, Map<String, ShareInfo> shares, String resourceId,
                      String id, SessionRequest r, Long now) {
     if (r.recipientDevice == null || r.recipientDevice.length() == 0) {
         return "SES006: empty recipient device"
@@ -114,7 +117,7 @@ String sessionCreate(Map<String, SessionInfo> sessions, Map<String, ShareInfo> s
     }
     var rdev = r.recipientDevice
     sessions.put(id, SessionInfo(id, s.id, s.token, s.deviceId, s.offerId,
-        rdev, raddr, "", "CREATED", now, now + sessionTtlMs(), ""))
+        rdev, raddr, "", "CREATED", now, now + sessionTtlMs(), "", resourceId))
     return "OK"
 }
 
@@ -133,7 +136,7 @@ String sessionAdvance(Map<String, SessionInfo> sessions, String id, String to,
     }
     if (!sessionTerminal(e.state) && now > e.expiresAt) {
         sessions.put(id, SessionInfo(e.id, e.shareId, e.token, e.ownerDeviceId, e.offerId,
-            e.recipientDevice, e.recipientAddr, e.ownerAddr, "EXPIRED", e.createdAt, e.expiresAt, e.transport))
+            e.recipientDevice, e.recipientAddr, e.ownerAddr, "EXPIRED", e.createdAt, e.expiresAt, e.transport, e.resourceId))
         return "SES003: session expired " + id
     }
     if (!sessionLegal(e.state, to)) {
@@ -144,7 +147,8 @@ String sessionAdvance(Map<String, SessionInfo> sessions, String id, String to,
         t = transport
     }
     sessions.put(id, SessionInfo(e.id, e.shareId, e.token, e.ownerDeviceId, e.offerId,
-        e.recipientDevice, e.recipientAddr, e.ownerAddr, to, e.createdAt, e.expiresAt, t))
+        e.recipientDevice, e.recipientAddr, e.ownerAddr, to, e.createdAt, e.expiresAt, t,
+        e.resourceId))
     return "OK"
 }
 
@@ -160,7 +164,7 @@ String sessionClaim(Map<String, SessionInfo> sessions, Map<String, DeviceInfo> d
     }
     if (!sessionTerminal(e.state) && now > e.expiresAt) {
         sessions.put(id, SessionInfo(e.id, e.shareId, e.token, e.ownerDeviceId, e.offerId,
-            e.recipientDevice, e.recipientAddr, e.ownerAddr, "EXPIRED", e.createdAt, e.expiresAt, e.transport))
+            e.recipientDevice, e.recipientAddr, e.ownerAddr, "EXPIRED", e.createdAt, e.expiresAt, e.transport, e.resourceId))
         return "SES003: session expired " + id
     }
     if (e.state != "CREATED") {
@@ -172,7 +176,7 @@ String sessionClaim(Map<String, SessionInfo> sessions, Map<String, DeviceInfo> d
         addr = d.address
     }
     sessions.put(id, SessionInfo(e.id, e.shareId, e.token, e.ownerDeviceId, e.offerId,
-        e.recipientDevice, e.recipientAddr, addr, "CLAIMED", e.createdAt, e.expiresAt, e.transport))
+        e.recipientDevice, e.recipientAddr, addr, "CLAIMED", e.createdAt, e.expiresAt, e.transport, e.resourceId))
     return "OK"
 }
 
@@ -203,7 +207,7 @@ String sessionMarkExpired(Map<String, SessionInfo> sessions, String id) {
         return "SES001: unknown session " + id
     }
     sessions.put(id, SessionInfo(e.id, e.shareId, e.token, e.ownerDeviceId, e.offerId,
-        e.recipientDevice, e.recipientAddr, e.ownerAddr, "EXPIRED", e.createdAt, e.expiresAt, e.transport))
+        e.recipientDevice, e.recipientAddr, e.ownerAddr, "EXPIRED", e.createdAt, e.expiresAt, e.transport, e.resourceId))
     return "OK"
 }
 

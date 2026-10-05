@@ -12,6 +12,7 @@ import kofshare.session
 import kofshare.protocol
 import kofshare.relay
 import kofshare.userflow
+import kofshare.resource
 import kofshare.app.client
 import kofshare.app.page
 import kof.json
@@ -96,7 +97,7 @@ String offerJson(String path) {
         return "OFFER-ERR: empty file: " + path
     }
     var digest = crypto.sha256Bytes(toBytes(data))
-    var o = OfferRequest("o-" + digest.substring(0, 12), "local", path, data.size, digest, "")
+    var o = OfferRequest("o-" + digest.substring(0, 12), "local", path, data.size, digest, "", "", "", 0)
     return json.encode(o)
 }
 
@@ -137,7 +138,7 @@ Boolean registryLeg() {
     var d1 = controlResolve(devices, "d1")
     ok = ok && (d1 != null && d1.name == "alpha")
     var dig = crypto.sha256("/srv/a.bin")
-    ok = ok && (controlOffer(offers, devices, OfferInfo("o1", "d1", "/srv/a.bin", 2048, dig, 1789000000000)) == "OK")
+    ok = ok && (controlOffer(offers, devices, OfferInfo("o1", "d1", "/srv/a.bin", 2048, dig, 1789000000000, "", "", 0)) == "OK")
     var back = controlResolveOffer(offers, "o1")
     ok = ok && (back != null && back.size == 2048 && back.deviceId == "d1")
     ok = ok && (controlRevoke(offers, "o1") == "OK")
@@ -252,7 +253,7 @@ Bool sessionLeg() {
     ladder.add("CONNECTED")
     ladder.add("TRANSFERRING")
     ladder.add("COMPLETED")
-    var created = sessionCreate(sessions, shares, "s1", SessionRequest("tok1", "d2", "10.0.0.2:5"), 100) == "OK"
+    var created = sessionCreate(sessions, shares, "", "s1", SessionRequest("tok1", "d2", "10.0.0.2:5"), 100) == "OK"
     var walkOk = true
     for (var to in ladder) {
         if (to == "CLAIMED") {
@@ -268,19 +269,54 @@ Bool sessionLeg() {
     }
     var completed = e1 != null && e1.state == "COMPLETED" && oaddr == "127.0.0.1:1"
     var backstep = sessionAdvance(sessions, "s1", "NEGOTIATING", "", 300).indexOf("SES002") == 0
-    var afterTerminalOk = sessionCreate(sessions, shares, "s2", SessionRequest("tok1", "d3", ""), 300).indexOf("OK") == 0
-    var activeBlock = sessionCreate(sessions, shares, "s3", SessionRequest("tok1", "d4", ""), 300).indexOf("SES005") == 0
-    var s8 = sessionCreate(sessions, shares, "s8", SessionRequest("tok2", "d8", ""), 100) == "OK"
+    var afterTerminalOk = sessionCreate(sessions, shares, "", "s2", SessionRequest("tok1", "d3", ""), 300).indexOf("OK") == 0
+    var activeBlock = sessionCreate(sessions, shares, "", "s3", SessionRequest("tok1", "d4", ""), 300).indexOf("SES005") == 0
+    var s8 = sessionCreate(sessions, shares, "", "s8", SessionRequest("tok2", "d8", ""), 100) == "OK"
     var skipRef = sessionAdvance(sessions, "s8", "CONNECTED", "", 400).indexOf("SES002") == 0
     var expire = sessionAdvance(sessions, "s8", "TRANSFERRING", "", 99999999).indexOf("SES003") == 0
     var e8: SessionInfo? = sessionResolve(sessions, "s8")
     var expiredStamped = e8 != null && e8.state == "EXPIRED"
     var afterExpire = sessionAdvance(sessions, "s8", "COMPLETED", "", 99999999).indexOf("SES002") == 0
-    var badTok = sessionCreate(sessions, shares, "s5", SessionRequest("nope", "d6", ""), 500).indexOf("SES004") == 0
-    var emptyDev = sessionCreate(sessions, shares, "s6", SessionRequest("tok2", "", ""), 500).indexOf("SES006") == 0
+    var badTok = sessionCreate(sessions, shares, "", "s5", SessionRequest("nope", "d6", ""), 500).indexOf("SES004") == 0
+    var emptyDev = sessionCreate(sessions, shares, "", "s6", SessionRequest("tok2", "", ""), 500).indexOf("SES006") == 0
     var purged = sessionPurgeExpired(sessions, 99999999) >= 3
     return created && walkOk && completed && backstep && afterTerminalOk && activeBlock
         && s8 && skipRef && expire && expiredStamped && afterExpire && badTok && emptyDev && purged
+}
+
+// `--check` leg 12 — Track F resource identity, PURE (Script-safe):
+// derivation is stable and NEVER path-shaped; the same content from two
+// devices yields DIFFERENT resource ids and DIFFERENT offer slots (the
+// measured collision truth, closed by construction); hash stays a SEPARATE
+// attribute of the resource, never its identity.
+Bool resourceLeg() {
+    var d1 = "d-0123456789abcdef"
+    var d2 = "d-1111111111111111"
+    var h = crypto.sha256("same-bytes")
+    var r1 = resourceIdFor(d1, "a.bin", 10, h)
+    var r2 = resourceIdFor(d1, "a.bin", 10, h)
+    var r3 = resourceIdFor(d2, "a.bin", 10, h)
+    var derivOk = r1 == r2 && r1.length() == 18 && r1.indexOf("r-") == 0
+    var deviceScoped = r1 != r3 && r1.substring(2, r1.length()) != h.substring(0, 16)
+    var hashSeparate = crypto.sha256("same-bytes") == h &&
+        offerIdFor(d1, r1) != offerIdFor(d2, r1) && offerIdFor(d1, r1).length() == 14
+    var nameOk = resourceName("/home/mel/docs/a.bin") == "a.bin" &&
+        resourceName("C:\\Users\\Mel\\docs\\a.bin") == "a.bin" &&
+        resourceName("plain.bin") == "plain.bin"
+    var devs = new Map<String, DeviceInfo>()
+    controlRegister(devs, DeviceInfo(d1, "res-probe", "127.0.0.1:1"))
+    controlRegister(devs, DeviceInfo(d2, "res-probe2", "127.0.0.1:2"))
+    var leak = controlOffer(new Map<String, OfferInfo>(), devs,
+        OfferInfo("o9", d1, "/srv/a.bin", 10, h, 1789000000000, "/home/mel/a.bin", "", 0))
+    var pathRefused = leak.indexOf("REG013") == 0
+    var liarRefused = controlOffer(new Map<String, OfferInfo>(), devs,
+        OfferInfo("o8", d1, "a.bin", 10, h, 1789000000000, "r-ffffffffffffffff", "a.bin", 0))
+        .indexOf("REG014") == 0
+    var metaOk = isPathLike("../../etc/passwd") && isPathLike("/etc/passwd") &&
+        isPathLike("C:\\x") && !isPathLike("a.bin") &&
+        resourceName("../../etc/passwd") == "passwd"
+    return derivOk && deviceScoped && hashSeparate && nameOk && pathRefused &&
+        liarRefused && metaOk
 }
 
 // `--check` leg 11 — Track E page/contract, PURE (Script-safe): the page is
@@ -347,7 +383,9 @@ Int runCheck() {
     println("connect=" + conn)
     var app = appLeg()
     println("app=" + app)
-    if (reg && persist && plain && secure && share && auth && resume && identity && sess && conn && app) {
+    var reso = resourceLeg()
+    println("resource=" + reso)
+    if (reg && persist && plain && secure && share && auth && resume && identity && sess && conn && app && reso) {
         println("CHECK-OK")
         return 0
     }
@@ -768,12 +806,32 @@ Int runServe(List<String> args) {
         return 1
     }
     var path = rest.get(0)
-    var port = math.parseInt(rest.get(1))
+    var port = 0
     var resume = 0
     var key = defaultKey()
     var secure = false
     var salt = ""
     var i = 2
+    // v2-Track F face: `serve --resource r-… <port>` resolves the LOCAL
+    // binding (the path never comes from the wire — §6/§7 boundary). The old
+    // `serve <path> <port>` face is untouched (v1 compat, §11).
+    if (path == "--resource") {
+        if (rest.size < 3) {
+            println("SERVE-ERR: usage: serve --resource <resourceId> <port>")
+            return 1
+        }
+        var rid = rest.get(1)
+        var bp = bindingResolve("kofshare-resources.json", rid)
+        if (bp.length() == 0) {
+            println("SERVE-ERR: no local binding for resource " + rid)
+            return 1
+        }
+        path = bp
+        port = math.parseInt(rest.get(2))
+        i = 3
+    } else {
+        port = math.parseInt(rest.get(1))
+    }
     while (i < rest.size) {
         var a = argAt(rest, i)
         if (a == "--resume") {

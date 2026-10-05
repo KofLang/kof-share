@@ -1,0 +1,170 @@
+package kofshare
+
+import kof.crypto
+import kof.json
+
+// v2-Track F — RESOURCE ABSTRACTION.
+//
+// The domain stops thinking "file = path = transfer". A Resource is a LOGICAL
+// identity inside a device; the filesystem is ONE origin at the LOCAL EDGE.
+//
+//   filesystem path  →  adapter (this file)  →  Resource  →  offer/session
+//   →  wire carries METADATA — never an identity-shaped path.
+//
+// Identity law (maintainer prompt §4/§5, measured truth from Track A/C/D
+// goldens: content-addressed ids COLLIDE — two devices publishing the same
+// bytes overwrote each other's offer slot):
+//
+//   resourceId = r-<sha256("v1|res|" + deviceId + "|" + name + "|" + size +
+//                 "|" + contentHash)[0:16]>
+//
+//   * NOT the content hash alone (two copies of a file stay DISTINCT
+//     resources of their owners — identity and integrity are separate
+//     responsibilities; hash remains an ATTRIBUTE);
+//   * NOT derived from any path (no filesystem layout leaks into identity —
+//     the same logical resource on POSIX and Windows names is the SAME id
+//     once deviceId+name+content agree, and paths never appear in the id
+//     material);
+//   * device-scoped: "belongs to another device" is REFUSED BY CONSTRUCTION
+//     — the plane RECOMPUTES from (deviceId, basename(path), size, digest)
+//     and a client that claims otherwise meets REG014.
+//
+// Path-leak refusals (R6 named family, registry side):
+//   REG012 — malformed/corrupt local resource-binding file
+//   REG013 — a resource id that IS path-like ("/", "\", ":", "..") — never
+//            identity, never accepted;
+//   REG014 — a resource id that does not match the plane's own derivation.
+
+record Resource(String id, String name, String type, Int size, Long modifiedAt, String hash, String metadata)
+
+record ResourceBinding(String resourceId, String localPath)
+
+String typeFile() {
+    return "FILE"
+}
+
+String typeDirectory() {
+    return "DIRECTORY"
+}
+
+// The last segment under EITHER separator (a Windows client may name with
+// backslashes — identity uses the segment, never the layout).
+String resourceName(String p) {
+    var out = p
+    var i = out.lastIndexOf("/")
+    var j = out.lastIndexOf("\\")
+    if (j > i) {
+        i = j
+    }
+    if (i >= 0) {
+        out = out.substring(i + 1, out.length())
+    }
+    return out
+}
+
+// An ID is identity, never location. Path-like shapes are refused even when
+// they would encode a "valid name": the wire must not be able to smuggle a
+// filesystem path inside an identifier (§10 — traversal is not "blocked", it
+// is UNEXPRESSIBLE in the id charset).
+Bool isPathLike(String s) {
+    if (s.indexOf("/") >= 0) {
+        return true
+    }
+    if (s.indexOf("\\") >= 0) {
+        return true
+    }
+    if (s.indexOf(":") >= 0) {
+        return true
+    }
+    if (s.indexOf("..") == 0) {
+        return true
+    }
+    return false
+}
+
+String resourceIdFor(String deviceId, String name, Int size, String contentHash) {
+    var canon = "v1|res|" + deviceId + "|" + name + "|" + ("" + size) + "|" + contentHash
+    return "r-" + crypto.sha256(canon).substring(0, 16)
+}
+
+// The OFFER slot for a resource: device-scoped, so identical bytes from two
+// devices land in DIFFERENT slots (the collision the Track A and Track D
+// goldens each measured as a product truth — this closes it). A v1 client
+// without a resource keeps the old content-only id: additive migration, not
+// a rewrite (the wire grows fields; it never drops them).
+String offerIdFor(String deviceId, String resourceId) {
+    return "o-" + crypto.sha256("v1|offer-slot|" + deviceId + "|" + resourceId).substring(0, 12)
+}
+
+// The FILESYSTEM ADAPTER — the only place the local layout is touched. The
+// binding table stays LOCAL to the device (kofshare-resources.json): the
+// plane and the peer only ever see the Resource metadata.
+Resource fileResource(String deviceId, String localPath, Int size, String contentHash, Long modifiedAt) {
+    var name = resourceName(localPath)
+    var id = resourceIdFor(deviceId, name, size, contentHash)
+    return Resource(id, name, typeFile(), size, modifiedAt, contentHash, "")
+}
+
+String bindingsJson(List<ResourceBinding> bindings) {
+    return json.encode(bindings)
+}
+
+List<ResourceBinding> bindingsFromJson(String txt) {
+    return json.decode<List<ResourceBinding>>(txt)
+}
+
+// Store the binding at the local edge; resolve ONLY through it (§6: peer
+// authorizes a resourceId, the LOCAL BINDING knows the path — a remote name
+// can never choose the filesystem). "" means unknown resource.
+String bindingPut(String path, ResourceBinding b) {
+    var f = File(path)
+    var items = new List<ResourceBinding>()
+    if (f.exists()) {
+        var txt = f.readText()
+        if (txt != null && txt.length() > 0) {
+            items = bindingsFromJson(txt)
+        }
+    }
+    var out = new List<ResourceBinding>()
+    for (var it in items) {
+        if (it.resourceId != b.resourceId) {
+            out.add(it)
+        }
+    }
+    out.add(b)
+    // quasi-atomic like the registry persistence (measured law: moveTo does
+    // NOT replace an existing target — delete first, then rename)
+    var tmp = path + ".tmp"
+    File(tmp).writeText(json.encode(out))
+    var old = File(path)
+    if (old.exists()) {
+        old.delete()
+    }
+    if (!File(tmp).moveTo(path)) {
+        return "REG012: cannot finalize bindings " + path
+    }
+    return "OK"
+}
+
+// The binding table is LOCAL to the device that wrote it — that locality IS
+// the boundary (§7). Ownership over the WIRE is enforced by the plane, which
+// RECOMPUTES the id from (deviceId, name, size, digest) and refuses REG014
+// on mismatch; a peer can never make this device open a path it did not
+// bind itself. "" means "no local binding for this resource id".
+String bindingResolve(String path, String resourceId) {
+    var f = File(path)
+    if (!f.exists()) {
+        return ""
+    }
+    var txt = f.readText()
+    if (txt == null) {
+        throw "REG012: unreadable resource bindings " + path
+    }
+    var items = bindingsFromJson(txt)
+    for (var it in items) {
+        if (it.resourceId == resourceId) {
+            return it.localPath
+        }
+    }
+    return ""
+}

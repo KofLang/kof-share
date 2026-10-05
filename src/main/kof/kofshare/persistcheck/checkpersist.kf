@@ -15,8 +15,8 @@ main() {
     var off = new Map<String, OfferInfo>()
     controlRegister(dev, DeviceInfo("d1", "alpha", "192.168.1.10:8021"))
     controlRegister(dev, DeviceInfo("d2", "beta", "192.168.1.11:8021"))
-    controlOffer(off, dev, OfferInfo("o1", "d1", "/srv/a.bin", 2048, hex64("a1"), 1789000000000))
-    controlOffer(off, dev, OfferInfo("o2", "d2", "/srv/b.bin", 4096, hex64("b2"), 1789000000000))
+    controlOffer(off, dev, OfferInfo("o1", "d1", "/srv/a.bin", 2048, hex64("a1"), 1789000000000, "", "", 0))
+    controlOffer(off, dev, OfferInfo("o2", "d2", "/srv/b.bin", 4096, hex64("b2"), 1789000000000, "", "", 0))
 
     println("saveDev=" + (controlSaveList(dpath, controlDevicesJson(dev)) == "OK"))
     println("saveOff=" + (controlSaveList(opath, controlOffersJson(off, "")) == "OK"))

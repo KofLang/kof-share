@@ -16,7 +16,11 @@ record ShareInfo(String id, String token, String deviceId, String offerId, Strin
 
 record ShareRequest(String offerId, Long ttlMs, Int maxUses, Bool readOnly)
 
-record ShareGrant(String offerId, String path, Int size, String sha256Hex, String deviceAddress, String permissions)
+// v2-Track F: the GRANT gains the logical resource fields (additive — old
+// decoders ignore them, new consumers must NOT treat `path` as an address to
+// fetch: the data plane already dials by host:port and names files by the
+// LOCAL destination — the wire path is informational metadata only).
+record ShareGrant(String offerId, String path, Int size, String sha256Hex, String deviceAddress, String permissions, String resourceId, String name)
 
 // Canonical signed form: version-pinned, field-joined, no nesting tricks.
 // Changing this string is a wire change — bump the v1 prefix then.

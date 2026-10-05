@@ -2,6 +2,7 @@ package kofshare.control
 
 import kof.json
 import kofshare.identity
+import kofshare.resource
 
 // Control-plane registry (implementation-plan.md §2 Fatia 1). PURE domain:
 // the maps are passed in and mutated in place (no IO, no time, no randomness
@@ -9,11 +10,15 @@ import kofshare.identity
 // HTTP handlers (fatia 2) wrap exactly these verbs; CLI (fatia 3) drives them.
 
 record DeviceInfo(String id, String name, String address)
-record OfferInfo(String id, String deviceId, String path, Int size, String sha256Hex, Long createdAt)
+record OfferInfo(String id, String deviceId, String path, Int size, String sha256Hex, Long createdAt, String resourceId, String name, Long modifiedAt)
 
 // A4 wire contract: what the CLIENT may send. The server stamps createdAt
 // itself — a client cannot fake freshness or resurrect expired ids.
-record OfferRequest(String id, String deviceId, String path, Int size, String sha256Hex, String offerSig)
+// v2-Track F: the request GROWS (resourceId/name/modifiedAt) but NEVER drops
+// a v1 field — an old client sends none of the new ones and json.decode
+// defaults them to ""/0 (measured law: missing fields arrive as null/zero;
+// extra fields are IGNORED by old decoders). Wire-compatible both ways.
+record OfferRequest(String id, String deviceId, String path, Int size, String sha256Hex, String offerSig, String resourceId, String name, Long modifiedAt)
 
 Long offerTtlMs() {
     return 86400000
@@ -67,7 +72,32 @@ String controlOffer(Map<String, OfferInfo> offers, Map<String, DeviceInfo> devic
     if (o.createdAt <= 0) {
         return "REG010: offer has no registration timestamp"
     }
-    offers.put(o.id, o)
+    // ── v2-Track F resource identity (the plane RECOMPUTES; clients propose,
+    // the domain decides) ──
+    if (o.resourceId.length() > 0 && isPathLike(o.resourceId)) {
+        return "REG013: resource id must not be path-like"
+    }
+    var dname = resourceName(o.path)
+    if (o.name.length() > 0 && o.name != dname) {
+        return "REG013: offer name disagrees with the path basename"
+    }
+    var derived = ""
+    if (dname.length() > 0) {
+        derived = resourceIdFor(o.deviceId, dname, o.size, o.sha256Hex)
+    }
+    if (o.resourceId.length() > 0 && o.resourceId != derived) {
+        return "REG014: resource id does not match the plane derivation"
+    }
+    var stamp = o
+    if (o.resourceId.length() == 0) {
+        // legacy v1 lane: stamp the derivation anyway (device-scoped identity
+        // becomes the DEFAULT for every future consumer — including a v1
+        // offer re-listed after this boot); the CONTENT-SLOT id o.id stays as
+        // the offer key for wire compatibility.
+        stamp = OfferInfo(o.id, o.deviceId, o.path, o.size, o.sha256Hex, o.createdAt,
+            derived, dname, 0)
+    }
+    offers.put(o.id, stamp)
     return "OK"
 }
 

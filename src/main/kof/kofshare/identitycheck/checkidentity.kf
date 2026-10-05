@@ -211,10 +211,10 @@ main() {
 
     var lied = http.post(base + "/offers", json.encode(
         OfferRequest("o-lie", id1, "ident-src.bin", 2500, "0000000000000000000000000000000000000000000000000000000000000000",
-            signOffer(sk1, "o-lie", id1, "ident-src.bin", 2500, "ab"))), auth)
+            signOffer(sk1, "o-lie", id1, "ident-src.bin", 2500, "ab"), "", "", 0)), auth)
     var offerLied = lied.indexOf("DEV002") == 0
     var unsig = http.post(base + "/offers", json.encode(
-        OfferRequest("o-lie2", id1, "ident-src.bin", 2500, "ab", "")), auth)
+        OfferRequest("o-lie2", id1, "ident-src.bin", 2500, "ab", "", "", "", 0)), auth)
     var offerUnsigned = unsig.indexOf("DEV004") == 0
     println("offerRefusals=" + (offerLied && offerUnsigned))
     ok = ok && offerLied && offerUnsigned

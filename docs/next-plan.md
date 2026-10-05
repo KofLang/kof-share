@@ -68,7 +68,8 @@ explicit Kof4j task — no silent architectural workaround):
 
 ```text
 1. Identity / device            LANDED 05/10 (v2-Track A, IDENTITYCHECK-OK)
-2. Resource abstraction         (FileResource: id/name/size/hash/type — never
+2. Resource abstraction         LANDED 05/10 (v2-Track F,
+                                 RESOURCECHECK-OK; FileResource: id/name/size/hash/type — never
                                  a remote path on the wire)
 3. Directories                  (logical tree, per-file integrity + collection
                                  digest; packing may be internal, NEVER the
@@ -327,4 +328,59 @@ BROWSERCHECK-OK, USERCHECK-OK, CONNECTCHECK-OK, IDENTITYCHECK-OK,
 SESSIONCHECK-OK, SERVECHECK-OK, RESUMECHECK-OK, PERSIST-OK, RELAY-OK,
 SHARECHECK-OK, HTTPCHECK-OK + RESTART-OK (unchanged paths, standalone sweep),
 CHECK-OK 11 legs × JVM+Script, 33/33 files check-clean standalone.
+### v2-Track F — resource abstraction (LANDED 05/10, `RESOURCECHECK-OK`)
 
+The domain stops identifying files by location or by content. `resource.kf`
+(pure): `Resource{id,name,type,size,modifiedAt,hash,metadata}` (type FILE now,
+DIRECTORY reserved for Track G — no packing, no OOP ceremony: a record +
+functions is what Kof wants), `resourceIdFor(deviceId,name,size,contentHash)`
+= `r-<sha256("v1|res|…")[0:16]>` — device-scoped, NEVER a path, NEVER the
+content hash itself: identity and integrity are separate attributes (§5).
+The OFFER slot `offerIdFor(deviceId,resourceId)` closes, by construction, the
+collision the Track A and Track D goldens each MEASURED as a product truth
+(two devices publishing the same bytes overwrote one another's slot).
+
+The plane RECOMPUTES (`controlOffer`): a proposed id that is path-shaped →
+`REG013`; one that disagrees with the derivation → `REG014`; legacy v1 offers
+(no id fields) still work and get the derivation STAMPED into the stored
+record (additive §11 — the wire grew fields and dropped none;
+`OfferRequest`/`OfferInfo`/`ShareGrant` decode v1 bodies to ""/0 defaults —
+the measured json law). The session (`SessionInfo`) carries `resourceId`
+stamped at creation via token→share→offer — the STATE MACHINE is untouched
+(§8: gradual, no aesthetic changes). `serve --resource r-… <port>` resolves
+the LOCAL binding table `kofshare-resources.json` (written by the signed `up`
+lane); an unbound id refuses `SERVE-ERR: no local binding` — the peer
+authorizes IDs, never paths (§6/§7); traversal is UNEXPRESSIBLE in the id
+charset rather than "filtered".
+
+Golden `resourcecheck/checkresource.kf` (ports 19410-19412, two REAL
+identities, REAL serve processes, relay worker, plane restart —
+`RESOURCECHECK-OK` 15/15): sameContentDiffIds (THE collision, dead),
+wireNoPaths (offer/grant JSON carries the BASENAME; no /home, no /srv),
+foreignResourceRefused REG014 over the wire, pathLikeIdRefused REG013,
+grantCarriesResource, bindingServe + resourceTransfer (digest-verified),
+resumeOverResource (dest pre-head = offset law), unknownBindingRefused,
+relayOverResource, restartKeepsResources (both slots + ids reload; local
+bindings survive). CHECK leg 12 `resource=` pure green JVM AND Script.
+
+RED-caught bugs, each fixed at the root: `bindingPut` assumed `moveTo`
+REPLACES — it does not (the same measured law `controlSaveList` documents);
+the resource-refusal leg probe first forgot that the device gate runs BEFORE
+the resource checks (refusal ORDER is a contract — the leg now registers
+devices first); `serve --resource` positional drift (rid get(1), port get(2),
+flags from 3 — measured by standalone probe, never guessed).
+
+HONEST GAP FOUND (Track G dependency, §20 law — recorded, NOT worked around):
+`json.decode<List<ResourceBinding>>` is UNEXPRESSIBLE in Kof — the type
+grammar has no `List<Record>` parameter (the parser refuses `<` after `List`
+in a decode type argument; measured). Single-record decode<T> and
+record-typed FIELDS work today (all v1/v2 persistence uses them), so Track F
+ships complete; Track G's directory tree (child-id collection) needs a
+compiler task — `D-KOF-JSON-CONTAINER` (JSON decode of List<Record>/Map
+generics) — opened in Kof4j BEFORE Track G starts.
+
+No-regression on the final tree: RESOURCECHECK-OK, USERCHECK-OK,
+IDENTITYCHECK-OK, SESSIONCHECK-OK, CONNECTCHECK-OK, BROWSERCHECK-OK,
+SERVECHECK-OK, RESUMECHECK-OK, PERSIST-OK, RELAY-OK, SHARECHECK-OK,
+HTTPCHECK-OK + RESTART-OK (standalone cycle on 18322 with the grown records),
+CHECK-OK 12 legs × JVM+Script, 35/35 files check-clean standalone.

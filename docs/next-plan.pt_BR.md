@@ -68,7 +68,8 @@ e ABRE tarefa explícita no Kof4j — nunca workaround arquitetural silencioso):
 
 ```text
 1. Identidade/device          POUSADA 05/10 (v2-Track A, IDENTITYCHECK-OK)
-2. Abstração de recurso       (FileResource: id/nome/tamanho/hash/tipo — nunca
+2. Abstração de recurso       POUSADA 05/10 (v2-Track F,
+                               RESOURCECHECK-OK; FileResource: id/nome/tamanho/hash/tipo — nunca
                                path remoto no wire)
 3. Diretórios                 (árvore lógica, integridade por arquivo + digest
                                da coleção; empacotar pode ser interno, NUNCA
@@ -278,6 +279,69 @@ JVM+Script, 30/30 arquivos check-clean isolados (lei nova: TODO arquivo deve
 checkar LIMPO ISOLADO — `presence.kf` compilava só via grafo de imports; a
 referência cross-file ao tipo do mesmo pacote exigia `import
 kofshare.control.registry` explícito).
+
+### v2-Track F — abstração de recurso (POUSADA 05/10, `RESOURCECHECK-OK`)
+
+O domínio para de identificar arquivos por localização ou por conteúdo.
+`resource.kf` (puro): `Resource{id,nome,tipo,tamanho,modifiedAt,hash,metadata}`
+(tipo FILE agora, DIRECTORY reservado para a Track G — sem empacotamento, sem
+cerimônia OOP: record + funções é o que a Kof pede);
+`resourceIdFor(deviceId,nome,tamanho,contentHash)` =
+`r-<sha256("v1|res|…")[0:16]>` — escopado ao device, NUNCA path, NUNCA o hash
+de conteúdo: identidade e integridade são atributos separados (§5). O slot de
+oferta `offerIdFor(deviceId,resourceId)` FECHA por construção a colisão que as
+goldens da Track A e da Track D cada uma MEDEU como verdade do produto (dois
+devices publicando os mesmos bytes sobrescreviam o slot um do outro).
+
+O plano RECOMPUTA (`controlOffer`): id proposto com forma de path → `REG013`;
+id que discorda da derivação → `REG014`; ofertas v1 legadas (sem campos de
+recurso) continuam funcionando e recebem a derivação CARIMBADA no registro
+persistido (aditivo §11 — o wire ganhou campos e não perdeu nenhum;
+`OfferRequest`/`OfferInfo`/`ShareGrant` decodificam corpos v1 com defaults
+""/0 — a lei json medida). A sessão (`SessionInfo`) carrega `resourceId`
+carimbado na criação via token→share→offer — a MÁQUINA DE ESTADOS está
+intacta (§8: gradual, sem mudanças estéticas). `serve --resource r-… <port>`
+resolve a TABELA LOCAL de vínculos `kofshare-resources.json` (escrita pela
+lane assinada do `up`); id sem vínculo recusa `SERVE-ERR: no local binding` —
+o peer autoriza IDs, nunca paths (§6/§7); traversal fica INEXPRESSÍVEL no
+charset do id em vez de "filtrada".
+
+Golden `resourcecheck/checkresource.kf` (portas 19410-19412, DUAS
+identidades REAIS, processos de serve REAIS, worker de relay, restart do
+plano — `RESOURCECHECK-OK` 15/15): sameContentDiffIds (A colisão, morta),
+wireNoPaths (JSON de oferta/grant carrega o BASERNAME; sem /home, sem /srv),
+foreignResourceRefused REG014 pelo wire, pathLikeIdRefused REG013,
+grantCarriesResource, bindingServe + resourceTransfer (verificado por
+digest), resumeOverResource (cabeça no dest = lei do offset),
+unknownBindingRefused, relayOverResource, restartKeepsResources (ambos os
+slots + ids recarregam; vínculos locais sobrevivem). CHECK perna 12
+`resource=` pura verde JVM E Script.
+
+Bugs pegos no RED, cada um corrigido na raiz: `bindingPut` assumia que
+`moveTo` SUBSTITUI — não substitui (a mesma lei medida que
+`controlSaveList` documenta); a perna-probe das recusas de recurso primeiro
+esqueceu que o gate de device roda ANTES das checagens de recurso (a ORDEM
+das recusas é contrato — a perna agora registra devices primeiro); deriva
+posicional no `serve --resource` (rid get(1), porta get(2), flags de 3 —
+medido por probe standalone, nunca adivinhado).
+
+GAP HONESTO ENCONTRADO (dependência da Track G, lei §20 — registrado, NÃO
+contornado): `json.decode<List<ResourceBinding>>` é INEXPRESSÍVEL na Kof — a
+gramática de tipos não aceita `List<Record>` como parâmetro de decode (o
+parser recusa `<` depois de `List` em tipo de argumento; medido). decode<T>
+de record único e CAMPOS de tipo record funcionam hoje (toda a persistência
+v1/v2 usa isso), então a Track F embarca completa; a árvore de diretórios da
+Track G (coleção de ids filhos) exige tarefa no compilador —
+`D-KOF-JSON-CONTAINER` (decode JSON de genéricos List<Record>/Map) — aberta
+no Kof4j ANTES da Track G começar.
+
+Sem regressão na árvore final: RESOURCECHECK-OK, USERCHECK-OK,
+IDENTITYCHECK-OK, SESSIONCHECK-OK, CONNECTCHECK-OK, BROWSERCHECK-OK,
+SERVECHECK-OK, RESUMECHECK-OK, PERSIST-OK, RELAY-OK, SHARECHECK-OK,
+HTTPCHECK-OK + RESTART-OK (ciclo standalone na 18322 com os records
+crescidos), CHECK-OK 12 pernas × JVM+Script, 35/35 arquivos check-clean
+isolados.
+
 
 ### v2-Track E — destinatário no browser (POUSADA 05/10, `BROWSERCHECK-OK`)
 

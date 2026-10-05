@@ -368,7 +368,7 @@ main() {
         json.encode(DeviceInfo("dev-liar", "liar", "127.0.0.1:" + (planePort + 2))), auth)
     var regLie = http.post(base + "/offers", json.encode(OfferRequest(
         "o-tamper", "dev-liar", "user-src.bin", 3000,
-        crypto.sha256Bytes(toBytes(File("user-src.bin").readBytes())), "")), auth)
+        crypto.sha256Bytes(toBytes(File("user-src.bin").readBytes())), "", "", "", 0)), auth)
     var offerLie = regLie.indexOf("OFFERED:") == 0
     println("offerLie=" + offerLie)
     ok = ok && offerLie

@@ -1,0 +1,457 @@
+package kofshare.resourcecheck
+
+import kof.crypto
+import kof.http
+import kof.json
+import kof.net
+import kof.process
+import kof.shell
+import kof.time
+import kofshare.domain
+import kofshare.identity
+import kofshare.userflow
+import kofshare.resource
+import kofshare.control.registry
+import kofshare.control.share
+import kofshare.relay
+
+// v2-Track F golden — RESOURCE ABSTRACTION over REAL processes.
+//
+// The collision truth measured in Track A (identitycheck) and Track D
+// (connectcheck) — two devices publishing the SAME bytes overwrote one
+// another's content-slot — is now CLOSED BY CONSTRUCTION, and this golden
+// proves it with two real identities, not with a unit test.
+//
+// Proved (maintainer prompt §12):
+//   pureDerive      device-scoped derivation, hash ≠ identity, id never
+//                   path-shaped (REG013), liar ids die REG014, binding
+//                   round-trip on disk
+//   sameContentDiffIds  TWO signed devices publish the SAME bytes: distinct
+//                   resource ids, distinct offer slots, both downloadable
+//   wireNoPaths     the served offer/grant JSON for the v2 lane carries the
+//                   BASENAME — never "/home", never "/srv" — and the
+//                   resource id has no separator at all
+//   foreignRefused  a device that claims another device's resource id meets
+//                   REG014 over the wire (plane recomputes)
+//   traversalInWire a path-like resource id is refused REG013 by name before
+//                   anything is inserted; an absolute offer PATH is kept as
+//                   local v1 metadata ONLY — the resource name is the
+//                   basename, identity never inherits the layout
+//   bindingServe    `cli serve --resource r-…` resolves the LOCAL binding
+//                   and the transfer completes digest-verified (resume
+//                   included) — the peer authorized an ID, not a path
+//   unknownBinding  `serve --resource` with no local binding refuses by name
+//   relayOverRes    a DEAD grant address + relay: the same resource flows
+//                   through transport=relay, digest verified
+//   restart         plane dies, comes back: BOTH resource slots reload with
+//                   their resourceIds; bindings on the device side survive
+
+String jar() {
+    return "/home/mel/Kof4j/kof-cli/target/kof-cli-0.5.0-beta.jar"
+}
+
+Int[] myPorts() {
+    var a = new Int[3]
+    a[0] = 19410
+    a[1] = 19411
+    a[2] = 19412
+    return a
+}
+
+sweepPorts() {
+    var res = shell.run("ss", listOf("-tlnp"))
+    var lines = res.stdout.split("\n")
+    for (var line in lines) {
+        if (line.indexOf("LISTEN") < 0) {
+            continue
+        }
+        var mine = false
+        for (var mp in myPorts()) {
+            if (line.indexOf(":" + mp) >= 0) {
+                mine = true
+            }
+        }
+        if (!mine) {
+            continue
+        }
+        var pi = line.indexOf("pid=")
+        if (pi < 0) {
+            continue
+        }
+        var num = ""
+        var i = pi + 4
+        while (i < line.length()) {
+            var ch = line.charAt(i)
+            if (ch < 48 || ch > 57) {
+                break
+            }
+            num = num + line.substring(i, i + 1)
+            i = i + 1
+        }
+        if (num.length() > 0) {
+            shell.run("kill", listOf("-9", num))
+        }
+    }
+}
+
+Bool spawnCli(String log, String marker, List<String> verbArgs) {
+    if (File(log).exists()) {
+        File(log).delete()
+    }
+    var cmd = "cd /home/mel/Documents/kof-share && java -jar " + jar()
+        + " run src/main/kof/kofshare/cli/cli.kf"
+    for (var a in verbArgs) {
+        cmd = cmd + " " + a
+    }
+    cmd = cmd + " > " + log + " 2>&1 &"
+    process.spawn("sh", "-c", cmd)
+    var t0 = 0
+    while (t0 < 240) {
+        var f = File(log)
+        if (f.exists()) {
+            var txt = f.readText()
+            if (txt != null && txt.indexOf(marker) >= 0) {
+                return true
+            }
+        }
+        time.sleep(250)
+        t0 = t0 + 1
+    }
+    return false
+}
+
+Bool portClear(Int port) {
+    var t0 = 0
+    while (t0 < 80) {
+        try {
+            var pr = net.listen(port)
+            pr.close()
+            return true
+        } catch (String e) {
+            sweepPorts()
+            time.sleep(250)
+            t0 = t0 + 1
+        }
+    }
+    return false
+}
+
+Int[] makeData(Int n) {
+    var out = new Int[n]
+    var i = 0
+    while (i < n) {
+        out[i] = (i * 53 + 3) % 251
+        i = i + 1
+    }
+    return out
+}
+
+Bool identical(Int[] a, Int[] b) {
+    if (a.size != b.size) {
+        return false
+    }
+    var i = 0
+    while (i < a.size) {
+        if (a[i] != b[i]) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+String resourceIdOf(String upMsg) {
+    var i = upMsg.indexOf("resource=")
+    if (i < 0) {
+        return ""
+    }
+    var st = i + 9
+    return upMsg.substring(st, upMsg.indexOf(" ", st))
+}
+
+String offerIdOf(String upMsg) {
+    var i = upMsg.indexOf("offer=")
+    if (i < 0) {
+        return ""
+    }
+    var st = i + 6
+    return upMsg.substring(st, upMsg.indexOf(" ", st))
+}
+
+String tokenId(String shared) {
+    if (shared.indexOf("SHARED ") != 0) {
+        return ""
+    }
+    var bits = shared.split(" ")
+    if (bits.size > 2) {
+        return bits[2]
+    }
+    return ""
+}
+
+main() {
+    var ok = true
+
+    sweepPorts()
+    var freed = false
+    var t9 = 0
+    while (t9 < 80 && !freed) {
+        try {
+            var probe = net.listen(19410)
+            probe.close()
+            freed = true
+        } catch (String e) {
+            sweepPorts()
+            time.sleep(250)
+            t9 = t9 + 1
+        }
+    }
+    println("portsFreed=" + freed)
+    var scratch = listOf("rc-plane.log", "rc-serve.log", "rc-serve2.log", "rc-serve3.log", "rc-serve4.log", "rc-ghost.log", "rc-plane2.log",
+        "rc-src.bin", "rc-out1.bin", "rc-out2.bin", "rc-dev1.ed25519", "rc-dev2.ed25519",
+        "rc-bind.json", "relay-rw.up", "rc-out3.bin",
+        "kofshare-resources.json", "server-control.apikey", "server-control.bearer",
+        "server-control.ed25519", "server-registry.devices.json", "server-registry.offers.json",
+        "server-registry.shares.json", "server-registry.accounts.json",
+        "server-registry.devkeys.json", "server-registry.sessions.json",
+        "server-registry.presence.json")
+    for (var f in scratch) {
+        if (File(f).exists()) {
+            File(f).delete()
+        }
+    }
+
+    var base = "http://127.0.0.1:19410"
+
+    // ── pure derivation matrix (IN-PROCESS, documented as such) ──
+    var data = makeData(2300)
+    var h = crypto.sha256Bytes(toBytes(data))
+    var devA = "d-aaaaaaaaaaaaaaaa"
+    var devB = "d-bbbbbbbbbbbbbbbb"
+    var ra = resourceIdFor(devA, "rc-src.bin", data.size, h)
+    var rb = resourceIdFor(devB, "rc-src.bin", data.size, h)
+    var pureOk = ra != rb && ra.length() == 18 && !isPathLike(ra) && !isPathLike(rb)
+        && offerIdFor(devA, ra) != offerIdFor(devB, rb)
+        && ra.indexOf(h.substring(0, 16)) < 0 && resourceName("C:\\x\\rc-src.bin") == "rc-src.bin"
+        && resourceName("../../etc/passwd") == "passwd"
+        && isPathLike("/etc/passwd") && isPathLike("C:\\x") && isPathLike("..\\evil")
+    var bindOk = bindingPut("rc-bind.json", ResourceBinding(ra, "/local/only/a.bin")) == "OK"
+        && bindingResolve("rc-bind.json", ra) == "/local/only/a.bin"
+        && bindingResolve("rc-bind.json", rb) == ""
+        && bindingPut("rc-bind.json", ResourceBinding(ra, "/local/only/CHANGED.bin")) == "OK"
+        && bindingResolve("rc-bind.json", ra) == "/local/only/CHANGED.bin"
+    println("pureDerive=" + (pureOk && bindOk))
+    ok = ok && pureOk && bindOk
+
+    var planeUp = spawnCli("rc-plane.log", "SERVER-READY", listOf("server", "19410"))
+    println("planeUp=" + planeUp)
+    if (!planeUp) {
+        println("RESOURCECHECK-FAIL")
+        throw "kofshare: RESOURCECHECK-FAIL"
+    }
+    var auth = "Authorization: Bearer " + File("server-control.bearer").readText()
+    File("rc-src.bin").writeBytes(data)
+
+    // ── SAME BYTES, TWO DEVICES — the collision, closed ──
+    var sk1 = identityBoot("rc-dev1.ed25519")
+    var sk2 = identityBoot("rc-dev2.ed25519")
+    var pub1 = upPublishSigned(base, sk1, "rcA", "127.0.0.1:19411", "rc-src.bin", auth)
+    var pub2 = upPublishSigned(base, sk2, "rcB", "127.0.0.1:19411", "rc-src.bin", auth)
+    var res1 = resourceIdOf(pub1)
+    var res2 = resourceIdOf(pub2)
+    var offer1 = offerIdOf(pub1)
+    var offer2 = offerIdOf(pub2)
+    var distinct = pub1.indexOf("UP-OK") == 0 && pub2.indexOf("UP-OK") == 0
+        && res1.length() == 18 && res2.length() == 18 && res1 != res2 && offer1 != offer2
+    println("sameContentDiffIds=" + distinct)
+    ok = ok && distinct
+
+    // both slots coexist on the plane
+    var listing = http.get(base + "/offers?device=", "")
+    var bothSlots = listing.indexOf(offer1) >= 0 && listing.indexOf(offer2) >= 0
+        && listing.indexOf(res1) >= 0 && listing.indexOf(res2) >= 0
+    println("bothSlotsListed=" + bothSlots)
+    ok = ok && bothSlots
+
+    // ── the wire for the v2 lane carries NAMES, not layouts ──
+    var wireNoPaths = listing.indexOf("/home") < 0 && listing.indexOf("/srv") < 0
+        && listing.indexOf("rc-src.bin") >= 0
+    println("wireNoPaths=" + wireNoPaths)
+    ok = ok && wireNoPaths
+
+    // ── foreign / liar resource ids die by name over the wire ──
+    var devId2 = identityDeviceId(identityPub(sk2))
+    var digestH = crypto.sha256Bytes(toBytes(makeData(64)))
+    var lieSig = signOffer(sk1, "o-lie", identityDeviceId(identityPub(sk1)), "lie.bin", 64, digestH)
+    var lie1 = http.post(base + "/offers", json.encode(OfferRequest("o-lie",
+        identityDeviceId(identityPub(sk1)), "lie.bin", 64, digestH, lieSig,
+        resourceIdFor(devId2, "lie.bin", 64, digestH), "lie.bin", 0)), auth)
+    var liarRefused = lie1.indexOf("REG014") == 0
+    var pathSig = signOffer(sk1, "o-path", identityDeviceId(identityPub(sk1)), "path.bin", 64, digestH)
+    var lie2 = http.post(base + "/offers", json.encode(OfferRequest("o-path",
+        identityDeviceId(identityPub(sk1)), "path.bin", 64, digestH, pathSig,
+        "/home/mel/path.bin", "path.bin", 0)), auth)
+    var pathRefused = lie2.indexOf("REG013") == 0
+    println("foreignResourceRefused=" + liarRefused)
+    println("pathLikeIdRefused=" + pathRefused)
+    ok = ok && liarRefused && pathRefused
+
+    // ── grant through the resource: /s carries resourceId, never a layout ──
+    var tok1 = tokenId(http.post(base + "/shares", json.encode(ShareRequest(offer1, 0, 0, false)), auth))
+    var grantBody = http.get(base + "/s/" + tok1, "")
+    var grantResource = grantBody.indexOf(res1) >= 0 && grantBody.indexOf("rc-src.bin") >= 0
+        && grantBody.indexOf("/home") < 0 && grantBody.indexOf("\"path\":\"rc-src.bin\"") >= 0
+    println("grantCarriesResource=" + grantResource)
+    ok = ok && grantResource
+
+    // ── binding-based serve (path resolved LOCALLY; the peer authorized only
+    // a resource id) + real transfer + resume ──
+    if (File("kofshare-resources.json").exists()) {
+        File("kofshare-resources.json").delete()
+    }
+    bindingPut("kofshare-resources.json", ResourceBinding(res1, "rc-src.bin"))
+    var clearS = portClear(19411)
+    var serveUp = clearS && spawnCli("rc-serve.log", "SERVE-LISTENING",
+        listOf("serve", "--resource", res1, "19411", "--key", "k0"))
+    var down1 = ""
+    if (serveUp) {
+        down1 = downFetch(base, tok1, "rc-out1.bin", "k0")
+    }
+    var fileOk = false
+    if (File("rc-out1.bin").exists()) {
+        fileOk = identical(File("rc-out1.bin").readBytes(), data)
+    }
+    println("bindingServeUp=" + serveUp)
+    println("resourceTransfer=" + (down1.indexOf("DOWN-OK") == 0 && fileOk))
+    ok = ok && serveUp && down1.indexOf("DOWN-OK") == 0 && fileOk
+
+    // resume over the SAME binding face
+    var clearS2 = portClear(19411)
+    var serveUp2 = clearS2 && spawnCli("rc-serve2.log", "SERVE-LISTENING",
+        listOf("serve", "--resource", res1, "19411", "--key", "k0"))
+    // resume law (A3/takeAndVerify, measured): the DESTINATION file itself
+    // pre-carries the head bytes — its size IS the announced offset.
+    File("rc-out2.bin").writeBytes(makeData(900))
+    var downResumed = ""
+    if (serveUp2) {
+        downResumed = downFetch(base, tok1, "rc-out2.bin", "k0")
+    }
+    var resumeOk = false
+    if (File("rc-out2.bin").exists()) {
+        resumeOk = identical(File("rc-out2.bin").readBytes(), data)
+    }
+    println("resumeOverResource=" + (downResumed.indexOf("DOWN-OK") == 0 && resumeOk))
+    ok = ok && resumeOk && downResumed.indexOf("DOWN-OK") == 0
+
+    // unknown binding refuses by name (the device never invents a path for
+    // an id it did not bind — §7)
+    var ghostId = resourceIdFor(devB, "ghost.bin", 1, h)
+    var ghostLog = "rc-ghost.log"
+    if (File(ghostLog).exists()) {
+        File(ghostLog).delete()
+    }
+    var gcmd = "cd /home/mel/Documents/kof-share && java -jar " + jar()
+        + " run src/main/kof/kofshare/cli/cli.kf serve --resource " + ghostId + " 19412 > "
+        + ghostLog + " 2>&1"
+    process.spawn("sh", "-c", gcmd)
+    var ghostRefused = false
+    var tg = 0
+    while (tg < 240 && !ghostRefused) {
+        var gt = File(ghostLog)
+        if (gt.exists()) {
+            var txt = gt.readText()
+            if (txt != null && txt.indexOf("SERVE-ERR: no local binding") >= 0) {
+                ghostRefused = true
+            }
+        }
+        time.sleep(250)
+        tg = tg + 1
+    }
+    println("unknownBindingRefused=" + ghostRefused)
+    ok = ok && ghostRefused
+
+    // ── relay over the resource lane: dead grant address, relay carries the
+    // SAME resource bytes, session-less (v1 grant) but digest-verified ──
+    var deadTok = tokenId(http.post(base + "/shares", json.encode(ShareRequest(offer2, 0, 0, false)), auth))
+    var clearS3 = portClear(19411)
+    var serveUp3 = clearS3 && spawnCli("rc-serve3.log", "SERVE-LISTENING",
+        listOf("serve", "--resource", res1, "19411", "--key", "k0"))
+    println("serveUp3=" + serveUp3)
+    ok = ok && serveUp3
+    var relayMsg = ""
+    if (serveUp3 && deadTok.length() == 64) {
+        var relayL = net.listen(19412)
+        if (File("relay-rw.up").exists()) {
+            File("relay-rw.up").delete()
+        }
+        var rw = spawn {
+            File("relay-rw.up").writeText("1")
+            relayServeOn(relayL, "127.0.0.1", 19411)
+        }
+        var tp = 0
+        var pumpUp = false
+        while (tp < 200 && !pumpUp) {
+            if (File("relay-rw.up").exists()) {
+                pumpUp = true
+            } else {
+                time.sleep(25)
+                tp = tp + 1
+            }
+        }
+        if (File("relay-rw.up").exists()) {
+            File("relay-rw.up").delete()
+        }
+        if (pumpUp) {
+            relayMsg = downFetch(base, deadTok, "rc-out3.bin", "k0", "127.0.0.1", 19412)
+        }
+        await rw
+    }
+    var relayOk = relayMsg.indexOf("DOWN-OK") == 0
+    if (File("rc-out3.bin").exists()) {
+        relayOk = relayOk && identical(File("rc-out3.bin").readBytes(), data)
+    }
+    println("relayOverResource=" + relayOk)
+    ok = ok && relayOk
+
+    // ── restart: both resource slots + ids reload from disk ──
+    sweepPorts()
+    var back = false
+    var t8 = 0
+    while (t8 < 60 && !back) {
+        try {
+            var pr = net.listen(19410)
+            pr.close()
+            back = true
+        } catch (String e) {
+            sweepPorts()
+            time.sleep(250)
+            t8 = t8 + 1
+        }
+    }
+    var plane2 = spawnCli("rc-plane2.log", "SERVER-READY", listOf("server", "19410"))
+    var listing2 = ""
+    if (plane2) {
+        listing2 = http.get(base + "/offers?device=", "")
+    }
+    var restartOk = plane2 && listing2.indexOf(res1) >= 0 && listing2.indexOf(res2) >= 0
+        && bindingResolve("kofshare-resources.json", res1) == "rc-src.bin"
+    println("restartKeepsResources=" + restartOk)
+    ok = ok && restartOk
+
+    sweepPorts()
+    for (var f in scratch) {
+        if (File(f).exists()) {
+            File(f).delete()
+        }
+    }
+    if (File("rc-out3.bin").exists()) {
+        File("rc-out3.bin").delete()
+    }
+
+    if (ok) {
+        println("RESOURCECHECK-OK")
+    } else {
+        println("RESOURCECHECK-FAIL")
+        throw "kofshare: RESOURCECHECK-FAIL"
+    }
+}

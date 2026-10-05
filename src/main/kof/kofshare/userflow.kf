@@ -7,6 +7,7 @@ import kof.keyExchange
 import kof.secrets
 import kof.net
 import kofshare.domain
+import kofshare.resource
 import kofshare.connect
 import kofshare.transfer
 import kofshare.control.registry
@@ -85,7 +86,7 @@ String upPublish(String controlBase, String deviceId, String name, String addres
         throw "UP-ERR: device registration refused: " + reg
     }
     var off = http.post(controlBase + "/offers",
-        json.encode(OfferRequest(offerId, deviceId, filePath, data.size, digest, "")), authHeader)
+        json.encode(OfferRequest(offerId, deviceId, filePath, data.size, digest, "", "", "", 0)), authHeader)
     if (off.indexOf("OFFERED:") != 0) {
         throw "UP-ERR: offer registration refused: " + off
     }
@@ -109,16 +110,24 @@ String upPublishSigned(String controlBase, Secret sk, String name, String addres
     var pub = identityPub(sk)
     var deviceId = identityDeviceId(pub)
     var digest = crypto.sha256Bytes(toBytes(data))
-    var offerId = "o-" + digest.substring(0, 12)
+    // v2-Track F lane: the resource is LOGICAL (device-scoped id over
+    // basename+size+digest); the OFFER slot is derived from the resource, so
+    // two devices publishing the SAME bytes occupy DIFFERENT slots — the
+    // content-collision truth measured in Track A and Track D goldens, now
+    // closed by construction. The WIRE path becomes the NAME (basename);
+    // the binding resource→local path stays on THIS device.
+    var res = fileResource(deviceId, filePath, data.size, digest, File(filePath).modifiedTime())
+    var offerId = offerIdFor(deviceId, res.id)
     var regSig = signReg(sk, deviceId, name, address, pub)
     var reg = http.post(controlBase + "/devices/register",
         json.encode(DeviceRegister(deviceId, name, address, pub, regSig)), authHeader)
     if (reg.indexOf("REGISTERED:") != 0) {
         throw "UP-ERR: device enrollment refused: " + reg
     }
-    var offerSig = signOffer(sk, offerId, deviceId, filePath, data.size, digest)
+    var offerSig = signOffer(sk, offerId, deviceId, res.name, data.size, digest)
     var off = http.post(controlBase + "/offers",
-        json.encode(OfferRequest(offerId, deviceId, filePath, data.size, digest, offerSig)), authHeader)
+        json.encode(OfferRequest(offerId, deviceId, res.name, data.size, digest, offerSig,
+            res.id, res.name, res.modifiedAt)), authHeader)
     if (off.indexOf("OFFERED:") != 0) {
         throw "UP-ERR: offer registration refused: " + off
     }
@@ -131,7 +140,9 @@ String upPublishSigned(String controlBase, Secret sk, String name, String addres
     if (beat.indexOf("HEARTBEAT-OK") != 0) {
         beatTag = "presence=skipped(" + beat + ")"
     }
-    return "UP-OK id=" + deviceId + " offer=" + offerId + " size=" + data.size + " sha256=" + digest + " " + beatTag
+    bindingPut("kofshare-resources.json", ResourceBinding(res.id, filePath))
+    return "UP-OK id=" + deviceId + " offer=" + offerId + " resource=" + res.id +
+        " size=" + data.size + " sha256=" + digest + " " + beatTag
 }
 
 // Recipient side. GET /s/<token> (public — possession of the token IS the

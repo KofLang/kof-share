@@ -129,7 +129,8 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
         }
         // A4: the SERVER stamps freshness — the client cannot fake createdAt
         // or resurrect an expired id from the wire.
-        var o = OfferInfo(q.id, q.deviceId, q.path, q.size, q.sha256Hex, time.now())
+        var o = OfferInfo(q.id, q.deviceId, q.path, q.size, q.sha256Hex, time.now(),
+            q.resourceId, q.name, q.modifiedAt)
         var r = controlOffer(offers, devices, o)
         if (r != "OK") {
             return r
@@ -296,7 +297,8 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
         if (spath.length() > 0) {
             controlSaveList(spath, sharesJson(shares))
         }
-        return json.encode(ShareGrant(o.id, o.path, o.size, o.sha256Hex, d.address, s.permissions))
+        return json.encode(ShareGrant(o.id, o.path, o.size, o.sha256Hex, d.address, s.permissions,
+            o.resourceId, o.name))
     }
 
     app.post("/shares/:id/revoke") {
@@ -336,7 +338,18 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
         }
         var req = json.decode<SessionRequest>(body())
         var sid = "se" + security.randomHex(8)
-        var r = sessionCreate(sessions, shares, sid, req, time.now())
+        // v2-Track F: stamp the LOGICAL resource id onto the session, read
+        // transitively (token→share→offer). No session state changed — the
+        // record grew a field, the machine did not (§8).
+        var resid = ""
+        var shr: ShareInfo? = shareResolve(shares, req.token)
+        if (shr != null) {
+            var ors: OfferInfo? = offers.get(shr.offerId)
+            if (ors != null) {
+                resid = ors.resourceId
+            }
+        }
+        var r = sessionCreate(sessions, shares, resid, sid, req, time.now())
         if (r != "OK") {
             return r
         }
