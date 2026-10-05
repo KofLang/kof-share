@@ -83,7 +83,8 @@ e ABRE tarefa explícita no Kof4j — nunca workaround arquitetural silencioso):
                                relay continua ciphertext-only; o --relay manual
                                votado (D4) vira perna de fallback, não caminho
                                do usuário)
-6. Destinatário browser       (página kofshare.app/s/<token> dirige o cliente
+6. Destinatário browser       POUSADA 05/10 (v2-Track E, BROWSERCHECK-OK;
+                               (página kofshare.app/s/<token> dirige o cliente
                                local — EXIGE primeiro as primitivas no Kof4j:
                                kof.net + keyExchange em JS; NETN001/SECN012
                                recusam por NOME hoje e devem ser fechados NA
@@ -277,4 +278,60 @@ JVM+Script, 30/30 arquivos check-clean isolados (lei nova: TODO arquivo deve
 checkar LIMPO ISOLADO — `presence.kf` compilava só via grafo de imports; a
 referência cross-file ao tipo do mesmo pacote exigia `import
 kofshare.control.registry` explícito).
+
+### v2-Track E — destinatário no browser (POUSADA 05/10, `BROWSERCHECK-OK`)
+
+A própria arquitetura do prompt resolve a questão do compilador: a página
+DIRIGE O CLIENTE LOCAL — ela não é um endpoint criptográfico. Opção A da
+mantenedora escolhida 05/10: a página é um asset HTML/JS servido e dirigido
+pelo cliente `app`; `kof.net`/`keyExchange` NÃO são necessários em JS, e
+D-NET-JS-V1 (net recusado no JS por voto da mantenedora) PERMANECE INTACTO.
+Nenhum hack JS externo: o browser fala `fetch()` com localhost, o cliente JVM
+roda a história da Track D com as primitivas que VIVEM lá.
+
+`app/page.kf` — `pageHtml()` constrói a página como List<String> concatenado
+(não existe `String.join` na linguagem, medido); contrato asserido PURO:
+carrega `/api/info` + `/jobs`, nunca as palavras `Bearer`/`server-control`.
+`baseName` é a ÚNICA exposição de path (nome do arquivo do grant — nunca
+`/srv/...`).
+
+`app/client.kf` — cliente local (web.app, superfície JVM): `GET /` serve a
+página (rota dinâmica ANTES do fallback serveDir — ordem documentada do
+runtime), `GET /api/info?token=` resolve o grant ANONIMAMENTE pelo plano de
+controle e responde SÓ METADADOS (nome/tamanho/sha; recusa → `GrantView.error`
+carrega o cabeçalho da recusa NOMEADA, `errName` corta o texto multi-linha na
+primeira linha — o browser nunca vê stack), `POST /jobs` inicia o REAL
+`downAuto` numa thread `spawn` (hand-off por ARQUIVOS — a lei medida dos
+~200ms de start), `GET /jobs` expõe estado para o poll da página.
+Credenciais nunca cruzam para o browser: o bearer vive no cliente (arquivo
+scratch `AppConfig`), e as respostas `/api/*` foram ASSERTADAS livres dele
+(`secretAbsent`). Cada requisição é ATRIBUÍDA por UA em `app-view.log`
+("PAGE-VIEW …"/"API /api/info …") — a atribuição é o que permite ao golden
+distinguir browser REAL de chamada do harness. Limitação honesta registrada:
+`app.listen` binda 0.0.0.0 (contrato do runtime, docs stdlib-web) — a
+superfície LAN está documentada aqui e encaminhada à trilha de hardening,
+não escondida.
+
+Golden `browsercheck/checkbrowser.kf` (portas 19400-19402, plano + serve +
+app como três JVMs reais + Firefox headless REAL com perfil ISOLADO NOVO em
+/tmp/bc-ffprof, `--delay 5000 --screenshot`): `browserFound` RECUSA o golden
+por nome se não há Firefox (história de browser sem browser não é prova);
+`apiInfo`, `secretAbsent`, `ghostNamed` (REG035/DOWN-ERR dentro do JSON —
+cliente sobrevive); `jobDone` + `fileDownloaded` (mensagem COMPLETED contém
+DOWN-AUTO-OK transport=direct, bytes verificados por digest — história da
+Track D pela face da Track E); `browserViewed` — o fetch da PRÓPRIA página
+chegou à API e a linha do log carrega UA FIREFOX (um http.get Kof jamais a
+forja); `screenshotReal` — PNG >1500 bytes, em POLL (o flush acontece na
+SAÍDA do browser, depois da prova do log — terceira aplicação da lei
+delete-then-sync). CHECK perna 11 `app=` pura verde JVM E Script (o Script
+provou compilar o grafo `kof.web` — medido; o verbo fica no CLI afinal).
+Bugs pegos no RED: `cliRunApp` bindava a porta do PLANO porque
+`tail(args, start)` MANTÉM o token do verbo (todo run* o tira internamente —
+meu parse não; medido por probe standalone, não adivinhado); corrida do
+screenshot (acima); perfis firefox zumbis (perfil novo por run). Sem
+regressão na árvore final: BROWSERCHECK-OK, USERCHECK-OK, CONNECTCHECK-OK,
+IDENTITYCHECK-OK, SESSIONCHECK-OK, SERVECHECK-OK, RESUMECHECK-OK, PERSIST-OK,
+RELAY-OK, SHARECHECK-OK, HTTPCHECK-OK + RESTART-OK (caminhos inalterados,
+varredura standalone), CHECK-OK 11 pernas × JVM+Script, 33/33 arquivos
+check-clean isolados.
 

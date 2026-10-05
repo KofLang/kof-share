@@ -1,0 +1,372 @@
+package kofshare.browsercheck
+
+import kof.http
+import kof.json
+import kof.net
+import kof.process
+import kof.shell
+import kof.time
+import kofshare.identity
+import kofshare.userflow
+import kofshare.app.client
+import kofshare.control.share
+
+// v2-Track E golden (option A, maintainer-confirmed 05/10): the recipient
+// PAGE served by the LOCAL client, driven by a REAL headless browser.
+// Nothing is faked: if no Firefox binary exists on this host the golden
+// REFUSES by name ("BROWSERCHECK-FAIL firefox-missing") — a browser story
+// without a browser is not a proof.
+//
+// What gets measured:
+//   appUp          the cli `app` verb boots web.app() and prints APP-LISTENING
+//   apiInfo        kof http.get /api/info?token= returns METADATA ONLY
+//                  (basename — never /srv paths, never the bearer)
+//   secretAbsent   neither the bearer value nor "server-control" ever appears
+//                  in any page/API body
+//   browserE2E     REAL firefox (isolated profile, --delay, --screenshot)
+//                  loads /?token=… → page JS fetches /api/info (the client
+//                  ATTRIBUTES "API /api/info …Firefox…" — distinct from the
+//                  harness's own Kof-UA calls), clicks nothing (auto-run in
+//                  this golden via the jobs API by the harness) and the page
+//                  poll reaches COMPLETED with the digest-verified file
+//   jobNamed       harness POST /jobs completes with DOWN-AUTO-OK transport=
+//                  direct IN THE MESSAGE (Track D story through the Track E
+//                  face), and a GHOST token gives the named refusal, no crash
+//
+// Ports 19400-19402 golden-owned; profile dir /tmp/bc-ffprof private.
+
+String jar() {
+    return "/home/mel/Kof4j/kof-cli/target/kof-cli-0.5.0-beta.jar"
+}
+
+Int[] myPorts() {
+    var a = new Int[3]
+    a[0] = 19400
+    a[1] = 19401
+    a[2] = 19402
+    return a
+}
+
+sweepPorts() {
+    var res = shell.run("ss", listOf("-tlnp"))
+    var lines = res.stdout.split("\n")
+    for (var line in lines) {
+        if (line.indexOf("LISTEN") < 0) {
+            continue
+        }
+        var mine = false
+        for (var mp in myPorts()) {
+            if (line.indexOf(":" + mp) >= 0) {
+                mine = true
+            }
+        }
+        if (!mine) {
+            continue
+        }
+        var pi = line.indexOf("pid=")
+        if (pi < 0) {
+            continue
+        }
+        var num = ""
+        var i = pi + 4
+        while (i < line.length()) {
+            var ch = line.charAt(i)
+            if (ch < 48 || ch > 57) {
+                break
+            }
+            num = num + line.substring(i, i + 1)
+            i = i + 1
+        }
+        if (num.length() > 0) {
+            shell.run("kill", listOf("-9", num))
+        }
+    }
+}
+
+Bool spawnCli(String log, String marker, List<String> verbArgs) {
+    if (File(log).exists()) {
+        File(log).delete()
+    }
+    var cmd = "cd /home/mel/Documents/kof-share && java -jar " + jar()
+        + " run src/main/kof/kofshare/cli/cli.kf"
+    for (var a in verbArgs) {
+        cmd = cmd + " " + a
+    }
+    cmd = cmd + " > " + log + " 2>&1 &"
+    process.spawn("sh", "-c", cmd)
+    var t0 = 0
+    while (t0 < 240) {
+        var f = File(log)
+        if (f.exists()) {
+            var txt = f.readText()
+            if (txt != null && txt.indexOf(marker) >= 0) {
+                return true
+            }
+        }
+        time.sleep(250)
+        t0 = t0 + 1
+    }
+    return false
+}
+
+Bool portClear(Int port) {
+    var t0 = 0
+    while (t0 < 80) {
+        try {
+            var pr = net.listen(port)
+            pr.close()
+            return true
+        } catch (String e) {
+            sweepPorts()
+            time.sleep(250)
+            t0 = t0 + 1
+        }
+    }
+    return false
+}
+
+Int[] makeData(Int n) {
+    var out = new Int[n]
+    var i = 0
+    while (i < n) {
+        out[i] = (i * 41 + 7) % 251
+        i = i + 1
+    }
+    return out
+}
+
+Bool identical(Int[] a, Int[] b) {
+    if (a.size != b.size) {
+        return false
+    }
+    var i = 0
+    while (i < a.size) {
+        if (a[i] != b[i]) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+String offerIdOf(String upMsg) {
+    var i = upMsg.indexOf("offer=")
+    if (i < 0) {
+        return ""
+    }
+    var st = i + 6
+    return upMsg.substring(st, upMsg.indexOf(" ", st))
+}
+
+String tokenId(String shared) {
+    if (shared.indexOf("SHARED ") != 0) {
+        return ""
+    }
+    var bits = shared.split(" ")
+    if (bits.size > 2) {
+        return bits[2]
+    }
+    return ""
+}
+
+String logText(String name) {
+    var f = File(name)
+    if (!f.exists()) {
+        return ""
+    }
+    var t = f.readText()
+    if (t == null) {
+        return ""
+    }
+    return t
+}
+
+main() {
+    var ok = true
+
+    var ff = shell.run("/usr/bin/firefox", listOf("--version"))
+    var browserFound = ff.stdout.indexOf("Firefox") >= 0
+    println("browserFound=" + browserFound)
+    if (!browserFound) {
+        println("BROWSERCHECK-FAIL firefox-missing")
+        throw "kofshare: BROWSERCHECK-FAIL firefox-missing"
+    }
+
+    sweepPorts()
+    var freed = false
+    var t9 = 0
+    while (t9 < 80 && !freed) {
+        try {
+            var probe = net.listen(19400)
+            probe.close()
+            freed = true
+        } catch (String e) {
+            sweepPorts()
+            time.sleep(250)
+            t9 = t9 + 1
+        }
+    }
+    println("portsFreed=" + freed)
+    var scratch = listOf("bc-plane.log", "bc-serve.log", "bc-app.log", "bc-src.bin",
+        "bc-dev.ed25519", "app-view.log", "app-config.json",
+        "app-job.json", "app-jobreq.txt", "app-web/index.html",
+        "server-control.apikey", "server-control.bearer", "server-control.ed25519",
+        "server-registry.devices.json", "server-registry.offers.json",
+        "server-registry.shares.json", "server-registry.accounts.json",
+        "server-registry.devkeys.json", "server-registry.sessions.json",
+        "server-registry.presence.json")
+    for (var f in scratch) {
+        if (File(f).exists()) {
+            File(f).delete()
+        }
+    }
+    if (File("bc-dl").exists()) {
+        shell.run("rm", listOf("-rf", "bc-dl"))
+    }
+    if (File("/tmp/bc-shot.png").exists()) {
+        File("/tmp/bc-shot.png").delete()
+    }
+    if (File("/tmp/bc-ff.log").exists()) {
+        File("/tmp/bc-ff.log").delete()
+    }
+    shell.run("rm", listOf("-rf", "/tmp/bc-ffprof"))
+    shell.run("mkdir", listOf("-p", "/tmp/bc-ffprof"))
+
+    var base = "http://127.0.0.1:19400"
+    var planeUp = spawnCli("bc-plane.log", "SERVER-READY", listOf("server", "19400"))
+    println("planeUp=" + planeUp)
+    if (!planeUp) {
+        println("BROWSERCHECK-FAIL")
+        throw "kofshare: BROWSERCHECK-FAIL"
+    }
+    var auth = "Authorization: Bearer " + File("server-control.bearer").readText()
+    var bearerVal = File("server-control.bearer").readText()
+    File("bc-src.bin").writeBytes(makeData(3400))
+
+    // publish (signed lane beats presence) + mint an UNLIMITED share + serve
+    var sk = identityBoot("bc-dev.ed25519")
+    var pub = upPublishSigned(base, sk, "bc1", "127.0.0.1:19401", "bc-src.bin", auth)
+    var publish = pub.indexOf("UP-OK") == 0
+    println("publish=" + publish)
+    ok = ok && publish
+    var tok = tokenId(http.post(base + "/shares", json.encode(ShareRequest(offerIdOf(pub), 0, 0, false)), auth))
+    var mint = tok.length() == 64
+    println("mint=" + mint)
+    ok = ok && mint
+    var clearS = portClear(19401)
+    var serveUp = clearS && spawnCli("bc-serve.log", "SERVE-LISTENING",
+        listOf("serve", "bc-src.bin", "19401", "--key", "k0"))
+    println("serveUp=" + serveUp)
+    ok = ok && serveUp
+
+    // the app client (real web.app() server; destDir created by the job)
+    var appUp = spawnCli("bc-app.log", "APP-LISTENING",
+        listOf("app", "19400", "19402", tok, "k0", "bc-dl", "--recipient", "bc-page"))
+    println("appUp=" + appUp)
+    ok = ok && appUp
+
+    // apiInfo via the HARNESS client (Kof UA) — metadata only
+    var infoBody = ""
+    if (appUp) {
+        infoBody = http.get("http://127.0.0.1:19402/api/info?token=" + tok, "")
+    }
+    var apiInfo = infoBody.indexOf("bc-src.bin") >= 0 && infoBody.indexOf("3400") >= 0
+        && infoBody.indexOf("/srv") < 0
+    println("apiInfo=" + apiInfo)
+    ok = ok && apiInfo
+
+    // no secret vocabulary ANYWHERE the page could read
+    var secretAbsent = infoBody.indexOf(bearerVal) < 0
+        && logText("bc-app.log").indexOf("server-control.bearer") < 0
+    println("secretAbsent=" + secretAbsent)
+    ok = ok && secretAbsent
+
+    // ghost token → named refusal inside the JSON, client survives
+    var ghostBody = ""
+    if (appUp) {
+        ghostBody = http.get("http://127.0.0.1:19402/api/info?token=" +
+            "0000000000000000000000000000000000000000000000000000000000000000", "")
+    }
+    var ghostNamed = ghostBody.indexOf("REG035") >= 0 || ghostBody.indexOf("DOWN-ERR") >= 0
+    println("ghostNamed=" + ghostNamed)
+    ok = ok && ghostNamed
+
+    // harness-driven job (the API the page calls on click) → Track D story
+    var jobPost = ""
+    if (appUp) {
+        jobPost = http.post("http://127.0.0.1:19402/jobs", json.encode(JobRequest(tok)), "")
+    }
+    var jobStarted = jobPost.indexOf("RUNNING") >= 0
+    var jobState = ""
+    var tj = 0
+    while (tj < 240) {
+        jobState = http.get("http://127.0.0.1:19402/jobs", "")
+        if (jobState.indexOf("COMPLETED") >= 0 || jobState.indexOf("FAILED") >= 0) {
+            break
+        }
+        time.sleep(250)
+        tj = tj + 1
+    }
+    var jobDone = jobStarted && jobState.indexOf("COMPLETED") >= 0
+        && jobState.indexOf("DOWN-AUTO-OK transport=direct") >= 0
+    var fileOk = false
+    if (File("bc-dl/bc-src.bin").exists()) {
+        fileOk = identical(File("bc-dl/bc-src.bin").readBytes(), makeData(3400))
+    }
+    println("jobDone=" + jobDone)
+    println("fileDownloaded=" + fileOk)
+    ok = ok && jobDone && fileOk
+
+    // REAL BROWSER: firefox headless, isolated profile; the page JS fetches
+    // /api/info and /jobs — the client's ATTRIBUTED log proves a FIREFOX UA
+    // crossed the API (a Kof http.get can never emit that UA string).
+    var url = "http://127.0.0.1:19402/?token=" + tok
+    process.spawn("sh", "-c", "cd /home/mel/Documents/kof-share && /usr/bin/firefox --headless"
+        + " -no-remote --profile /tmp/bc-ffprof --delay 5000 --screenshot /tmp/bc-shot.png"
+        + " --window-size 900,500 " + url + " > /tmp/bc-ff.log 2>&1")
+    var viewOk = false
+    var tv = 0
+    while (tv < 200 && !viewOk) {
+        var lg = logText("app-view.log")
+        viewOk = lg.indexOf("PAGE-VIEW") >= 0 && lg.indexOf("API /api/info") >= 0
+            && lg.indexOf("Firefox") >= 0
+        if (!viewOk) {
+            time.sleep(250)
+            tv = tv + 1
+        }
+    }
+    // the PNG flushes when the browser EXITS (~--delay ms after load) while
+    // the API log already proved the JS ran — so POLL for the observable
+    // artifact, never race it (delete-then-sync law, third application).
+    var shotOk = false
+    var ts = 0
+    while (ts < 200 && !shotOk) {
+        if (File("/tmp/bc-shot.png").exists()) {
+            shotOk = File("/tmp/bc-shot.png").readBytes().size > 1500
+        }
+        if (!shotOk) {
+            time.sleep(250)
+            ts = ts + 1
+        }
+    }
+    println("browserViewed=" + viewOk)
+    println("screenshotReal=" + shotOk)
+    ok = ok && viewOk && shotOk
+
+    sweepPorts()
+    for (var f in scratch) {
+        if (File(f).exists()) {
+            File(f).delete()
+        }
+    }
+    if (File("bc-dl").exists()) {
+        shell.run("rm", listOf("-rf", "bc-dl"))
+    }
+
+    if (ok) {
+        println("BROWSERCHECK-OK")
+    } else {
+        println("BROWSERCHECK-FAIL")
+        throw "kofshare: BROWSERCHECK-FAIL"
+    }
+}

@@ -1,0 +1,220 @@
+package kofshare.app
+
+import kof.http
+import kof.json
+import kof.web
+import kofshare.userflow
+import kofshare.app.page
+import kofshare.control.share
+
+// v2-Track E local client. ONE process, THREE duties:
+//   1. SERVE the recipient page (app-web/index.html — HTML/JS asset, the
+//      browser side has no keys and no net primitives BY DESIGN: D-NET-JS-V1
+//      stands; the page only talks fetch() to this localhost client).
+//   2. RESOLVE grants anonymously through the control plane (GET /s/<token>)
+//      and answer /api/info with METADATA ONLY — never the bearer, never the
+//      device secret, never a plaintext path beyond the basename.
+//   3. DRIVE the real Track D story when the user clicks: downAuto over the
+//      session lifecycle with the device's own credentials, digest-verified,
+//      writing job state a polling page can read.
+// Binding: web.app listen binds 0.0.0.0 (runtime contract, docs/stdlib
+// /stdlib-web.md); the golden measures 127.0.0.1 — the LAN exposure is
+// DOCUMENTED here and flagged for the hardening track, never hidden.
+
+record AppConfig(String planeBase, String token, String key, String auth, String recipient, String relayHost, Int relayPort, String destDir)
+
+record GrantView(String error, String name, Int size, String sha)
+
+record JobOut(String state, String message)
+
+record JobRequest(String token)
+
+String cfgPath() {
+    return "app-config.json"
+}
+
+String jobPath() {
+    return "app-job.json"
+}
+
+String jobReqPath() {
+    return "app-jobreq.txt"
+}
+
+AppConfig cfgRead() {
+    var t = File(cfgPath()).readText()
+    if (t == null) {
+        throw "APP-ERR: no config — start the app verb first"
+    }
+    return json.decode<AppConfig>(t)
+}
+
+String errName(String e) {
+    // refusals arrive as "PREFIX: detail…" — the PAGE sees the NAMED refusal
+    // (Track R6), nothing else.
+    var i = e.indexOf("\n")
+    if (i > 0) {
+        return e.substring(0, i)
+    }
+    return e
+}
+
+String appInfoJson(String? token) {
+    var cfg = cfgRead()
+    var tok = ""
+    if (token != null) {
+        tok = token
+    }
+    if (tok.length() == 0) {
+        tok = cfg.token
+    }
+    try {
+        var g = grantDecode(cfg.planeBase, tok)
+        var v = GrantView("", baseName(g.path), g.size, g.sha256Hex)
+        return json.encode(v)
+    } catch (String e) {
+        var v2 = GrantView(errName(e), "", 0, "")
+        return json.encode(v2)
+    }
+}
+
+String appJobJson() {
+    var f = File(jobPath())
+    if (!f.exists()) {
+        var idle = JobOut("idle", "")
+        return json.encode(idle)
+    }
+    var t = f.readText()
+    if (t == null) {
+        var bad = JobOut("FAILED", "job file unreadable")
+        return json.encode(bad)
+    }
+    return t
+}
+
+// The JOB THREAD body. Runs the SAME downAuto the CLI golden proved; the
+// hand-off is FILES (spawn-thread start latency ~200ms is a measured Kof
+// runtime fact — the client writes the job as FAILED-pending only after the
+// request file exists; the thread deletes nothing).
+appJobRun() {
+    var req = File(jobReqPath()).readText()
+    if (req == null) {
+        return
+    }
+    var bits = req.split("\t")
+    var tok = bits[0]
+    var dest = bits[1]
+    var cfg = cfgRead()
+    var out = File(jobPath())
+    out.writeText(json.encode(JobOut("RUNNING", "downloading…")))
+    try {
+        var msg = downAuto(cfg.planeBase, tok, dest, cfg.key, cfg.auth, cfg.recipient,
+            cfg.relayHost, cfg.relayPort)
+        out.writeText(json.encode(JobOut("COMPLETED", msg)))
+    } catch (String e) {
+        out.writeText(json.encode(JobOut("FAILED", errName(e))))
+    }
+}
+
+String appStartJob(String? token) {
+    var cfg = cfgRead()
+    var tok = ""
+    if (token != null) {
+        tok = token
+    }
+    if (tok.length() == 0) {
+        tok = cfg.token
+    }
+    if (File(jobPath()).exists()) {
+        File(jobPath()).delete()
+    }
+    var name = "file.bin"
+    try {
+        var g = grantDecode(cfg.planeBase, tok)
+        name = baseName(g.path)
+    } catch (String e) {
+        var bad = JobOut("FAILED", errName(e))
+        File(jobPath()).writeText(json.encode(bad))
+        return json.encode(bad)
+    }
+    var dest = cfg.destDir + "/" + name
+    Directory(cfg.destDir).createDirectories()
+    File(jobReqPath()).writeText(tok + "\t" + dest)
+    spawn {
+        appJobRun()
+    }
+    var run = JobOut("RUNNING", "started " + name)
+    return json.encode(run)
+}
+
+String appViewMark(String ua) {
+    return appendLog("app-view.log", "PAGE-VIEW " + ua)
+}
+
+String appApiMark(String path, String ua) {
+    return appendLog("app-view.log", "API " + path + " " + ua)
+}
+
+String appendLog(String name, String line) {
+    var f = File(name)
+    if (f.exists()) {
+        var txt = f.readText()
+        if (txt != null) {
+            line = txt + line + "\n"
+        }
+    }
+    f.writeText(line + "\n")
+    return line
+}
+
+String headerText(String? h) {
+    if (h == null) {
+        return ""
+    }
+    return h
+}
+
+Int runApp(String planeBase, Int localPort, String token, String key, String destDir,
+    String recipient, String relayHost, Int relayPort) {
+    var bearerTxt = File("server-control.bearer").readText()
+    if (bearerTxt == null) {
+        println("APP-ERR: server-control.bearer missing — boot the plane first")
+        return 1
+    }
+    var auth = "Authorization: Bearer " + bearerTxt
+    var cfg = AppConfig(planeBase, token, key, auth, recipient, relayHost, relayPort, destDir)
+    File(cfgPath()).writeText(json.encode(cfg))
+    Directory("app-web").createDirectories()
+    File("app-web/index.html").writeText(pageHtml())
+    if (File(jobPath()).exists()) {
+        File(jobPath()).delete()
+    }
+    if (File("app-view.log").exists()) {
+        File("app-view.log").delete()
+    }
+    var app = web.app()
+    app.get("/api/info") {
+        appApiMark("/api/info", headerText(header("user-agent")))
+        return appInfoJson(query("token"))
+    }
+    app.post("/jobs") {
+        appApiMark("/jobs-POST", headerText(header("user-agent")))
+        var rq = json.decode<JobRequest>(body())
+        return appStartJob(rq.token)
+    }
+    app.get("/jobs") {
+        appApiMark("/jobs-GET", headerText(header("user-agent")))
+        return appJobJson()
+    }
+    app.get("/") {
+        appViewMark(headerText(header("user-agent")))
+        var t = File("app-web/index.html").readText()
+        if (t == null) {
+            return "app page missing"
+        }
+        return t
+    }
+    println("APP-LISTENING port=" + localPort)
+    app.listen(localPort)
+    return 0
+}

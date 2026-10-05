@@ -12,6 +12,8 @@ import kofshare.session
 import kofshare.protocol
 import kofshare.relay
 import kofshare.userflow
+import kofshare.app.client
+import kofshare.app.page
 import kof.json
 import kof.crypto
 import kof.keyExchange
@@ -281,6 +283,23 @@ Bool sessionLeg() {
         && s8 && skipRef && expire && expiredStamped && afterExpire && badTok && emptyDev && purged
 }
 
+// `--check` leg 11 — Track E page/contract, PURE (Script-safe): the page is
+// a STRING asset (no web front needed to verify its contract); it must carry
+// the API routes, must NEVER carry credentials vocabulary, and the refusal
+// normalization must keep the NAMED head of a multi-line error.
+Bool appLeg() {
+    var html = pageHtml()
+    var pageOk = html.indexOf("<!doctype html>") == 0
+        && html.indexOf("/api/info") >= 0
+        && html.indexOf("/jobs") >= 0
+        && html.indexOf("Bearer") < 0
+        && html.indexOf("server-control") < 0
+    var nameOk = baseName("/srv/a.bin") == "a.bin" && baseName("plain.bin") == "plain.bin"
+    var viewOk = json.decode<GrantView>(json.encode(GrantView("REFUSED", "", 0, ""))).error == "REFUSED"
+    var errOk = errName("REFUSED: x\nstack") == "REFUSED: x"
+    return pageOk && nameOk && viewOk && errOk
+}
+
 // `--check` leg 10 — Track D strategy, PURE (no sockets, Script-safe): the
 // ordered-attempt classification (both real locales of "refused", timeout,
 // unknown), first-ok wins, all-dead fails CONNECTIVITY_FAILED by name.
@@ -326,7 +345,9 @@ Int runCheck() {
     println("session=" + sess)
     var conn = connectLeg()
     println("connect=" + conn)
-    if (reg && persist && plain && secure && share && auth && resume && identity && sess && conn) {
+    var app = appLeg()
+    println("app=" + app)
+    if (reg && persist && plain && secure && share && auth && resume && identity && sess && conn && app) {
         println("CHECK-OK")
         return 0
     }
@@ -508,6 +529,43 @@ Int runHeartbeat(List<String> args) {
     println(http.post(base + "/devices/" + rest.get(2) + "/heartbeat", "{}",
         "Authorization: Bearer " + bearerArg(rest, 3)))
     return 0
+}
+
+Int cliRunApp(List<String> args) {
+    var rest = tail(args, 1)
+    if (rest.size < 5) {
+        println("APP-ERR: usage: app <planePort> <localPort> <token> <key> <destDir> [--recipient R] [--relay host:port]")
+        return 1
+    }
+    var base = "http://127.0.0.1:" + rest.get(0)
+    var localPort = math.parseInt(rest.get(1))
+    var token = rest.get(2)
+    var key = rest.get(3)
+    var destDir = rest.get(4)
+    var recipient = "browser-client"
+    var relayHost = ""
+    var relayPort = 0
+    var i = 5
+    while (i < rest.size) {
+        var a = argAt(rest, i)
+        if (a == "--recipient") {
+            recipient = argAt(rest, i + 1)
+            i = i + 2
+        } else {
+            if (a == "--relay") {
+                var rp = argAt(rest, i + 1)
+                var colon = rp.lastIndexOf(":")
+                if (colon > 0) {
+                    relayHost = rp.substring(0, colon)
+                    relayPort = math.parseInt(rp.substring(colon + 1, rp.length()))
+                }
+                i = i + 2
+            } else {
+                i = i + 1
+            }
+        }
+    }
+    return runApp(base, localPort, token, key, destDir, recipient, relayHost, relayPort)
 }
 
 Int runDevice(List<String> args) {
@@ -1262,6 +1320,13 @@ main(args: List<String>) {
         var rc = runHeartbeat(tail(args, start))
         if (rc != 0) {
             throw "kofshare: HEARTBEAT-ERR"
+        }
+        return
+    }
+    if (cmd == "app") {
+        var rc = cliRunApp(tail(args, start))
+        if (rc != 0) {
+            throw "kofshare: APP-ERR"
         }
         return
     }

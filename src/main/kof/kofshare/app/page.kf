@@ -1,0 +1,65 @@
+package kofshare.app
+
+// v2-Track E (option A, maintainer-confirmed 05/10): the recipient PAGE is
+// an HTML asset SERVED AND DRIVEN BY THE LOCAL CLIENT. The browser NEVER
+// holds keys, NEVER talks to the wire crypto, NEVER sees the control bearer:
+// it is the face of the local client, exactly as the product prompt frames
+// it ("the page drives the local client"). kof.net/keyExchange stay refused
+// on JS by the maintainer's own vote (D-NET-JS-V1 / NETN001, SECN012) and
+// this design does not fight that vote — it needs neither: the page runs on
+// plain fetch() against the localhost client, and the client does the whole
+// Track D story on the JVM where the primitives LIVE.
+
+String pageHtml() {
+    var lines = new List<String>()
+    lines.add("<!doctype html>")
+    lines.add("<html lang=\"en\"><head><meta charset=\"utf-8\">")
+    lines.add("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">")
+    lines.add("<title>kofshare — recipient</title>")
+    lines.add("<style>body{font-family:system-ui,sans-serif;max-width:40rem;margin:2rem auto;" +
+        "padding:0 1rem}code{background:#eee;padding:0 .3rem}#state{font-weight:bold}" +
+        ".bad{color:#b00}.ok{color:#070}</style></head>")
+    lines.add("<body id=\"kofshare-recipient-app\">")
+    lines.add("<h1>kofshare recipient</h1>")
+    lines.add("<p>This page is the face of the <code>kof-share app</code> client " +
+        "running on THIS machine. It never sees keys or the control secret.</p>")
+    lines.add("<div id=\"meta\">loading…</div>")
+    lines.add("<div>state: <span id=\"state\">idle</span></div>")
+    lines.add("<div id=\"msg\"></div>")
+    lines.add("<p><button id=\"go\" disabled>Download to this machine</button></p>")
+    lines.add("<script>(function(){")
+    lines.add("var tok=new URLSearchParams(location.search).get('token')||'';")
+    lines.add("var meta=document.getElementById('meta');")
+    lines.add("var st=document.getElementById('state');")
+    lines.add("var msg=document.getElementById('msg');")
+    lines.add("var go=document.getElementById('go');")
+    lines.add("function h(cls,t){st.textContent=t;st.className=cls;}")
+    lines.add("fetch('/api/info?token='+encodeURIComponent(tok)).then(function(r){return r.json();})")
+    lines.add(".then(function(j){if(j.error){meta.textContent=j.error;h('bad','refused');return;}")
+    lines.add("meta.innerHTML='<b>'+j.name+'</b><br>size: '+j.size+' bytes<br>sha256: <code>'+j.sha+'</code>';")
+    lines.add("h('','ready');go.disabled=false;})")
+    lines.add(".catch(function(e){meta.textContent=String(e);h('bad','client unreachable');});")
+    lines.add("go.onclick=function(){go.disabled=true;h('','running');")
+    lines.add("fetch('/jobs',{method:'POST',headers:{'content-type':'application/json'},")
+    lines.add("body:JSON.stringify({token:tok})}).then(function(r){return r.json();})")
+    lines.add(".then(function(j){poll();}).catch(function(e){h('bad',String(e));go.disabled=false;});};")
+    lines.add("function poll(){fetch('/jobs').then(function(r){return r.json();})")
+    lines.add(".then(function(j){if(j.state=='RUNNING'||j.state=='idle'){setTimeout(poll,600);}")
+    lines.add("h('',j.state.toLowerCase());msg.textContent=j.message||'';")
+    lines.add("if(j.state!='RUNNING'&&j.state!='idle'){go.disabled=(j.state!='FAILED');}})")
+    lines.add(".catch(function(e){h('bad',String(e));});}")
+    lines.add("})();</script></body></html>")
+    var out = ""
+    for (var ln in lines) {
+        out = out + ln + "\n"
+    }
+    return out
+}
+
+String baseName(String p) {
+    var i = p.lastIndexOf("/")
+    if (i < 0) {
+        return p
+    }
+    return p.substring(i + 1, p.length())
+}

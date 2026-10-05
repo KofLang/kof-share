@@ -83,7 +83,8 @@ explicit Kof4j task — no silent architectural workaround):
                                  RELAY; relay stays ciphertext-only; the voted
                                  D4 manual --relay becomes the fallback leg,
                                  not the user path)
-6. Browser recipient            (kofshare.app/s/<token> page drives the local
+6. Browser recipient            LANDED 05/10 (v2-Track E, BROWSERCHECK-OK;
+                                 the kofshare.app/s/<token> page drives the local
                                  client — REQUIRES the Kof4j primitives first:
                                  kof.net + keyExchange in JS; NETN001/SECN012
                                  are refused BY NAME today and must be closed
@@ -273,4 +274,57 @@ RELAY-OK, SHARECHECK-OK, HTTPCHECK-OK + RESTART-OK (standalone cycle,
 (new law: EVERY file must also check CLEAN STANDALONE — `presence.kf` had
 been compiling only via the import graph; the same-package cross-file type
 reference needed an explicit `import kofshare.control.registry`).
+
+### v2-Track E — browser recipient (LANDED 05/10, `BROWSERCHECK-OK`)
+
+The prompt's own architecture resolves the compiler question: the page DRIVES
+THE LOCAL CLIENT, it is not itself a crypto endpoint. Maintainer option A
+chosen 05/10 — the page is an HTML/JS asset served and driven by the `app`
+client; `kof.net`/`keyExchange` are NOT needed in JS, and D-NET-JS-V1 (net is
+refused on JS by the maintainer's own vote) STANDS UNTOUCHED. No external JS
+hacks, no fighting the compiler: the browser speaks `fetch()` to localhost,
+the JVM client does the Track D story with the primitives that LIVE there.
+
+`app/page.kf` — `pageHtml()` builds the recipient page as a List<String> join
+(no `String.join` in the language, measured); contract asserted PURE: carries
+`/api/info` + `/jobs`, never the words `Bearer`/`server-control`. `baseName`
+is the ONLY path exposure (basename of the grant path — never `/srv/...`).
+
+`app/client.kf` — local client (web.app, JVM-only surface): `GET /` serves
+the page (dynamic route BEFORE serveDir fallback — documented runtime order),
+`GET /api/info?token=` resolves the grant ANONYMOUSLY through the control
+plane and answers METADATA ONLY (name/size/sha; refusal → `GrantView.error`
+carries the NAMED refusal head, `errName` cuts multi-line throw text at the
+first line — the browser never sees a stack), `POST /jobs` starts the REAL
+`downAuto` in a `spawn` thread (hand-off by FILES — the measured ~200ms
+spawn-thread start law), `GET /jobs` exposes state for the page's poll.
+Credentials never cross to the browser: the bearer lives in the client
+(`AppConfig` scratch file), `/api/*` responses were ASSERTED free of it
+(`secretAbsent`). Every request is UA-ATTRIBUTED to `app-view.log`
+("PAGE-VIEW …"/"API /api/info …") — that attribution is what lets the golden
+distinguish a REAL browser from harness calls. Honest limitation recorded:
+`app.listen` binds 0.0.0.0 (runtime contract, stdlib-web docs) — the LAN
+surface is documented here and queued for the hardening track, not hidden.
+
+Golden `browsercheck/checkbrowser.kf` (ports 19400-19402, plane + serve + app
+as three real JVMs + REAL headless Firefox with a FRESH isolated profile at
+/tmp/bc-ffprof, `--delay 5000 --screenshot`): `browserFound` REFUSES the
+golden by name if no Firefox exists (no fake browser story); `apiInfo`,
+`secretAbsent`, `ghostNamed` (REG035/DOWN-ERR inside the JSON — client
+survives); `jobDone` + `fileDownloaded` (COMPLETED message contains
+DOWN-AUTO-OK transport=direct, bytes digest-verified — Track D story through
+the Track E face); `browserViewed` — the page's OWN fetch reached the API and
+the log line carries a FIREFOX UA (a Kof http.get can never forge it);
+`screenshotReal` — PNG >1500 bytes, POLLed (the flush happens at browser
+EXIT, after the log proof — third application of the delete-then-sync law).
+CHECK leg 11 `app=` pure green JVM AND Script (Script proved to compile the
+`kof.web` import graph — measured, the verb lives in the CLI after all).
+RED-caught bugs: `cliRunApp` bound the PLANE port because `tail(args, start)`
+KEEPS the verb token (every run* strips it internally — my parse didn't;
+measured by standalone probe, not guessed); screenshot race (above); zombie
+firefox profiles (fresh profile per run). No-regression on the final tree:
+BROWSERCHECK-OK, USERCHECK-OK, CONNECTCHECK-OK, IDENTITYCHECK-OK,
+SESSIONCHECK-OK, SERVECHECK-OK, RESUMECHECK-OK, PERSIST-OK, RELAY-OK,
+SHARECHECK-OK, HTTPCHECK-OK + RESTART-OK (unchanged paths, standalone sweep),
+CHECK-OK 11 legs × JVM+Script, 33/33 files check-clean standalone.
 
