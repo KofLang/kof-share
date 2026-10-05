@@ -1,6 +1,6 @@
 # HTTP-ERR-ESCAPE — `http.get` lets raw `java.net.ConnectException` escape `catch (String e)`
 
-- **Status:** OPEN — prepared upstream packet (same dirty-tree note as COMP002 packet).
+- **Status:** UPSTREAM FILED — HTTP-ERR-ESCAPE -> KofLang/Kof4j#771 FILED 05/10 (this file remains the permanent reproduction packet) (same dirty-tree note as COMP002 packet).
 - **Found by:** KofShare v2-Track I (05/10) while probing a dead control plane.
 
 ## Symptom

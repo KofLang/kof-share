@@ -1,6 +1,6 @@
 # COMP002 — JVM backend frame crash: `T?` value read through compound `&&` guards or threaded through branches
 
-- **Status:** OPEN — prepared upstream packet (repo tree currently dirty with §603/§604
+- **Status:** UPSTREAM FILED — COMP002 -> KofLang/Kof4j#770 FILED 05/10 (this file remains the permanent reproduction packet) (repo tree currently dirty with §603/§604
   work by the same lane; entry to be pasted into `docs/bugs-and-gaps/known-bugs.md`
   as §605 when the tree is clean, then opened as a GitHub issue at `KofLang/Kof4j`).
 - **Found by:** KofShare v2-Track G/H (05/10), three independent crash sites.

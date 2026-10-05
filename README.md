@@ -107,8 +107,9 @@ paths). Proof per property: `SECURITY` section of `STATUS.md` and each golden.
 - **Desktop GUI, billing, Android, central storage**: out of scope by design.
 - `web.app().listen()` binds 0.0.0.0 (runtime contract): the plane page is
   LAN-reachable by construction; hardening is a known open item, not hidden.
-- Upstream compiler issues pending: see `docs/upstream/` (`COMP002` nullable
-  parameters; HTTP `ConnectException` escape). `compiler_upstream_pending =
+- Upstream compiler issues FILED: KofLang/Kof4j#770 (`COMP002` nullable
+  parameters) and #771 (HTTP `ConnectException` escape) — packets in
+  `docs/upstream/`. `compiler_upstream_pending =
   COMP002` — workarounds proven, product not blocked.
 
 ## Tests
