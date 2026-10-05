@@ -214,6 +214,15 @@ Transfer takeAndVerify(Conn c, ShareGrant g, String dest, String key) {
 String downAuto(String controlBase, String token, String dest, String key,
                 String sessionAuth, String recipientDevice, String relayHost, Int relayPort) {
     var g = grantDecode(controlBase, token)
+    return downAutoWithGrant(controlBase, token, g, dest, key, sessionAuth, recipientDevice, relayHost, relayPort)
+}
+
+// v2-Track I: the grant may ALREADY be resolved (the product `receive`
+// preflight needs its metadata for the destination name). Resolving /s twice
+// would consume `--once` TWICE — the capability is spent ONCE per resolve
+// law (shareTouch), so every consumer takes the pre-resolved route.
+String downAutoWithGrant(String controlBase, String token, ShareGrant g, String dest, String key,
+                String sessionAuth, String recipientDevice, String relayHost, Int relayPort) {
     var host = hostOfAddress(g.deviceAddress)
     var port = portOfAddress(g.deviceAddress)
     var sid = ""
@@ -516,4 +525,90 @@ String parentOf(String logicalPath) {
         return ""
     }
     return logicalPath.substring(0, cut)
+}
+
+// v2-Track I: the PRODUCT dir download — one SESSION per child (the same
+// claim/advance doors the file lane uses; §16: sessions are the contract,
+// the tree is just N files), transport stamped by the REAL dial, digest per
+// child. relay/sealed over the directory face ride the same per-child dial.
+String downDirAuto(String controlBase, String token, String destRoot, String key,
+                   String sessionAuth, String recipientDevice, String relayHost, Int relayPort) {
+    var pg = grantDecode(controlBase, token)
+    return downDirAutoWithGrant(controlBase, token, pg, destRoot, key, sessionAuth, recipientDevice, relayHost, relayPort)
+}
+
+String downDirAutoWithGrant(String controlBase, String token, ShareGrant pg, String destRoot, String key,
+                   String sessionAuth, String recipientDevice, String relayHost, Int relayPort) {
+    if (pg.type != "DIRECTORY") {
+        throw "DOWN-ERR: token is not a directory share"
+    }
+    var entries = sortEntries(dirEntriesFromJson(pg.entriesJson))
+    var host = hostOfAddress(pg.deviceAddress)
+    var port = portOfAddress(pg.deviceAddress)
+    var files = 0
+    var i = 0
+    while (i < entries.size) {
+        var e = entries.get(i)
+        if (e.type == "FILE") {
+            var full = dirJoinSafe(destRoot, e.logicalPath)
+            if (full.length() == 0) {
+                throw "DOWN-ERR: traversal-shaped logical path: " + e.logicalPath
+            }
+            var cut = full.lastIndexOf("/")
+            if (cut > 0) {
+                Directory(full.substring(0, cut)).createDirectories()
+            }
+            var resume = 0
+            if (File(full).exists()) {
+                var pb = File(full).readBytes()
+                resume = pb.size
+            }
+            var sid = ""
+            if (recipientDevice.length() > 0) {
+                var created = http.post(controlBase + "/sessions",
+                    json.encode(SessionRequest(token, recipientDevice, "")), sessionAuth)
+                if (created.indexOf("SESSION-CREATED: ") == 0) {
+                    sid = created.substring(17)
+                    var cidx = "" + files
+                    var cl = http.post(controlBase + "/sessions/" + sid + "/claim", "{}", sessionAuth)
+                    if (cl.indexOf("SESSION-STATE") != 0) {
+                        throw "UF-ERR: session claim refused: " + cl
+                    }
+                    var ng = http.post(controlBase + "/sessions/" + sid + "/advance?token=" + token,
+                        json.encode(AdvanceRequest("NEGOTIATING", cidx)), sessionAuth)
+                    if (ng.indexOf("SESSION-STATE") != 0) {
+                        throw "UF-ERR: session negotiation refused: " + ng
+                    }
+                } else {
+                    throw "UF-ERR: session create refused: " + created
+                }
+            }
+            var picked = pickAndDial(host, port, relayHost, relayPort)
+            if (sid.length() > 0) {
+                var cn = http.post(controlBase + "/sessions/" + sid + "/advance?token=" + token,
+                    json.encode(AdvanceRequest("CONNECTED", picked.transport)), sessionAuth)
+                if (cn.indexOf("SESSION-STATE") != 0) {
+                    throw "UF-ERR: session connect refused: " + cn
+                }
+                var tr = http.post(controlBase + "/sessions/" + sid + "/advance?token=" + token,
+                    json.encode(AdvanceRequest("TRANSFERRING", "")), sessionAuth)
+                if (tr.indexOf("SESSION-STATE") != 0) {
+                    throw "UF-ERR: session transfer stamp refused: " + tr
+                }
+            }
+            fetchFileDir(picked.c, full, resume, files, pg.offerId, host, key)
+            var fb = File(full).readBytes()
+            var got = crypto.sha256Bytes(toBytes(fb))
+            if (got != e.hash) {
+                throw "DOWN-ERR: child digest mismatch " + e.logicalPath
+            }
+            if (sid.length() > 0) {
+                http.post(controlBase + "/sessions/" + sid + "/advance?token=" + token,
+                    json.encode(AdvanceRequest("COMPLETED", "")), sessionAuth)
+            }
+            files = files + 1
+        }
+        i = i + 1
+    }
+    return "DOWN-AUTO-OK dir files=" + files + " per-child sessions, digests verified"
 }

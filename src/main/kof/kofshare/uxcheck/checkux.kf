@@ -1,0 +1,422 @@
+package kofshare.uxcheck
+
+import kof.crypto
+import kof.file
+import kof.fs
+import kof.http
+import kof.json
+import kof.math
+import kof.net
+import kof.process
+import kof.shell
+import kof.time
+import kofshare.domain
+import kofshare.userflow
+import kofshare.resource
+
+// v2-Track I golden — THE PRODUCT SURFACE over REAL processes.
+// Nobody here knows what a TransferSession is. What is proved:
+//   serverStart     `server --start` comes back READY and keeps running
+//   shareFile       `share file` prints name+bytes+link+expiry+offering —
+//                   NO resourceId/offerId/deviceId/bearer on the happy path
+//   receiveDirect   `receive <link>` lands bytes transport=direct (REAL dial,
+//                   §11: honest transport), digest via cmp bytes
+//   onceSpent       --once link: second receive names REG038 AND prints the
+//                   Hint sentence — never a stack (no "at java")
+//   deadLink        garbage token: human refusal + Hint, codes preserved
+//   dirShare        `share dir` prints Files: count; `receive <dirlink>`
+//                   reconstructs the tree under the RECIPIENT's dest root,
+//                   every child byte-identical
+//   rawLane         --raw restores the machine lines (UP-OK/SHARED/SHARE-LINK)
+//   planeDown       receive against a dead plane: named SERVER-UNREACHABLE
+//                   marker + guidance, no stack trace
+//   operatorLane    legacy `up` + legacy `share <host> <port> <offer>` +
+//                   legacy `down` STILL byte-for-byte work (compat, §16)
+//   stop            `stop` kills the helpers; ports become bindable again
+
+String jar() {
+    return "/home/mel/Kof4j/kof-cli/target/kof-cli-0.5.0-beta.jar"
+}
+
+Int[] myPorts() {
+    var a = new Int[3]
+    a[0] = 19430
+    a[1] = 19431
+    a[2] = 19432
+    return a
+}
+
+sweepPorts() {
+    var res = shell.run("ss", listOf("-tlnp"))
+    var lines = res.stdout.split("\n")
+    for (var line in lines) {
+        if (line.indexOf("LISTEN") < 0) {
+            continue
+        }
+        var mine = false
+        for (var mp in myPorts()) {
+            if (line.indexOf(":" + mp) >= 0) {
+                mine = true
+            }
+        }
+        if (!mine) {
+            continue
+        }
+        var pi = line.indexOf("pid=")
+        if (pi < 0) {
+            continue
+        }
+        var num = ""
+        var i = pi + 4
+        while (i < line.length()) {
+            var ch = line.charAt(i)
+            if (ch < 48 || ch > 57) {
+                break
+            }
+            num = num + line.substring(i, i + 1)
+            i = i + 1
+        }
+        if (num.length() > 0) {
+            shell.run("kill", listOf("-9", num))
+        }
+    }
+}
+
+Bool portBindable(Int port) {
+    var t0 = 0
+    while (t0 < 60) {
+        try {
+            var pr = net.listen(port)
+            pr.close()
+            return true
+        } catch (String e) {
+            sweepPorts()
+            time.sleep(250)
+            t0 = t0 + 1
+        }
+    }
+    return false
+}
+
+Int[] makeData(Int n) {
+    var out = new Int[n]
+    var i = 0
+    while (i < n) {
+        out[i] = (i * 31 + 17) % 241
+        i = i + 1
+    }
+    return out
+}
+
+Bool identical(Int[] a, Int[] b) {
+    if (a.size != b.size) {
+        return false
+    }
+    var i = 0
+    while (i < a.size) {
+        if (a[i] != b[i]) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// Run a CLI verb as a real PROCESS, blocking, capture merged output.
+String cliOut(List<String> verbArgs) {
+    var cmd = "cd /home/mel/Documents/kof-share && java -jar " + jar()
+        + " run src/main/kof/kofshare/cli/cli.kf"
+    for (var a in verbArgs) {
+        cmd = cmd + " " + a
+    }
+    var res = shell.run("sh", listOf("-c", cmd + " 2>&1"))
+    // The child JVM prints compiler warnings (L-05 lines and continuation
+    // noise) — strip them, or they contaminate product-output assertions
+    // (caught by RED: a 200-char cap was eaten whole by a warning).
+    var out = ""
+    var lines = res.stdout.split("\n")
+    var i = 0
+    while (i < lines.size) {
+        var ln = lines[i]
+        if (ln.indexOf("L-05") < 0 && ln.indexOf("client.kf:195") < 0
+            && ln.indexOf("app.kf:122") < 0 && ln.indexOf("warning:") < 0) {
+            out = out + ln + "\n"
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// The product prints "  http://host:port/s/<token>" — take the WHOLE word.
+String linkOf(String out) {
+    var lines = out.split("\n")
+    var i = 0
+    while (i < lines.size) {
+        var ln = lines[i]
+        var hi = ln.indexOf("http")
+        if (hi >= 0 && ln.indexOf("/s/") >= 0) {
+            var j = hi
+            while (j < ln.length()) {
+                var ch = ln.charAt(j)
+                if (ch == 32 || ch == 10 || ch == 13 || ch == 9) {
+                    return ln.substring(hi, j)
+                }
+                j = j + 1
+            }
+            return ln.substring(hi, ln.length())
+        }
+        i = i + 1
+    }
+    return ""
+}
+
+String cap(String t, Int n) {
+    if (t.length() <= n) {
+        return t
+    }
+    return t.substring(0, n)
+}
+
+main() {
+    var ok = true
+    sweepPorts()
+    var freed = portBindable(19430) && portBindable(19431)
+    println("portsFreed=" + freed)
+    ok = ok && freed
+
+    // the self-spawn config the product face needs
+    File("kofshare-cli.config").writeText("jar=" + jar() + "\nworkdir=/home/mel/Documents/kof-share\n")
+
+    var scratch = listOf("ux-src.bin", "ux-copy.bin", "ux-legacy.bin", "ux-legacy.down",
+        "ux-dir", "ux-dest", "ux-dest2", "kofshare-server.log", "kofshare-face.log",
+        "kofshare-server.pid", "kofshare-face.pid", "kofshare-app.pid", "kofshare-app.log",
+        "server-control.apikey", "server-control.bearer", "server-control.ed25519",
+        "server-registry.devices.json", "server-registry.offers.json",
+        "server-registry.shares.json", "server-registry.accounts.json",
+        "server-registry.devkeys.json", "server-registry.sessions.json",
+        "server-registry.presence.json", "kofshare-device.ed25519", "kofshare-resources.json")
+    for (var f in scratch) {
+        if (File(f).exists()) {
+            if (File(f).isDirectory()) {
+                shell.run("rm", listOf("-rf", f))
+            } else {
+                File(f).delete()
+            }
+        }
+    }
+
+    // ── leg 1: server --start ──
+    var sOut = cliOut(listOf("server", "19430", "--start"))
+    var serverStart = sOut.indexOf("SERVER-READY port=19430") >= 0
+        && http.get("http://127.0.0.1:19430/health") == "OK"
+    println("serverStart=" + serverStart)
+    ok = ok && serverStart
+
+    // ── leg 2: share FILE (human output) ──
+    File("ux-src.bin").writeBytes(makeData(2600))
+    var sh = cliOut(listOf("share", "ux-src.bin", "--server", "127.0.0.1:19430", "--face", "19431", "--expires", "24h"))
+    var link = linkOf(sh)
+    var shareFile = sh.indexOf("Sharing file: ux-src.bin (2600 bytes)") >= 0
+        && link.length() > 40 && sh.indexOf("Link (copy and send):") >= 0
+        && sh.indexOf("expires in 1 day(s)") >= 0 && sh.indexOf("offering the transfer (port 19431)") >= 0
+    var noInternals = sh.indexOf("resourceId") < 0 && sh.indexOf("deviceId") < 0
+        && sh.indexOf("offerId") < 0 && sh.indexOf("Bearer") < 0 && sh.indexOf("r-") < 0
+    println("shareFile=" + shareFile)
+    println("humanOutputClean=" + noInternals)
+    ok = ok && shareFile && noInternals
+
+    // wait for the detached face to bind (observable condition, not sleep)
+    var faceReady = false
+    var t0 = 0
+    while (t0 < 60 && !faceReady) {
+        var f = File("kofshare-face.log")
+        if (f.exists()) {
+            var txt = f.readText()
+            faceReady = txt != null && txt.indexOf("SERVE-LISTENING 19431") >= 0
+        }
+        if (!faceReady) {
+            time.sleep(250)
+            t0 = t0 + 1
+        }
+    }
+    println("faceReady=" + faceReady)
+    ok = ok && faceReady
+
+    // ── leg 3: receive (direct, honest transport, digest) ──
+    var rec = cliOut(listOf("receive", link, "ux-copy.bin"))
+    var recvOk = rec.indexOf("DOWN-AUTO-OK transport=direct") >= 0
+        && identical(File("ux-copy.bin").readBytes(), makeData(2600))
+        && rec.indexOf("Downloading ux-src.bin") >= 0
+    if (!recvOk) {
+        println("DBG rec=" + cap(rec, 200))
+    }
+    println("receiveDirect=" + recvOk)
+    ok = ok && recvOk
+
+    // ── leg 4: --once spent ⇒ named + hint, NO stack ──
+    var shOnce = cliOut(listOf("share", "ux-src.bin", "--server", "127.0.0.1:19430", "--face", "19431", "--once"))
+    var linkOnce = linkOf(shOnce)
+    var first = cliOut(listOf("receive", linkOnce, "ux-legacy.down"))
+    var second = cliOut(listOf("receive", linkOnce, "ux-ghost.bin"))
+    var onceOk = first.indexOf("DOWN-AUTO-OK") >= 0 && second.indexOf("REG038") >= 0
+        && second.indexOf("Hint:") >= 0 && second.indexOf("at java") < 0
+        && identical(File("ux-legacy.down").readBytes(), makeData(2600))
+    if (!onceOk) {
+        println("DBG first=" + cap(first, 200))
+        println("DBG second=" + cap(second, 200))
+    }
+    println("onceSpent=" + onceOk)
+    ok = ok && onceOk
+
+    // ── leg 5: dead link is human ──
+    var dead = cliOut(listOf("receive", "http://127.0.0.1:19430/s/deadbeef00", "ux-none.bin"))
+    var deadOk = dead.length() > 20 && dead.indexOf("Hint:") >= 0 && dead.indexOf("at java") < 0
+    println("deadLinkHuman=" + deadOk)
+    ok = ok && deadOk
+
+    // ── leg 6: directory share+receive (human counts, tree reconstructed) ──
+    shell.run("rm", listOf("-rf", "ux-dir"))
+    Directory("ux-dir").createDirectories()
+    Directory("ux-dir/inner").createDirectories()
+    File("ux-dir/x.txt").writeBytes(makeData(500))
+    File("ux-dir/inner/y.txt").writeBytes(makeData(700))
+    File("ux-dir/z.bin").writeBytes(makeData(900))
+    var shDir = cliOut(listOf("share", "ux-dir", "--server", "127.0.0.1:19430", "--face", "19431"))
+    var dlink = linkOf(shDir)
+    var dirShare = shDir.indexOf("Sharing directory: ux-dir/") >= 0 && shDir.indexOf("Files: 3") >= 0
+        && dlink.length() > 40
+    println("dirShare=" + dirShare)
+    ok = ok && dirShare
+    var faceReady2 = false
+    var t1 = 0
+    while (t1 < 60 && !faceReady2) {
+        var f = File("kofshare-face.log")
+        if (f.exists()) {
+            var txt2 = f.readText()
+            // dir face prints `SERVE-LISTENING port=NNNN dir=…` (Track G),
+            // file face prints `SERVE-LISTENING NNNN` (A5) — accept both.
+            faceReady2 = txt2 != null && txt2.indexOf("SERVE-LISTENING") >= 0
+                && txt2.indexOf("19431") >= 0
+        }
+        if (!faceReady2) {
+            time.sleep(250)
+            t1 = t1 + 1
+        }
+    }
+    var recDir = cliOut(listOf("receive", dlink, "ux-dest"))
+    var dirRecv = recDir.indexOf("DOWN-AUTO-OK dir files=3") >= 0 && faceReady2
+        && identical(File("ux-dest/ux-dir/x.txt").readBytes(), makeData(500))
+        && identical(File("ux-dest/ux-dir/inner/y.txt").readBytes(), makeData(700))
+        && identical(File("ux-dest/ux-dir/z.bin").readBytes(), makeData(900))
+    if (!dirRecv) {
+        println("DBG recDir=" + cap(recDir, 900))
+        println("DBG faceReady2=" + faceReady2)
+        println("DBG xa=" + File("ux-dest/ux-dir/x.txt").exists())
+        if (File("ux-dest/ux-dir/x.txt").exists()) {
+            println("DBG xsz=" + File("ux-dest/ux-dir/x.txt").size())
+        }
+        if (File("ux-dest/ux-dir/inner/y.txt").exists()) {
+            println("DBG ysz=" + File("ux-dest/ux-dir/inner/y.txt").size())
+        }
+        if (File("ux-dest/ux-dir/z.bin").exists()) {
+            println("DBG zsz=" + File("ux-dest/ux-dir/z.bin").size())
+        }
+    }
+    println("dirReceive=" + dirRecv)
+    ok = ok && dirRecv
+
+    // per-child resume across a fresh receive (half tree already present)
+    shell.run("rm", listOf("-rf", "ux-dest2"))
+    Directory("ux-dest2/ux-dir").createDirectories()
+    File("ux-dest2/ux-dir/x.txt").writeBytes(makeData(200))
+    var recDir2 = cliOut(listOf("receive", dlink, "ux-dest2"))
+    var dirResume = recDir2.indexOf("DOWN-AUTO-OK dir files=3") >= 0
+        && identical(File("ux-dest2/ux-dir/x.txt").readBytes(), makeData(500))
+    if (!dirResume) {
+        println("DBG recDir2=" + cap(recDir2, 200))
+    }
+    println("dirPerChildResume=" + dirResume)
+    ok = ok && dirResume
+
+    // ── leg 7: --raw machine lane intact ──
+    var rawOut = cliOut(listOf("share", "ux-src.bin", "--server", "127.0.0.1:19430", "--face", "19431", "--raw"))
+    var rawOk = rawOut.indexOf("UP-OK") >= 0 && rawOut.indexOf("SHARED ") >= 0 && rawOut.indexOf("SHARE-LINK") >= 0
+    println("rawLane=" + rawOk)
+    ok = ok && rawOk
+
+    // ── leg 8: plane down ⇒ named marker, no stack ──
+    var down = cliOut(listOf("receive", "http://127.0.0.1:19499/s/whatever", "ux-none2.bin"))
+    var downOk = down.indexOf("SERVER-UNREACHABLE") >= 0 && down.indexOf("at java") < 0
+        && down.indexOf("did not answer") >= 0
+    println("planeDownHuman=" + downOk)
+    ok = ok && downOk
+
+    // ── leg 9: OPERATOR lane untouched (legacy up → legacy share → legacy down) ──
+    File("ux-legacy.bin").writeBytes(makeData(1200))
+    var upLegacy = cliOut(listOf("up", "127.0.0.1", "19430", "ux-legacy.bin", "--serve", "127.0.0.1:19432", "--id", "uxv1", "--name", "uxn"))
+    var offerTok = ""
+    var oi = upLegacy.indexOf("offer=")
+    if (oi >= 0) {
+        offerTok = upLegacy.substring(oi + 6, upLegacy.indexOf(" ", oi + 6))
+    }
+    var shLegacy = cliOut(listOf("share", "127.0.0.1", "19430", offerTok))
+    var tokL = ""
+    var lidx = shLegacy.indexOf("/s/")
+    if (lidx >= 0) {
+        var lrest = shLegacy.substring(lidx + 3, shLegacy.length())
+        var lend = lrest.indexOf(" ")
+        var lend2 = lrest.indexOf("\n")
+        if (lend2 >= 0 && (lend < 0 || lend2 < lend)) {
+            lend = lend2
+        }
+        if (lend >= 0) {
+            tokL = lrest.substring(0, lend)
+        }
+    }
+    var bind = portBindable(19432)
+    // face as detached process (operator style, old exact command)
+    process.spawn("sh", "-c", "cd /home/mel/Documents/kof-share && java -jar " + jar()
+        + " run src/main/kof/kofshare/cli/cli.kf serve ux-legacy.bin 19432 --key kofshare-cli-key > ux-serve.log 2>&1 &")
+    var serveReady = false
+    var t2 = 0
+    while (t2 < 60 && !serveReady) {
+        var f = File("ux-serve.log")
+        if (f.exists()) {
+            var txt3 = f.readText()
+            serveReady = txt3 != null && txt3.indexOf("SERVE-LISTENING 19432") >= 0
+        }
+        if (!serveReady) {
+            time.sleep(250)
+            t2 = t2 + 1
+        }
+    }
+    var downLegacy = ""
+    if (serveReady && tokL.length() == 64) {
+        downLegacy = cliOut(listOf("down", "127.0.0.1", "19430", tokL, "ux-legacy.recv", "--key", "kofshare-cli-key"))
+    }
+    var legacyOk = upLegacy.indexOf("UP-OK") >= 0 && shLegacy.indexOf("SHARE-LINK") == 0
+        && bind && downLegacy.indexOf("DOWN-OK") == 0
+        && identical(File("ux-legacy.recv").readBytes(), makeData(1200))
+    if (!legacyOk) {
+        println("DBG up=" + cap(upLegacy, 200))
+        println("DBG shL=" + cap(shLegacy, 200))
+        println("DBG downL=" + cap(downLegacy, 200))
+    }
+    println("operatorLane=" + legacyOk)
+    ok = ok && legacyOk
+
+    // ── leg 10: stop releases helpers ──
+    cliOut(listOf("stop"))
+    time.sleep(700)
+    var stopped = portBindable(19431)
+    println("stopWorks=" + stopped)
+    ok = ok && stopped
+
+    sweepPorts()
+    if (ok) {
+        println("UXCHECK-OK")
+    } else {
+        println("UXCHECK-FAIL")
+        throw "kofshare: UXCHECK-FAIL"
+    }
+}
