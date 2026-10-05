@@ -1,0 +1,10 @@
+Int takeIt(String? q) {
+    if (q != null && q.length() > 0) {
+        var n = math.parseInt(q)
+        return n
+    }
+    return 0
+}
+void main() {
+    println("r=" + takeIt("42"))
+}

@@ -1,0 +1,15 @@
+record G(String a, String b)
+String encodeIt(String? q) {
+    if (q == null) {
+        return json.encode(G("parent", "x"))
+    }
+    var ci = math.parseInt(q)
+    if (ci < 0) {
+        return "neg"
+    }
+    return json.encode(G(q, "" + ci))
+}
+void main() {
+    println(encodeIt("5"))
+    println(encodeIt(null))
+}

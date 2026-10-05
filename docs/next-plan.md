@@ -91,18 +91,25 @@ explicit Kof4j task — no silent architectural workaround):
                                  kof.net + keyExchange in JS; NETN001/SECN012
                                  are refused BY NAME today and must be closed
                                  IN THE LANGUAGE, never by external JS hacks)
-7. UX / CLI simplification      (`share ./file --expires 24h --once` →
-                                 SHARE-LINK; no ports/hosts/tokens for the
-                                 human; old verbs become internal aliases —
-                                 Track M: nothing removed without a documented
-                                 migration + regression test)
-8. Full integration             (two-real-process connectivity tests; all
-                                 goldens; cold-start flakes documented)
-9. Documentation                (README = the whole product story: honest
-                                 limits — P2P ≠ availability when the owner is
-                                 offline (DEVICE-OFFLINE), control plane is
-                                 real infrastructure, relay traffic exists)
-10. Release candidate           (final success criteria of the prompt)
+7. UX / CLI simplification      LANDED 05/10 (v2-Track I, UXCHECK-OK;
+                                 `share ./file --ttl 24h --once` → SHARE-LINK;
+                                 no ports/hosts/tokens for the human; old verbs
+                                 stay as internal aliases — nothing removed,
+                                 `--raw` keeps machine output byte-compatible,
+                                 named errors keep their code and gain a Hint)
+8. Full integration             LANDED 05/10 (v2-Track H, INTEGRATIONCHECK-OK;
+                                 22 legs with REAL processes: page→client→
+                                 digest-verified bytes, dir story, NAT-analog
+                                 relay, revocation, restart, account gate)
+9. Documentation                LANDED 05/10 (Track J: README v2 = the whole
+                                 product story, architecture v2,
+                                 quick-start EN+PT, honest limits in
+                                 architecture §10 + README Limits)
+10. Release candidate           `rc/runrc.kf` (23 steps: standalone check
+                                 sweep of the whole tree, CHECK/E2E on JVM
+                                 AND Script, every golden including the
+                                 browser/UX/integration process suites) →
+                                 RC-CHECK-OK
 ```
 
 Not-now, stated by the prompt: billing, desktop GUI, Android, central
@@ -464,3 +471,66 @@ BROWSERCHECK-OK, SERVECHECK-OK, RESUMECHECK-OK, PERSIST-OK, RELAY-OK,
 SHARECHECK-OK, HTTPCHECK-OK + RESTART-OK (external server on 18322 — noted
 law: those two tests need the operator-run process; sweeps must kill only
 MY ports), CHECK-OK 13 legs × JVM+Script, 36/36 files check-clean standalone.
+
+### v2-Track I — UX simplification (LANDED 05/10, `UXCHECK-OK`)
+
+The product voice. `share <path>` (file OR directory) does identity, offer,
+link and the active serving helper in ONE command with zero ceremony — no
+ports, no tokens, no bearer for the human; `receive <link>` drives the whole
+Track D story (`--auto` semantics by default), writes to `./received` unless
+told otherwise, refuses spent/dead links with human sentences; `stop` kills
+exactly the helpers this device started (pidfiles + ss-sweep by port);
+`server --start` detaches and waits on observable readiness (`/health`
+probe, not sleep). The named-error law stands: codes NEVER disappear —
+`errText` layers a `Hint:` sentence on top (REG010 "link spent", DEV-OFFLINE
+"sender offline", CONNECTIVITY_FAILED "nothing reachable"). `--raw` keeps
+the machine lines (`UP-OK`, `SHARED`, `SHARE-LINK`) byte-identical for
+scripts — the compatibility lane is a TEST, not a promise. Golden 15 legs
+(ports 19430-19432, two processes, dead plane, `--once` spent across a
+restart, per-child directory resume, zero stack traces reaching a terminal).
+CHECK leg 14 `ux=` green JVM+Script. RED caught: double-consume on `--once`
+(the link burned twice — once by preflight, once by the download; fixed by
+`downAutoWithGrant` resolving the grant EXACTLY once), the face replacement
+that orphaned a serving process, and the CLI dispatcher that handed the verb
+token to sub-parsers.
+
+### v2-Track H — full integration (LANDED 05/10, `INTEGRATIONCHECK-OK`)
+
+The whole story with REAL processes (ports 19440-19446): a file travels
+browser-page → local client → direct dial → digest-verified bytes; the
+directory story end-to-end; the WIRE carries zero layout (the plane never
+sees a path — `wireNoLayout`); relay as the DOCUMENTED NAT analog (dead
+direct grant + relay worker → session `transport=relay`, honest stamp);
+expired link; single-use across a plane RESTART; revoked share AND revoked
+device kill live grants; the account gate refuses anonymous mutation; the
+browser lane receives metadata only (no keys, no bearer, no paths).
+22 legs ×2 consecutive runs; 39/39 files check-clean. Boundary stated in
+the golden header: sealed-envelope directory trees and real hole-punching
+are OUT (deferred/reserved), everything asserted is what the code actually
+did.
+
+### v2-Track J — documentation (LANDED 05/10)
+
+README v2 rewritten as the product story (quick start in five lines, CLI
+table with audiences, five concepts, security model per property, honest
+Limits section, test markers). `docs/architecture.md` rewritten to the v2
+reality (planes, domain, transfer protocol, directories, connectivity,
+UX law, module layout, test-plan status table, §10 known gaps).
+`docs/quick-start.md` + `.pt_BR.md` added: first share/first receive/end of
+day/how to read errors/troubleshooting.
+
+### v2-RC — release candidate gate (MEDIDO 05/10, `RC-CHECK-OK steps=23`)
+
+`src/main/kof/kofshare/rc/runrc.kf` runs the ENTIRE gate in one command:
+the whole-tree standalone `check` sweep (40/40 files, zero errors),
+`--check` + E2E on BOTH targets, control plane goldens, the HTTPCYCLE step
+(the documented recipe pairing: fresh state → external plane on 18322 →
+`HTTPCHECK-OK` → kill → REBOOT → `RESTART-OK`), data-plane goldens, all
+v2 track goldens, and the browser/UX/integration process suites. Measured
+green end-to-end 05/10 (`RC-CHECK-OK steps=23`). Two harness bugs caught
+by the first red run: script-target steps were asserting a marker the
+command never prints (fixed with an explicit echo gate), and running the
+battery while manually probing goldens collided on the shared plane port —
+the law recorded: never parallelize a second compile/serve session with the
+RC battery. The battery is the release instrument: any future tip that
+prints `RC-CHECK-OK` is RC by definition; anything that doesn't is not.

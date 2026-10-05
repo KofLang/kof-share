@@ -1,0 +1,182 @@
+// KofShare v2 — RC battery (single command for the release gate).
+// Runs EVERYTHING: the whole tree through `check` standalone, `--check` on
+// JVM and Script, and every golden (including the browser, UX and
+// integration suites that spawn real processes). Prints RC-CHECK-OK iff all
+// steps pass; one line per step so a hang names itself.
+package kofshare.rc
+
+import kof.file
+import kof.shell
+
+String jar() {
+    return "/home/mel/Kof4j/kof-cli/target/kof-cli-0.5.0-beta.jar"
+}
+
+String workdir() {
+    return "/home/mel/Documents/kof-share"
+}
+
+// step runs one shell command and reports whether the marker appeared in a
+// clean run (no compiler frame crash — the goldens are compiler-sensitive).
+Boolean step(String name, String cmd) {
+    println("RC-STEP " + name + " RUN")
+    var res = shell.run("sh", listOf("-c", "cd " + workdir() + " && " + cmd + " 2>&1"))
+    var out = res.stdout
+    if (out.indexOf(name) >= 0 && out.indexOf("frame crash") < 0) {
+        println("RC-STEP " + name + " OK")
+        return true
+    }
+    var tail = out.split("\n")
+    var dump = ""
+    var i = tail.size - 12
+    if (i < 0) {
+        i = 0
+    }
+    while (i < tail.size) {
+        dump = dump + " | " + tail[i]
+        i = i + 1
+    }
+    println("RC-STEP " + name + " FAIL" + dump)
+    return false
+}
+
+void main(List<String> args) {
+    File("kofshare-cli.config").writeText("jar=" + jar() + "\nworkdir=" + workdir() + "\n")
+    var j = "java -jar " + jar()
+    var failed = ""
+    var steps = 0
+
+    // 1. every source file compiles standalone, zero errors (100% rule)
+    steps = steps + 1
+    if (!step("SWEEP-CHECK",
+        "n=0; f=0; for x in $(find src/main/kof -name '*.kf' | sort); do " +
+        "if " + j + " check $x 2>&1 | grep -q 'no errors'; then n=$((n+1)); " +
+        "else f=$((f+1)); echo SWEEP-CHECK-FAIL $x; fi; done; " +
+        "if [ $f -eq 0 ]; then echo SWEEP-CHECK ok=$n; fi")) {
+        failed = failed + " sweep"
+    }
+
+    // 2. pure CHECK legs on both targets (14 each)
+    steps = steps + 1
+    if (!step("CHECK", j + " run src/main/kof/kofshare/cli/cli.kf --check")) {
+        failed = failed + " check"
+    }
+    steps = steps + 1
+    if (!step("SCRIPT-CHECK", j + " run --target script src/main/kof/kofshare/cli/cli.kf --check | grep -q CHECK-OK && echo SCRIPT-CHECK")) {
+        failed = failed + " scriptcheck"
+    }
+
+    // 3. protocol core (plain + sealed + tamper) on both targets
+    steps = steps + 1
+    if (!step("E2E", j + " run src/main/kof/kofshare/e2e.kf")) {
+        failed = failed + " e2e"
+    }
+    steps = steps + 1
+    if (!step("SCRIPT-E2E", j + " run --target script src/main/kof/kofshare/e2e.kf | grep -q SEC-E2E-OK && echo SCRIPT-E2E")) {
+        failed = failed + " script-e2e"
+    }
+    steps = steps + 1
+    if (!step("TAMPER-OK", j + " run src/main/kof/kofshare/probe/tamper.kf")) {
+        failed = failed + " tamper"
+    }
+
+    // 4. control plane
+    steps = steps + 1
+    if (!step("REGCHECK-OK", j + " run src/main/kof/kofshare/control/check.kf")) {
+        failed = failed + " regcheck"
+    }
+    // HTTPCYCLE: the httpcheck/restart goldens ride the EXTERNAL standalone
+    // plane on 18322 (server.kf binds 18322; they never spawn it themselves —
+    // the documented "standalone cycle" recipe): fresh state → boot plane →
+    // httpcheck seeds → KILL plane → boot plane again → restart probe
+    // verifies reload from disk. One step so the pairing can never drift.
+    steps = steps + 1
+    if (!step("HTTPCYCLE-OK",
+        "rm -f server-registry.*.json server-control.bearer kofshare-server.log; " +
+        "nohup " + j + " run src/main/kof/kofshare/server/server.kf > kofshare-server.log 2>&1 & P=$!; " +
+        "r=0; for t in $(seq 1 240); do if ss -tln 2>/dev/null | grep -q ':18322 '; then r=1; break; fi; sleep 0.5; done; " +
+        "[ $r -eq 1 ] || { echo 'HTTPCYCLE-FAIL no plane'; exit 1; }; " +
+        j + " run src/main/kof/kofshare/httpcheck/checkhttp.kf 2>&1 | grep -q HTTPCHECK-OK || { echo 'HTTPCYCLE-FAIL httpcheck'; exit 1; }; " +
+        "kill $P 2>/dev/null; wait $P 2>/dev/null; sleep 1; " +
+        "nohup " + j + " run src/main/kof/kofshare/server/server.kf > kofshare-server.log 2>&1 & P=$!; " +
+        "r=0; for t in $(seq 1 240); do if ss -tln 2>/dev/null | grep -q ':18322 '; then r=1; break; fi; sleep 0.5; done; " +
+        "[ $r -eq 1 ] || { echo 'HTTPCYCLE-FAIL no reborn'; exit 1; }; " +
+        j + " run src/main/kof/kofshare/restart/probe.kf 2>&1 | grep -q RESTART-OK || { echo 'HTTPCYCLE-FAIL probe'; exit 1; }; " +
+        "kill $P 2>/dev/null; wait $P 2>/dev/null; echo HTTPCYCLE-OK")) {
+        failed = failed + " httpcycle"
+    }
+    steps = steps + 1
+    if (!step("PERSIST-OK", j + " run src/main/kof/kofshare/persistcheck/checkpersist.kf")) {
+        failed = failed + " persist"
+    }
+
+    // 5. data plane + relay + lifecycle
+    steps = steps + 1
+    if (!step("RELAY-OK", j + " run src/main/kof/kofshare/relaycheck/checkrelay.kf")) {
+        failed = failed + " relay"
+    }
+    steps = steps + 1
+    if (!step("RESUMECHECK-OK", j + " run src/main/kof/kofshare/resumecheck/checkresume.kf")) {
+        failed = failed + " resume"
+    }
+    steps = steps + 1
+    if (!step("SERVECHECK-OK", j + " run src/main/kof/kofshare/servecheck/checkserve.kf")) {
+        failed = failed + " serve"
+    }
+    steps = steps + 1
+    if (!step("SHARECHECK-OK", j + " run src/main/kof/kofshare/sharecheck/checkshare.kf")) {
+        failed = failed + " share"
+    }
+    steps = steps + 1
+    if (!step("secure=true", j + " run src/main/kof/kofshare/cli/cli.kf --check")) {
+        failed = failed + " secure"
+    }
+
+    // 6. v2 tracks (identity/sessions/connectivity/resources/folders)
+    steps = steps + 1
+    if (!step("IDENTITYCHECK-OK", j + " run src/main/kof/kofshare/identitycheck/checkidentity.kf")) {
+        failed = failed + " identity"
+    }
+    steps = steps + 1
+    if (!step("SESSIONCHECK-OK", j + " run src/main/kof/kofshare/sessioncheck/checksession.kf")) {
+        failed = failed + " session"
+    }
+    steps = steps + 1
+    if (!step("CONNECTCHECK-OK", j + " run src/main/kof/kofshare/connectcheck/checkconnect.kf")) {
+        failed = failed + " connect"
+    }
+    steps = steps + 1
+    if (!step("RESOURCECHECK-OK", j + " run src/main/kof/kofshare/resourcecheck/checkresource.kf")) {
+        failed = failed + " resource"
+    }
+    steps = steps + 1
+    if (!step("FOLDERCHECK-OK", j + " run src/main/kof/kofshare/foldercheck/checkfolder.kf")) {
+        failed = failed + " folder"
+    }
+
+    // 7. user surfaces: browser lane, product UX, full integration
+    steps = steps + 1
+    if (!step("USERCHECK-OK", j + " run src/main/kof/kofshare/usercheck/checkuser.kf")) {
+        failed = failed + " user"
+    }
+    steps = steps + 1
+    if (!step("BROWSERCHECK-OK", j + " run src/main/kof/kofshare/browsercheck/checkbrowser.kf")) {
+        failed = failed + " browser"
+    }
+    steps = steps + 1
+    if (!step("UXCHECK-OK", j + " run src/main/kof/kofshare/uxcheck/checkux.kf")) {
+        failed = failed + " ux"
+    }
+    steps = steps + 1
+    if (!step("INTEGRATIONCHECK-OK", j + " run src/main/kof/kofshare/integrationcheck/checkintegration.kf")) {
+        failed = failed + " integration"
+    }
+
+    println("RC-DONE steps=" + steps)
+    if (failed == "") {
+        println("RC-CHECK-OK steps=" + steps)
+    } else {
+        println("RC-FAILED:" + failed)
+        println("RC-CHECK-FAIL")
+    }
+}
