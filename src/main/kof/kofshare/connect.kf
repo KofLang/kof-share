@@ -1,0 +1,126 @@
+package kofshare
+
+import kof.net
+import kofshare.transfer
+
+// TRACK D — automatic connectivity (product evolution 05/10). The user must
+// not know which transport carried the bytes (the prompt's law). Strategy is
+// a PURE decision over ORDERED attempts — fully testable without sockets
+// (check leg + golden's pureMatrix) — and a REAL runner over kof.net:
+//
+//   DIRECT (the address the grant carries)
+//     → refused-by-peer ("no listener": classic NAT/firewall behavior on a
+//       dead port) → try RELAY (ciphertext-only pump, the voted D4 face)
+//     → none configured / also refused → CONNECTIVITY_FAILED by name
+//
+// Every attempt is RECORDED (label+outcome) and the golden asserts the log,
+// not just the verdict — selection is honest, never lucky. Transport strings
+// ("direct"/"relay") are the values the Track C session carries in its
+// `transport` field (CONNECTED stamp), so the coordination and the bytes
+// agree on the story.
+//
+// NAT TRAVERSAL: the language has UDP first-class (kof.net
+// bind/sendTo/receiveFrom — verified in Kof4j) but NO STUN/ICE face. A real
+// hole-punch implementation is an EXPLICIT Kof4j evolution task (registered
+// 05/10 in this plan) — this module keeps a named slot for it
+// ("nat-traversal" attempt between direct and relay) but NEVER pretends:
+// until the compiler provides STUN, the runner goes DIRECT → RELAY and the
+// golden documents exactly that. No JVM hacks, no external code.
+//
+// Named refusals (R6): CONNECTIVITY_FAILED (all attempts) · TRANSFER-ERR
+// (pump died mid-session — the relay is a byte pump; a dead serve behind it
+// surfaces here, not as a transport lie).
+
+record NegotiateAttempt(String label, String outcome)
+
+record PathResult(String transport, Int attempts, String log)
+
+// Refusal substrings the runtime produces — matched case-insensitively-ish
+// over both locales (measured: the JVM prints "Conexão recusada" under
+// pt_BR.UTF-8 and "Connection refused" under C). Unknown/other errors are
+// conservative: they are treated as DEAD for the attempt (never fall through
+// to a blind retry lie) but keep their raw text in the log.
+String classifyConnect(String errText) {
+    var t = errText.toLowerCase()
+    if (t.indexOf("recusada") >= 0 || t.indexOf("refused") >= 0) {
+        return "dead"
+    }
+    if (t.indexOf("timed") >= 0 || t.indexOf("tempo") >= 0) {
+        return "timeout"
+    }
+    return "other"
+}
+
+// The PURE decision: ordered (label, outcome) pairs — first "ok" wins;
+// "dead"/"timeout"/"other" advance; no ok → CONNECTIVITY_FAILED. Labels the
+// runner uses: "direct", "relay" ("nat-traversal" reserved slot, absent
+// until Kof4j ships STUN/ICE — never faked here).
+PathResult negotiatePath(List<NegotiateAttempt> tries) {
+    var n = 0
+    var log = ""
+    var chosen = ""
+    for (var a in tries) {
+        n = n + 1
+        log = log + a.label + "=" + a.outcome + " "
+        if (chosen.length() == 0 && a.outcome == "ok") {
+            chosen = a.label
+        }
+    }
+    if (chosen.length() == 0) {
+        return PathResult("CONNECTIVITY_FAILED", n, log)
+    }
+    return PathResult(chosen, n, log)
+}
+
+// ── the real runner ─────────────────────────────────────────────────────
+// One dial attempt; outcome strings match the pure classifier above.
+
+NegotiateAttempt dialAttempt(String label, String host, Int port) {
+    try {
+        var c = net.connect(host, port)
+        c.close()
+        return NegotiateAttempt(label, "ok")
+    } catch (String e) {
+        return NegotiateAttempt(label, classifyConnect(e))
+    }
+}
+
+// Pick the transport by TRYING it end-to-end. NOTE the honest shape: the
+// decision uses the same dial the transfer will reuse — a success probe
+// hands its Conn to the pump (no TOCTOU lie where "probe OK" and "pump
+// dial" are two different connections). relayHost empty == relay not
+// configured (then a dead direct IS CONNECTIVITY_FAILED).
+record PickedConn(String transport, Conn c, String log)
+
+PickedConn pickAndDial(String host, Int port, String relayHost, Int relayPort) {
+    var log = ""
+    try {
+        var c = net.connect(host, port)
+        return PickedConn("direct", c, log + "direct=ok ")
+    } catch (String e) {
+        log = log + "direct=" + classifyConnect(e) + " "
+    }
+    if (relayHost.length() > 0) {
+        try {
+            var rc = net.connect(relayHost, relayPort)
+            return PickedConn("relay", rc, log + "relay=ok")
+        } catch (String e2) {
+            log = log + "relay=" + classifyConnect(e2)
+        }
+    } else {
+        log = log + "relay=absent"
+    }
+    throw "CONNECTIVITY_FAILED: " + log
+}
+
+// The pump over an already-dialed Conn (A3 negotiation + tags ride the same
+// fetchFile the v1 lanes use — transport selection does NOT fork transfer
+// logic; it only decides WHICH Conn enters this function).
+Transfer pumpOn(Conn c, String dst, Int resume, String offerId, String peerName, String key) {
+    var t = fetchFile(c, dst, resume, offerId, peerName, key)
+    c.close()
+    if (t.state != SessionState.Done) {
+        throw "TRANSFER-ERR: pump ended state=" + t.state + " offset=" + t.offset
+    }
+    return t
+}

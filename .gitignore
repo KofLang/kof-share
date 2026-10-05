@@ -6,6 +6,7 @@ server-registry.*.json
 kofshare-device.ed25519
 check-identity.ed25519
 ident-*
+cn-*
 se-*
 relay-rw.up
 probe-*

@@ -1,0 +1,411 @@
+package kofshare.connectcheck
+
+import kof.http
+import kof.json
+import kof.net
+import kof.process
+import kof.shell
+import kof.time
+import kofshare.identity
+import kofshare.userflow
+import kofshare.connect
+import kofshare.control.registry
+import kofshare.control.share
+import kofshare.control.session
+import kofshare.control.presence
+import kofshare.relay
+
+// TRACK D golden — AUTOMATIC connectivity with REAL processes (the prompt's
+// law: strategy decisions tested in-process AND with two/three real ones;
+// never claimed to be "real network conditions" — the environment has no
+// NAT, the dead-port stands in for one and is documented as such):
+//
+//   autoDirect    down --auto picks DIRECT (grant address alive), session
+//                 created→…→CONNECTED(transport="direct")→…→COMPLETED,
+//                 bytes digest-verified
+//   autoRelay     grant address is DEAD (NAT-analog); with a relay running
+//                 the SAME story completes over RELAY, session stamps
+//                 transport="relay" — the user never chose it
+//   allDead       dead grant + NO relay = CONNECTIVITY_FAILED by name (no
+//                 silent infinite retry)
+//   presence      unknown (legacy v1) is NOT blocked — Track M; a beat says
+//                 HEARTBEAT-OK; after plane RESTART every loaded device is
+//                 OFFLINE until it beats again, and the GRANT refuses
+//                 DEV-OFFLINE by name (share stays valid — operational, not
+//                 authorization), until the heartbeat revives it and the
+//                 digest-verified download works.
+//
+// Ports 19390-19394 golden-owned (same ownership discipline: shell.run
+// ss-parse kill-by-pid + bindable-condition, never marker-trust).
+
+String jar() {
+    return "/home/mel/Kof4j/kof-cli/target/kof-cli-0.5.0-beta.jar"
+}
+
+Int portOf() {
+    return 19390
+}
+
+Int[] myPorts() {
+    var a = new Int[5]
+    a[0] = 19390
+    a[1] = 19391
+    a[2] = 19392
+    a[3] = 19393
+    a[4] = 19394
+    return a
+}
+
+sweepPorts() {
+    var res = shell.run("ss", listOf("-tlnp"))
+    var lines = res.stdout.split("\n")
+    for (var line in lines) {
+        if (line.indexOf("LISTEN") < 0) {
+            continue
+        }
+        var mine = false
+        for (var mp in myPorts()) {
+            if (line.indexOf(":" + mp) >= 0) {
+                mine = true
+            }
+        }
+        if (!mine) {
+            continue
+        }
+        var pi = line.indexOf("pid=")
+        if (pi < 0) {
+            continue
+        }
+        var num = ""
+        var i = pi + 4
+        while (i < line.length()) {
+            var ch = line.charAt(i)
+            if (ch < 48 || ch > 57) {
+                break
+            }
+            num = num + line.substring(i, i + 1)
+            i = i + 1
+        }
+        if (num.length() > 0) {
+            shell.run("kill", listOf("-9", num))
+        }
+    }
+}
+
+Bool spawnCli(String log, String marker, List<String> verbArgs) {
+    if (File(log).exists()) {
+        File(log).delete()
+    }
+    var cmd = "cd /home/mel/Documents/kof-share && java -jar " + jar()
+        + " run src/main/kof/kofshare/cli/cli.kf"
+    for (var a in verbArgs) {
+        cmd = cmd + " " + a
+    }
+    cmd = cmd + " > " + log + " 2>&1 &"
+    process.spawn("sh", "-c", cmd)
+    var t0 = 0
+    while (t0 < 200) {
+        var f = File(log)
+        if (f.exists()) {
+            var txt = f.readText()
+            if (txt != null && txt.indexOf(marker) >= 0) {
+                return true
+            }
+        }
+        time.sleep(250)
+        t0 = t0 + 1
+    }
+    return false
+}
+
+Bool portClear(Int port) {
+    var t0 = 0
+    while (t0 < 80) {
+        try {
+            var pr = net.listen(port)
+            pr.close()
+            return true
+        } catch (String e) {
+            sweepPorts()
+            time.sleep(250)
+            t0 = t0 + 1
+        }
+    }
+    return false
+}
+
+Int[] makeData(Int n) {
+    var out = new Int[n]
+    var i = 0
+    while (i < n) {
+        out[i] = (i * 37 + 11) % 251
+        i = i + 1
+    }
+    return out
+}
+
+Bool identical(Int[] a, Int[] b) {
+    if (a.size != b.size) {
+        return false
+    }
+    var i = 0
+    while (i < a.size) {
+        if (a[i] != b[i]) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+String offerIdOf(String upMsg) {
+    var i = upMsg.indexOf("offer=")
+    if (i < 0) {
+        return ""
+    }
+    var st = i + 6
+    return upMsg.substring(st, upMsg.indexOf(" ", st))
+}
+
+String tokenId(String shared) {
+    if (shared.indexOf("SHARED ") != 0) {
+        return ""
+    }
+    var bits = shared.split(" ")
+    if (bits.size > 2) {
+        return bits[2]
+    }
+    return ""
+}
+
+main() {
+    var ok = true
+
+    sweepPorts()
+    var freed = false
+    var t9 = 0
+    while (t9 < 80 && !freed) {
+        try {
+            var probe = net.listen(portOf())
+            probe.close()
+            freed = true
+        } catch (String e) {
+            sweepPorts()
+            time.sleep(250)
+            t9 = t9 + 1
+        }
+    }
+    println("portsFreed=" + freed)
+    var scratch = listOf("cn-plane.log", "cn-serve1.log", "cn-serve2.log",
+        "cn-serve3.log", "cn-plane2.log", "cn-src.bin", "cn-src2.bin", "cn-legacy.bin",
+        "cn-out-direct.bin", "cn-out-relay.bin", "cn-out-final.bin",
+        "cn-out-offline.bin", "cn-out-none.bin",
+        "cn-dev1.ed25519", "cn-dev2.ed25519", "relay-rw.up", "cn-plane3.log",
+        "server-control.apikey", "server-control.bearer", "server-control.ed25519",
+        "server-registry.devices.json", "server-registry.offers.json",
+        "server-registry.shares.json", "server-registry.accounts.json",
+        "server-registry.devkeys.json", "server-registry.sessions.json",
+        "server-registry.presence.json")
+    for (var f in scratch) {
+        if (File(f).exists()) {
+            File(f).delete()
+        }
+    }
+
+    var planePort = portOf()
+    var base = "http://127.0.0.1:" + planePort
+    var planeUp = spawnCli("cn-plane.log", "SERVER-READY", listOf("server", "" + planePort))
+    println("planeUp=" + planeUp)
+    if (!planeUp) {
+        println("CONNECTCHECK-FAIL")
+        throw "kofshare: CONNECTCHECK-FAIL"
+    }
+    var auth = "Authorization: Bearer " + File("server-control.bearer").readText()
+    File("cn-src.bin").writeBytes(makeData(2600))
+
+    // ── pure strategy matrix (in-process decisions — documented as tested
+    // IN-PROCESS, distinct from the REAL lanes below) ──
+    var t1 = new List<NegotiateAttempt>()
+    t1.add(NegotiateAttempt("direct", "ok"))
+    var t2 = new List<NegotiateAttempt>()
+    t2.add(NegotiateAttempt("direct", "dead"))
+    t2.add(NegotiateAttempt("relay", "ok"))
+    var t3 = new List<NegotiateAttempt>()
+    t3.add(NegotiateAttempt("direct", "dead"))
+    t3.add(NegotiateAttempt("relay", "dead"))
+    var pureMatrix = negotiatePath(t1).transport == "direct"
+        && negotiatePath(t2).transport == "relay"
+        && negotiatePath(t3).transport == "CONNECTIVITY_FAILED"
+        && classifyConnect("Connection refused") == "dead"
+        && classifyConnect("Conexão recusada") == "dead"
+    println("pureMatrix=" + pureMatrix)
+    ok = ok && pureMatrix
+
+    // ── legacy unknown: a v1 keyless device is NOT presence-blocked ──
+    File("cn-legacy.bin").writeBytes(makeData(900))
+    var legacyPub = upPublish(base, "cn-legacy", "v1", "127.0.0.1:" + (planePort + 4),
+        "cn-legacy.bin", auth)
+    var unknownNotBlocked = legacyPub.indexOf("UP-OK") == 0
+        && http.get(base + "/presence/cn-legacy", "") == "unknown"
+    println("unknownNotBlocked=" + unknownNotBlocked)
+    ok = ok && unknownNotBlocked
+
+    // ── leg 1: AUTO-DIRECT. signed publish beats presence (presence=ok in
+    // the UP-OK line); serve REAL process; downAuto drives the WHOLE session
+    // lifecycle with transport stamped at CONNECTED. ──
+    var sk1 = identityBoot("cn-dev1.ed25519")
+    var addr1 = "127.0.0.1:" + (planePort + 1)
+    var pub1 = upPublishSigned(base, sk1, "cn1", addr1, "cn-src.bin", auth)
+    var beatOk = pub1.indexOf("presence=ok") >= 0
+    var presOnline = http.get(base + "/presence/" + identityDeviceId(identityPub(sk1)), "") == "ONLINE"
+    println("beatPresence=" + (beatOk && presOnline))
+    ok = ok && beatOk && presOnline
+    var offerId1 = offerIdOf(pub1)
+    var tok1 = tokenId(http.post(base + "/shares", json.encode(ShareRequest(offerId1, 0, 0, false)), auth))
+    var clear1 = portClear(planePort + 1)
+    var serve1 = clear1 && spawnCli("cn-serve1.log", "SERVE-LISTENING",
+        listOf("serve", "cn-src.bin", "" + (planePort + 1), "--key", "k0"))
+    var autoDirectMsg = ""
+    if (serve1 && tok1.length() == 64) {
+        autoDirectMsg = downAuto(base, tok1, "cn-out-direct.bin", "k0", auth, "cn-recipient", "", 0)
+    }
+    var autoDirect = autoDirectMsg.indexOf("DOWN-AUTO-OK transport=direct sid=se") == 0
+        && identical(File("cn-out-direct.bin").readBytes(), makeData(2600))
+    var sid1 = ""
+    var si = autoDirectMsg.indexOf("sid=")
+    if (si >= 0) {
+        sid1 = autoDirectMsg.substring(si + 4, autoDirectMsg.indexOf(" ", si + 4))
+    }
+    var sessDirect = http.get(base + "/sessions/" + sid1 + "?token=" + tok1, "")
+    var sessStamped = sessDirect.indexOf("\"state\":\"COMPLETED\"") >= 0
+        && sessDirect.indexOf("\"transport\":\"direct\"") >= 0
+    println("serveUp1=" + serve1)
+    println("autoDirect=" + autoDirect)
+    println("sessionStampedDirect=" + sessStamped)
+    ok = ok && autoDirect && sessStamped
+
+    // ── leg 2: AUTO-RELAY. A SECOND device publishes with a DEAD grant
+    // address (the NAT-analog: refused, not absent); the relay (in-process
+    // worker, flag-file synced) dials the REAL serve on a different port;
+    // downAuto records direct=dead relay=ok and the SESSION says relay. ──
+    File("cn-src2.bin").writeBytes(makeData(1700))
+    var sk2 = identityBoot("cn-dev2.ed25519")
+    var pub2 = upPublishSigned(base, sk2, "cn2", "127.0.0.1:19394", "cn-src2.bin", auth)
+    var offerId2 = offerIdOf(pub2)
+    var tok2 = tokenId(http.post(base + "/shares", json.encode(ShareRequest(offerId2, 0, 0, false)), auth))
+    var clear2 = portClear(planePort + 2)
+    var serve2 = clear2 && spawnCli("cn-serve2.log", "SERVE-LISTENING",
+        listOf("serve", "cn-src2.bin", "" + (planePort + 2), "--key", "k0"))
+    var relayMsg = ""
+    if (serve2 && tok2.length() == 64) {
+        var relayL = net.listen(planePort + 3)
+        if (File("relay-rw.up").exists()) {
+            File("relay-rw.up").delete()
+        }
+        var rw = spawn {
+            File("relay-rw.up").writeText("1")
+            relayServeOn(relayL, "127.0.0.1", planePort + 2)
+        }
+        var tp = 0
+        var pumpUp = false
+        while (tp < 200 && !pumpUp) {
+            if (File("relay-rw.up").exists()) {
+                pumpUp = true
+            } else {
+                time.sleep(25)
+                tp = tp + 1
+            }
+        }
+        if (File("relay-rw.up").exists()) {
+            File("relay-rw.up").delete()
+        }
+        if (pumpUp) {
+            relayMsg = downAuto(base, tok2, "cn-out-relay.bin", "k0", auth, "cn-recipient",
+                "127.0.0.1", planePort + 3)
+        }
+        await rw
+    }
+    var autoRelay = relayMsg.indexOf("DOWN-AUTO-OK transport=relay sid=se") == 0
+        && identical(File("cn-out-relay.bin").readBytes(), makeData(1700))
+    var sid2 = ""
+    var si2 = relayMsg.indexOf("sid=")
+    if (si2 >= 0) {
+        sid2 = relayMsg.substring(si2 + 4, relayMsg.indexOf(" ", si2 + 4))
+    }
+    var sessRelayView = http.get(base + "/sessions/" + sid2 + "?token=" + tok2, "")
+    var sessStampedRelay = sessRelayView.indexOf("\"transport\":\"relay\"") >= 0
+        && sessRelayView.indexOf("\"state\":\"COMPLETED\"") >= 0
+    println("serveUp2=" + serve2)
+    println("autoRelay=" + autoRelay)
+    println("sessionStampedRelay=" + sessStampedRelay)
+    ok = ok && autoRelay && sessStampedRelay
+
+    // ── leg 3: ALL DEAD (dead grant address, NO relay) → CONNECTIVITY_FAILED
+    // by name — no silent infinite retry ──
+    var failMsg = ""
+    try {
+        downAuto(base, tok2, "cn-out-none.bin", "k0", auth, "cn-recipient", "", 0)
+    } catch (String e) {
+        failMsg = e
+    }
+    var allDead = failMsg.indexOf("CONNECTIVITY_FAILED") == 0
+    println("allDeadNamed=" + allDead)
+    ok = ok && allDead
+
+    // ── presence over plane RESTART: boot marks every LOADED device
+    // OFFLINE; the GRANT refuses DEV-OFFLINE by name (share still valid);
+    // heartbeat revives; the download then works digest-verified ──
+    sweepPorts()
+    var back = false
+    var t8 = 0
+    while (t8 < 60 && !back) {
+        try {
+            var pr = net.listen(planePort)
+            pr.close()
+            back = true
+        } catch (String e) {
+            sweepPorts()
+            time.sleep(250)
+            t8 = t8 + 1
+        }
+    }
+    var plane2 = spawnCli("cn-plane2.log", "SERVER-READY", listOf("server", "" + planePort))
+    var devId1 = identityDeviceId(identityPub(sk1))
+    var offlineState = plane2 && http.get(base + "/presence/" + devId1, "") == "OFFLINE"
+    var refusedMsg = ""
+    try {
+        downFetch(base, tok1, "cn-out-offline.bin", "k0")
+    } catch (String e) {
+        refusedMsg = e
+    }
+    var grantRefusedOffline = refusedMsg.indexOf("DOWN-ERR: grant refused: DEV-OFFLINE") == 0
+    var hb = http.post(base + "/devices/" + devId1 + "/heartbeat", "{}", auth)
+    var beatOk2 = hb.indexOf("HEARTBEAT-OK") == 0
+    var clear3 = portClear(planePort + 1)
+    var serve3 = clear3 && spawnCli("cn-serve3.log", "SERVE-LISTENING",
+        listOf("serve", "cn-src.bin", "" + (planePort + 1), "--key", "k0"))
+    var finalMsg = ""
+    if (beatOk2 && serve3) {
+        finalMsg = downFetch(base, tok1, "cn-out-final.bin", "k0")
+    }
+    var revived = finalMsg.indexOf("DOWN-OK") == 0
+        && identical(File("cn-out-final.bin").readBytes(), makeData(2600))
+    println("offlineAfterRestart=" + offlineState)
+    println("grantRefusedOffline=" + grantRefusedOffline)
+    println("heartbeatRevives=" + (beatOk2 && revived))
+    ok = ok && offlineState && grantRefusedOffline && beatOk2 && revived
+
+    sweepPorts()
+    for (var f in scratch) {
+        if (File(f).exists()) {
+            File(f).delete()
+        }
+    }
+
+    if (ok) {
+        println("CONNECTCHECK-OK")
+    } else {
+        println("CONNECTCHECK-FAIL")
+        throw "kofshare: CONNECTCHECK-FAIL"
+    }
+}

@@ -117,6 +117,31 @@ main() {
     ok = ok && vsharesListed
     println("sharesListed=" + vsharesListed)
 
+    // restart-probe companion: a share with maxUses=0 (unlimited) stays
+    // FETCHABLE after this run so the restart golden can assert a REAL
+    // grant body across process death. Measured 05/10: every seeded share
+    // was single-use or revoked, so the probe's "grantAfterRestart" had
+    // never actually checked a served grant — only the absence of an
+    // error prefix. Loose assertions rot silently.
+    // the persistent share needs its OWN offer: o1 is deleted later by the
+    // revoke-offer leg (offersGone), and a grant whose offer vanished is
+    // REG034 — measured 05/10, the restart probe's first strict grant check
+    // hit exactly that.
+    var off2 = http.post(base + "/offers", json.encode(OfferRequest("o2", "d1", "/srv/a.bin", 2048, dig, "")), auth)
+    var voffer2 = off2 == "OFFERED: o2"
+    ok = ok && voffer2
+    println("offer2=" + voffer2)
+
+    var sh2 = http.post(base + "/shares", json.encode(ShareRequest("o2", 0, 0, false)), auth)
+    var vsharePersist = sh2.indexOf("SHARED ") == 0
+    ok = ok && vsharePersist
+    println("sharePersist=" + vsharePersist)
+    var pbits = sh2.split(" ")
+    var pgrant = http.get(base + "/s/" + pbits[2])
+    var vpersistServed = pgrant.indexOf("/srv/a.bin") >= 0
+    ok = ok && vpersistServed
+    println("persistServed=" + vpersistServed)
+
     var noAuth = http.post(base + "/devices", regBody)
     var vgateMissing = noAuth == "AUTH001: missing bearer"
     ok = ok && vgateMissing
@@ -163,7 +188,9 @@ main() {
     println("revokeGhost=" + vrevokeGhost)
 
     var after = http.get(base + "/offers")
-    var voffersGone = after == "[]"
+    // o1-specific: the persistent-share leg keeps o2 alive on purpose, so
+    // global "[]" was a state coupling, not a property of the delete.
+    var voffersGone = after.indexOf("\"o1\"") < 0 && after.indexOf("\"o2\"") >= 0
     ok = ok && voffersGone
     println("offersGone=" + voffersGone)
 

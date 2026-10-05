@@ -4,6 +4,7 @@ import kofshare.control.registry
 import kofshare.control.share
 import kofshare.control.auth
 import kofshare.control.session
+import kofshare.control.presence
 import kof.json
 import kof.security
 import kof.time
@@ -22,7 +23,7 @@ import kof.auth
 // /s/<token> is the authorization gate (shareTouch decides; only "OK"
 // serves offer metadata). The SECRET stays a Secret handle end to end.
 
-void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferInfo> offers, String dpath, String opath, Map<String, ShareInfo> shares, String spath, Secret controlKey, Map<String, Account> accounts, String apath, String controlSecret, Map<String, DeviceKey> devkeys, String kpath, Map<String, SessionInfo> sessions, String npath) {
+void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferInfo> offers, String dpath, String opath, Map<String, ShareInfo> shares, String spath, Secret controlKey, Map<String, Account> accounts, String apath, String controlSecret, Map<String, DeviceKey> devkeys, String kpath, Map<String, SessionInfo> sessions, String npath, Map<String, PresenceInfo> presences, String ppath) {
     var app = web.app()
 
     app.get("/devices") {
@@ -285,6 +286,13 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
         if (k != null && k.status == "revoked") {
             return "DEV003: device revoked " + o.deviceId
         }
+        // TRACK D: an ENROLLED-or-known device that is explicitly OFFLINE
+        // refuses the grant BY NAME — never a fake success, never a lie of
+        // availability (the file is NOT storable here; the owner must be up).
+        var pg = presenceGate(presences, o.deviceId, time.now())
+        if (pg != "OK") {
+            return pg
+        }
         if (spath.length() > 0) {
             controlSaveList(spath, sharesJson(shares))
         }
@@ -425,6 +433,30 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
             controlSaveList(npath, sessionsJson(sessions, "", ""))
         }
         return "SESSION-STATE: " + to
+    }
+
+    // ── TRACK D presence ── a beat says "this device can serve NOW" (the
+    // serve process beats on LISTEN; a cron daemon may beat via `cli
+    // heartbeat`). Unknown devices (never beat, legacy) are NOT refused —
+    // Track M. OFFLINE blocks the GRANT only (the share stays valid: the
+    // prompt's law — "não transformar em erro de share").
+    app.post("/devices/:id/heartbeat") {
+        var g = controlAuthGate(accounts)
+        if (g != "OK") {
+            return g
+        }
+        var r = presenceBeat(presences, param("id"), time.now())
+        if (r != "OK") {
+            return r
+        }
+        if (ppath.length() > 0) {
+            controlSaveList(ppath, presenceJson(presences))
+        }
+        return "HEARTBEAT-OK: " + param("id")
+    }
+
+    app.get("/presence/:id") {
+        return presenceStatus(presences, param("id"), time.now())
     }
 
     app.listen(port)

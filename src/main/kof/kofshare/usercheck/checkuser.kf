@@ -76,6 +76,13 @@ Bool identical(Int[] a, Int[] b) {
 
 // Detach `cli <verb> ...` with log sync on a marker line.
 Bool spawnCli(String log, String marker, List<String> verbArgs) {
+    // delete-then-sync (measured 05/10, twice in this suite): a STALE log
+    // carrying yesterday's marker makes the wait return TRUE instantly and
+    // the golden dials a port nothing has bound yet — sync-on-file-that-might-
+    // be-old is no sync. Same law as servecheck/connectcheck.
+    if (File(log).exists()) {
+        File(log).delete()
+    }
     var cmd = "cd /home/mel/Documents/kof-share && java -jar " + jar()
         + " run src/main/kof/kofshare/cli/cli.kf"
     for (var a in verbArgs) {

@@ -73,11 +73,13 @@ e ABRE tarefa explícita no Kof4j — nunca workaround arquitetural silencioso):
 3. Diretórios                 (árvore lógica, integridade por arquivo + digest
                                da coleção; empacotar pode ser interno, NUNCA
                                contrato do protocolo)
-4. Sessão/sinalização         (CREATED→OFFERED→CLAIMED→NEGOTIATING→CONNECTED→
+4. Sessão/sinalização         POUSADA 05/10 (v2-Track C, SESSIONCHECK-OK;
+                               estados reais CREATED→CLAIMED→NEGOTIATING→CONNECTED→
                                TRANSFERRING→COMPLETED/FAILED/CANCELLED/
                                EXPIRED; transição inválida = recusa por nome;
                                o plano NUNCA carrega bytes de arquivo)
-5. Conectividade automática   (ConnectionStrategy DIRECTA→NAT→TRAVERSAL→RELAY;
+5. Conectividade automática       POUSADA 05/10 (v2-Track D, CONNECTCHECK-OK;
+                               ConnectionStrategy DIRECTA→NAT→TRAVERSAL→RELAY;
                                relay continua ciphertext-only; o --relay manual
                                votado (D4) vira perna de fallback, não caminho
                                do usuário)
@@ -198,4 +200,81 @@ IDENTITYCHECK-OK, SHARECHECK-OK, SERVECHECK-OK, RESUMECHECK-OK, PERSIST-OK,
 RELAY-OK, HTTPCHECK-OK + RESTART-OK (ciclo standalone completo com
 controlServe de 14 args), CHECK-OK 9 pernas × JVM+Script, 27/27 arquivos
 check-clean isolados.
+
+### v2-Track D — conectividade automática & presença (POUSADA 05/10, `CONNECTCHECK-OK`)
+
+Os itens 2 (abstração de recurso) e 3 (diretórios) do prompt continuam ABERTOS
+e agendados como Tracks F/G antes da integração — a letteração deste repo
+pousou sessão/conectividade primeiro porque o laço humano (up/down/serve) já
+entregava bytes v1 sem eles.
+
+Estratégia pura `connect.kf`: `classifyConnect` (case-insensitive, captura
+tanto "Conexão recusada" quanto "Connection refused"; timed/tempo →
+"timeout"; resto "other"), `negotiatePath(attempts)` — o primeiro "ok" vence;
+sem ok → `CONNECTIVITY_FAILED` —, `pickAndDial(host, port, relayHost,
+relayPort)` com DIRECT primeiro e RELAY como fallback do voto D4. O rótulo
+"nat-traversal" fica RESERVADO no vocabulário e o runner NUNCA o finge:
+`kof.net` é TCP/UDP puro — não existe STUN/ICE na linguagem —, então pernas
+NAT se manifestam como dead/timeout e caem em relay ou na recusa nomeada,
+documentado e não escondido. `pumpOn` reusa `fetchFile` — a escolha de
+transporte nunca bifurca a lógica de transferência (mesmo resume + digest
+sobre direct E relay, medido). O ambiente não tem NAT real: o "endereço de
+grant morto" do golden é o substituto DOCUMENTADO para um — a asserção é
+sobre a DECISÃO, não sobre emular redes.
+
+Presença `control/presence.kf` é tabela ORTOGONAL (o wire v1 de
+`DeviceInfo` não cresce): `PresenceInfo{deviceId,status,lastSeen}`; POST
+`/devices/:id/heartbeat` (bearer) + GET `/presence/:id`; TTL 120 s;
+`presenceGate` em GET /s recusa SOMENTE OFFLINE explícito com a recusa
+OPERACIONAL nomeada `DEV-OFFLINE: … (share ainda válido)` — device legado
+(v1 sem chave) sem beat NÃO é bloqueado (Track M: estado operacional nunca
+virou parede de autorização em silêncio; verde medido: unknownNotBlocked).
+O boot marca TODO device carregado OFFLINE e REBAIXA entradas ONLINE
+persistidas (vermelho medido duas vezes: a primeira versão só adicionava
+faltantes, e um plano reiniciado ainda alegava ter visto todo mundo —
+presença é verdade operacional e um plano recém-reiniciado não viu ninguém).
+UP-OK agora carrega `presence=ok` / `presence=skipped(…)`, nunca mudo.
+
+`downAuto(controlBase, token, dest, key, sessionAuth, recipientDevice,
+relayHost, relayPort)` = o lifecycle inteiro da Track C dirigido pelo wire
+COM a matriz de papéis (claim por `/claim`, nunca por advance — o guard da
+Track C recusa isso e o golden provou): grant→verify→sessão
+CREATED→CLAIMED→NEGOTIATING→`pickAndDial`→CONNECTED com `transport`
+carimbado pela ESCOLHA REAL→TRANSFERRING→pump→COMPLETED; mensagem
+`DOWN-AUTO-OK transport=… sid=… offset=… digest verified`. A sessão
+permanece CONTORNÁVEL (v1 downFetch intacto — dado nunca cavalga na
+indisponibilidade de uma camada de coordenação).
+
+Golden `connectcheck/checkconnect.kf` (portas 19390-19394, três JVMs reais
++ restart): pureMatrix (escada negotiatePath + classes de recusa IN-PROCESS,
+rotulado como tal), beatPresence (up assinado bate → GET /presence ONLINE),
+autoDirect (sessão COMPLETED com transport "direct", bytes verificados por
+digest), autoRelay (segundo device publica endereço de grant MORTO = o
+análogo-NAT; worker relay + sincronia por flag-file; os mesmos bytes sobre
+transport "relay", sessão carimbada relay), allDeadNamed
+(`CONNECTIVITY_FAILED` por nome — sem retry infinito silencioso),
+unknownNotBlocked (v1 legado servido), offlineAfterRestart +
+grantRefusedOffline (a recusa `DEV-OFFLINE` nomeia; o share em si continua
+mintável e listável) + heartbeatRevives (beat → download verificado).
+CHECK perna 10 `connect=` (escada pura JVM E Script). Quatro bugs de lado
+VERMELHO pegos pelo harness, cada um corrigido por condição nomeada:
+rebaixamento de presença no boot (acima); o PROBE de restart NUNCA checou
+um grant servido (`grantAfterRestart` só afirmava "sem prefixo de erro" — o
+corpo DEV-OFFLINE/REG035 passava; agora afirma o CORPO do grant, e o seed
+ganhou um share maxUses=0 sobre oferta dedicada o2 — o1 é revogado por
+design; firstToken agora pula esgotados também; `offersGone` estava acoplada
+ao estado global — agora o1-absente/o2-presente); o spawnCli do usercheck
+ainda confiava num log SERVE-LISTENING VELHO (mesma classe corrigida em
+servecheck/connectcheck na Track C — a suite pendurou de novo na perna
+relay; delete-then-sync em todo lugar agora); e a fiação de presença do cli
+caiu em `sessionLeg` por âncora ambígua de replace one-shot (âncora
+ambígua é proibida em edições multi-ocorrência — localização por python
+agora). Sem regressão (tudo na árvore FINAL): IDENTITYCHECK-OK,
+SESSIONCHECK-OK, CONNECTCHECK-OK, USERCHECK-OK (15 impressões),
+SERVECHECK-OK, RESUMECHECK-OK, PERSIST-OK, RELAY-OK, SHARECHECK-OK,
+HTTPCHECK-OK + RESTART-OK (ciclo standalone, 18322), CHECK-OK 10 pernas ×
+JVM+Script, 30/30 arquivos check-clean isolados (lei nova: TODO arquivo deve
+checkar LIMPO ISOLADO — `presence.kf` compilava só via grafo de imports; a
+referência cross-file ao tipo do mesmo pacote exigia `import
+kofshare.control.registry` explícito).
 

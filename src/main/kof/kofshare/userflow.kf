@@ -7,9 +7,11 @@ import kof.keyExchange
 import kof.secrets
 import kof.net
 import kofshare.domain
+import kofshare.connect
 import kofshare.transfer
 import kofshare.control.registry
 import kofshare.control.share
+import kofshare.control.session
 
 // A6 user flow — the last mile between the pieces and the person.
 // `upPublish` registers device + offer in the CONTROL PLANE over real HTTP
@@ -120,7 +122,16 @@ String upPublishSigned(String controlBase, Secret sk, String name, String addres
     if (off.indexOf("OFFERED:") != 0) {
         throw "UP-ERR: offer registration refused: " + off
     }
-    return "UP-OK id=" + deviceId + " offer=" + offerId + " size=" + data.size + " sha256=" + digest
+    // presence beat (Track D): the device JUST talked to the plane, so it
+    // says "I can serve now" — OPERATIONAL, never authorization: a failed
+    // beat (legacy plane without the route) does not undo the publish; the
+    // outcome is SURFACED in the message, never silent.
+    var beat = http.post(controlBase + "/devices/" + deviceId + "/heartbeat", "{}", authHeader)
+    var beatTag = "presence=ok"
+    if (beat.indexOf("HEARTBEAT-OK") != 0) {
+        beatTag = "presence=skipped(" + beat + ")"
+    }
+    return "UP-OK id=" + deviceId + " offer=" + offerId + " size=" + data.size + " sha256=" + digest + " " + beatTag
 }
 
 // Recipient side. GET /s/<token> (public — possession of the token IS the
@@ -138,30 +149,39 @@ String downFetch(String controlBase, String token, String dest, String key) {
 // — it never sees the content). relayHost empty == direct dial.
 String downFetch(String controlBase, String token, String dest, String key,
                  String relayHost, Int relayPort) {
-    var body = http.get(controlBase + "/s/" + token)
-    // ANY non-JSON body is a refusal by name (the plane's refusals — REG*,
-    // DEV* since Track A — never start with "{"). Checking only "REG" would
-    // let a DEV003 fall through into a bogus decode.
-    if (body.indexOf("{") != 0) {
-        throw "DOWN-ERR: grant refused: " + body
-    }
-    var g = json.decode<ShareGrant>(body)
+    var g = grantDecode(controlBase, token)
     var host = hostOfAddress(g.deviceAddress)
     var port = portOfAddress(g.deviceAddress)
     if (relayHost.length() > 0) {
         host = relayHost
         port = relayPort
     }
+    var c = net.connect(host, port)
+    var t = takeAndVerify(c, g, dest, key)
+    return "DOWN-OK offset=" + t.offset + "/" + t.totalBytes + " digest verified"
+}
+
+// Grant resolution shared by every DOWN lane: ANY non-JSON body is a refusal
+// by name (REG*, DEV*, DEV-OFFLINE since Track D — never start with "{").
+// Checking only "REG" would let a lie fall through into a bogus decode.
+ShareGrant grantDecode(String controlBase, String token) {
+    var body = http.get(controlBase + "/s/" + token)
+    if (body.indexOf("{") != 0) {
+        throw "DOWN-ERR: grant refused: " + body
+    }
+    return json.decode<ShareGrant>(body)
+}
+
+// The pump + the two VERIFICATIONS (size against the grant, digest against
+// the offer) — ONE implementation shared by the manual lanes and the
+// automatic Track D runner (transport selection never forks transfer logic).
+Transfer takeAndVerify(Conn c, ShareGrant g, String dest, String key) {
     var resume = 0
     if (File(dest).exists()) {
         resume = File(dest).size() as Int
     }
-    var c = net.connect(host, port)
-    var t = fetchFile(c, dest, resume, g.offerId, host, key)
-    c.close()
-    if (t.state != SessionState.Done) {
-        throw "DOWN-ERR: transfer not done: state=" + t.state + " offset=" + t.offset
-    }
+    var host = hostOfAddress(g.deviceAddress)
+    var t = pumpOn(c, dest, resume, g.offerId, host, key)
     if (t.totalBytes != g.size) {
         throw "DOWN-ERR: size mismatch: grant says " + g.size + " transport saw " + t.totalBytes
     }
@@ -169,5 +189,62 @@ String downFetch(String controlBase, String token, String dest, String key,
     if (got != g.sha256Hex) {
         throw "DOWN-ERR: content digest mismatch: offer says " + g.sha256Hex + " got " + got
     }
-    return "DOWN-OK offset=" + t.offset + "/" + t.totalBytes + " digest verified"
+    return t
+}
+
+// TRACK D — the automatic recipient story (the prompt's endgame): resolve
+// the grant, create the session (owner announces the recipient), PICK THE
+// TRANSPORT BY TRYING IT (DIRECT → RELAY, honest refusals recorded), drive
+// the session through its lifecycle with the CHOSEN transport stamped at
+// CONNECTED, pump the bytes, verify, and COMPLETED. Session coordination is
+// BYPASSABLE on purpose (sessionSid empty == v1 recipient with no account
+// story) — the DATA law (digest verified or DOWN-ERR) is never bypassable.
+// Returns "DOWN-AUTO-OK transport=<x> attempts=<n> offset=… digest verified".
+String downAuto(String controlBase, String token, String dest, String key,
+                String sessionAuth, String recipientDevice, String relayHost, Int relayPort) {
+    var g = grantDecode(controlBase, token)
+    var host = hostOfAddress(g.deviceAddress)
+    var port = portOfAddress(g.deviceAddress)
+    var sid = ""
+    if (recipientDevice.length() > 0) {
+        var created = http.post(controlBase + "/sessions",
+            json.encode(SessionRequest(token, recipientDevice, "")), sessionAuth)
+        if (created.indexOf("SESSION-CREATED: ") == 0) {
+            sid = created.substring(17)
+            // CLAIMED has its own door (owner-side, stamps ownerAddr from the
+            // registry); the generic advance refuses it by name — downAuto
+            // speaks the SAME role matrix as the golden.
+            var cl = http.post(controlBase + "/sessions/" + sid + "/claim", "{}", sessionAuth)
+            if (cl.indexOf("SESSION-STATE") != 0) {
+                throw "UF-ERR: session claim refused: " + cl
+            }
+            var ng = http.post(controlBase + "/sessions/" + sid + "/advance?token=" + token,
+                json.encode(AdvanceRequest("NEGOTIATING", "")), sessionAuth)
+            if (ng.indexOf("SESSION-STATE") != 0) {
+                throw "UF-ERR: session negotiation refused: " + ng
+            }
+        } else {
+            throw "UF-ERR: session create refused: " + created
+        }
+    }
+    var picked = pickAndDial(host, port, relayHost, relayPort)
+    if (sid.length() > 0) {
+        var cn = http.post(controlBase + "/sessions/" + sid + "/advance?token=" + token,
+            json.encode(AdvanceRequest("CONNECTED", picked.transport)), sessionAuth)
+        if (cn.indexOf("SESSION-STATE") != 0) {
+            throw "UF-ERR: session connect refused: " + cn
+        }
+        var tr = http.post(controlBase + "/sessions/" + sid + "/advance?token=" + token,
+            json.encode(AdvanceRequest("TRANSFERRING", "")), sessionAuth)
+        if (tr.indexOf("SESSION-STATE") != 0) {
+            throw "UF-ERR: session transfer stamp refused: " + tr
+        }
+    }
+    var t = takeAndVerify(picked.c, g, dest, key)
+    if (sid.length() > 0) {
+        http.post(controlBase + "/sessions/" + sid + "/advance?token=" + token,
+            json.encode(AdvanceRequest("COMPLETED", "")), sessionAuth)
+    }
+    return "DOWN-AUTO-OK transport=" + picked.transport + " sid=" + sid +
+        " offset=" + t.offset + "/" + t.totalBytes + " digest verified"
 }

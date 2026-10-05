@@ -38,17 +38,26 @@ main() {
     var accts = http.get(base + "/accounts", auth)
     var revokedPersisted = accts.indexOf("revoked") >= 0
 
+    // TRACK D law: after a restart the plane has seen NOBODY — every loaded
+    // device boots OFFLINE. The honest revival is the device's own heartbeat
+    // (this probe plays that role), and the grant check must assert the
+    // SUCCESS BODY, not merely "not an error prefix" — measured 05/10: the
+    // old loose check let a DEV-OFFLINE refusal pass as "grant restored".
+    var hb = http.post(base + "/devices/d1/heartbeat", "{}", auth)
+    var heartbeatRestored = hb.indexOf("HEARTBEAT-OK") == 0
+
     var token = firstToken(listed)
     var grant = http.get(base + "/s/" + token, "")
-    var grantAfterRestart = grant.indexOf("REFUSED") != 0 && grant.indexOf("error") != 0
+    var grantAfterRestart = grant.indexOf("deviceAddress") >= 0
 
     println("devsReloaded=" + devsReloaded)
     println("sharesReloaded=" + sharesReloaded)
     println("bearerRestored=" + bearerRestored)
     println("gateAfterRestart=" + gateAfterRestart)
     println("revokedPersisted=" + revokedPersisted)
+    println("heartbeatRestored=" + heartbeatRestored)
     println("grantAfterRestart=" + grantAfterRestart)
-    if (!devsReloaded || !sharesReloaded || !bearerRestored || !gateAfterRestart || !revokedPersisted || !grantAfterRestart) {
+    if (!devsReloaded || !sharesReloaded || !bearerRestored || !gateAfterRestart || !revokedPersisted || !heartbeatRestored || !grantAfterRestart) {
         println("grantBody=" + grant)
         println("RESTART-FAIL")
         throw "kofshare: RESTART-FAIL"
@@ -76,7 +85,8 @@ String firstToken(String sharesJson) {
             window = after.substring(0, nxt)
         }
         var s = window.indexOf("\"status\":\"revoked\"")
-        if (s < 0) {
+        var ex = window.indexOf("\"maxUses\":1") >= 0 && window.indexOf("\"used\":1") >= 0
+        if (s < 0 && !ex) {
             return tok
         }
         rest = after

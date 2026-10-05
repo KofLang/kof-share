@@ -32,6 +32,11 @@ main() {
     if (kload.indexOf("REG009") == 0) {
         throw kload
     }
+    var presences = new Map<String, PresenceInfo>()
+    var pload = presenceLoadList(presences, "server-registry.presence.json")
+    if (pload.indexOf("PRES041") == 0) {
+        throw pload
+    }
     var sessions = new Map<String, SessionInfo>()
     var nload = sessionLoadList(sessions, "server-registry.sessions.json")
     if (nload.indexOf("SES041") == 0) {
@@ -65,6 +70,7 @@ main() {
         }
     }
 
+    presenceMarkOfflineAll(presences, devices, time.now())
     var accounts = new Map<String, Account>()
     var apath = "server-registry.accounts.json"
     var aload = authLoadList(accounts, apath)
@@ -77,7 +83,8 @@ main() {
     controlServe(18322, devices, offers,
         "server-registry.devices.json", "server-registry.offers.json",
         shares, spath, controlKey, accounts, apath, controlSecret,
-        devkeys, "server-registry.devkeys.json", sessions, "server-registry.sessions.json")
+        devkeys, "server-registry.devkeys.json", sessions, "server-registry.sessions.json",
+        presences, "server-registry.presence.json")
 }
 
 // C3: the control secret signs every bearer JWT. Minted ONCE via

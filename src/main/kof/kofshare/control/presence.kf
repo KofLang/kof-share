@@ -1,0 +1,110 @@
+package kofshare.control
+
+import kofshare.control.registry
+import kof.json
+
+// TRACK D presence (product evolution 05/10) — OPERATIONAL state, kept
+// ORTHOGONAL to identity/registry: DeviceInfo's v1 wire does not grow, the
+// plane just remembers the last heartbeat. A device that never beat is
+// "unknown" (v1 behavior — nothing refused); an expired beat is OFFLINE and
+// the grant refuses DEVICE-OFFLINE BY NAME — the share stays valid (the
+// prompt's law: "não transformar isso em erro de share"), the resource is
+// simply not servable right now. Boot marks every LOADED device OFFLINE
+// (never silently optimistic: after a plane restart nobody has been seen).
+// Named refusals (R6): DEV-OFFLINE · PRES041 corrupt presence file.
+
+record PresenceInfo(String deviceId, String status, Long lastSeen)
+
+Long presenceTtlMs() {
+    return 120000
+}
+
+String presenceBeat(Map<String, PresenceInfo> presences, String deviceId, Long now) {
+    if (deviceId.length() == 0) {
+        return "REG001: empty device id"
+    }
+    presences.put(deviceId, PresenceInfo(deviceId, "ONLINE", now))
+    return "OK"
+}
+
+String presenceStatus(Map<String, PresenceInfo> presences, String deviceId, Long now) {
+    var p: PresenceInfo? = presences.get(deviceId)
+    if (p == null) {
+        return "unknown"
+    }
+    if (p.status == "ONLINE" && now - p.lastSeen > presenceTtlMs()) {
+        return "OFFLINE"
+    }
+    return p.status
+}
+
+// The /s gate: only an EXPLICIT OFFLINE blocks (unknown = legacy v1 device,
+// behavior unchanged — Track M). Returns OK or the named refusal.
+String presenceGate(Map<String, PresenceInfo> presences, String deviceId, Long now) {
+    if (presenceStatus(presences, deviceId, now) == "OFFLINE") {
+        return "DEV-OFFLINE: " + deviceId + " is not reachable right now (share still valid)"
+    }
+    return "OK"
+}
+
+// Boot hygiene (server.kf/cli): after a restart the plane has SEEN NOBODY —
+// every persisted presence entry is demoted to OFFLINE (lastSeen kept for
+// the record) and every LOADED registry device gets an OFFLINE entry even
+// if it never beat before. A device's next heartbeat flips it ONLINE.
+// Measured 05/10 (connectcheck RED): the first version only ADDED missing
+// entries and left the persisted ONLINE lying across restarts — presence is
+// operational truth, and a restarted plane has none.
+Int presenceMarkOfflineAll(Map<String, PresenceInfo> presences, Map<String, DeviceInfo> devices, Long now) {
+    var n = 0
+    var pids = presences.keys()
+    pids.sort()
+    for (var pid in pids) {
+        var p: PresenceInfo? = presences.get(pid)
+        if (p != null && p.status == "ONLINE") {
+            presences.put(pid, PresenceInfo(pid, "OFFLINE", p.lastSeen))
+            n = n + 1
+        }
+    }
+    var ids = devices.keys()
+    ids.sort()
+    for (var id in ids) {
+        if (presences.get(id) == null) {
+            presences.put(id, PresenceInfo(id, "OFFLINE", now))
+            n = n + 1
+        }
+    }
+    return n
+}
+
+String presenceJson(Map<String, PresenceInfo> presences) {
+    var out = new List<PresenceInfo>()
+    var ids = presences.keys()
+    ids.sort()
+    for (var id in ids) {
+        var p: PresenceInfo? = presences.get(id)
+        if (p != null) {
+            out.add(p)
+        }
+    }
+    return json.encode(out)
+}
+
+String presenceLoadList(Map<String, PresenceInfo> presences, String path) {
+    var f = File(path)
+    if (!f.exists()) {
+        return "OK"
+    }
+    var txt = f.readText()
+    if (txt == null) {
+        return "PRES041: unreadable presence registry " + path
+    }
+    try {
+        var list: List<PresenceInfo> = json.decode<List<PresenceInfo>>(txt)
+        for (var p in list) {
+            presences.put(p.deviceId, p)
+        }
+    } catch (String e) {
+        return "PRES041: corrupt presence registry " + path + ": " + e
+    }
+    return "OK"
+}

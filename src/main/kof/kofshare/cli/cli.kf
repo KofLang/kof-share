@@ -281,6 +281,30 @@ Bool sessionLeg() {
         && s8 && skipRef && expire && expiredStamped && afterExpire && badTok && emptyDev && purged
 }
 
+// `--check` leg 10 — Track D strategy, PURE (no sockets, Script-safe): the
+// ordered-attempt classification (both real locales of "refused", timeout,
+// unknown), first-ok wins, all-dead fails CONNECTIVITY_FAILED by name.
+Bool connectLeg() {
+    var t1 = new List<NegotiateAttempt>()
+    t1.add(NegotiateAttempt("direct", "ok"))
+    var p1 = negotiatePath(t1)
+    var directWins = p1.transport == "direct" && p1.attempts == 1
+    var t2 = new List<NegotiateAttempt>()
+    t2.add(NegotiateAttempt("direct", "dead"))
+    t2.add(NegotiateAttempt("relay", "ok"))
+    var p2 = negotiatePath(t2)
+    var relayFallback = p2.transport == "relay" && p2.attempts == 2
+    var t3 = new List<NegotiateAttempt>()
+    t3.add(NegotiateAttempt("direct", "dead"))
+    t3.add(NegotiateAttempt("relay", "dead"))
+    var p3 = negotiatePath(t3)
+    var allFail = p3.transport == "CONNECTIVITY_FAILED"
+    var cl1 = classifyConnect("kof.net: cannot connect: Connection refused") == "dead"
+    var cl2 = classifyConnect("kof.net: cannot connect to 127.0.0.1: Conexão recusada") == "dead"
+    var cl3 = classifyConnect("some other socket error") == "other"
+    return directWins && relayFallback && allFail && cl1 && cl2 && cl3
+}
+
 Int runCheck() {
     var reg = registryLeg()
     var plain = plainLeg()
@@ -300,7 +324,9 @@ Int runCheck() {
     println("identity=" + identity)
     var sess = sessionLeg()
     println("session=" + sess)
-    if (reg && persist && plain && secure && share && auth && resume && identity && sess) {
+    var conn = connectLeg()
+    println("connect=" + conn)
+    if (reg && persist && plain && secure && share && auth && resume && identity && sess && conn) {
         println("CHECK-OK")
         return 0
     }
@@ -472,6 +498,18 @@ Int runDry() {
 // control plane, learns the publisher address FROM THE GRANT, resumes from
 // any local .part, transfers and verifies the offer digest (DOWN-ERR by
 // name on mismatch — never silent).
+Int runHeartbeat(List<String> args) {
+    var rest = tail(args, 1)
+    if (rest.size < 3) {
+        println("HEARTBEAT-ERR: usage: heartbeat <ctrlHost> <ctrlPort> <deviceId> [--bearer <jwt>]")
+        return 1
+    }
+    var base = "http://" + rest.get(0) + ":" + rest.get(1)
+    println(http.post(base + "/devices/" + rest.get(2) + "/heartbeat", "{}",
+        "Authorization: Bearer " + bearerArg(rest, 3)))
+    return 0
+}
+
 Int runDevice(List<String> args) {
     if (args.size < 1) {
         println("DEVICE-ERR: usage: device new | device enroll <ctrlHost> <ctrlPort> [--name <n>] [--bearer <jwt>] | device revoke <ctrlHost> <ctrlPort> <deviceId> [--bearer <jwt>] | device list <ctrlHost> <ctrlPort> [--bearer <jwt>]")
@@ -618,6 +656,8 @@ Int runDown(List<String> args) {
     var key = defaultKey()
     var relayHost = ""
     var relayPort = 0
+    var auto = false
+    var recipient = ""
     var i = 4
     while (i < rest.size) {
         var a = argAt(rest, i)
@@ -630,9 +670,28 @@ Int runDown(List<String> args) {
                 relayPort = math.parseInt(argAt(rest, i + 2))
                 i = i + 3
             } else {
-                i = i + 1
+                if (a == "--auto") {
+                    auto = true
+                    i = i + 1
+                } else {
+                    if (a == "--recipient") {
+                        recipient = argAt(rest, i + 1)
+                        i = i + 2
+                    } else {
+                        i = i + 1
+                    }
+                }
             }
         }
+    }
+    if (auto) {
+        var dev = recipient
+        if (dev.length() == 0) {
+            dev = identityDeviceId(identityPub(identityBoot("kofshare-device.ed25519")))
+        }
+        println(downAuto(controlBase, token, dest, key,
+            "Authorization: Bearer " + bearerArg(rest, 4), dev, relayHost, relayPort))
+        return 0
     }
     println(downFetch(controlBase, token, dest, key, relayHost, relayPort))
     return 0
@@ -838,6 +897,12 @@ Int runServer(List<String> args) {
         println(kload)
         return 1
     }
+    var presences = new Map<String, PresenceInfo>()
+    var pload = presenceLoadList(presences, "server-registry.presence.json")
+    if (pload.indexOf("PRES041") == 0) {
+        println(pload)
+        return 1
+    }
     var sessions = new Map<String, SessionInfo>()
     var nload = sessionLoadList(sessions, "server-registry.sessions.json")
     if (nload.indexOf("SES041") == 0) {
@@ -864,6 +929,7 @@ Int runServer(List<String> args) {
         println(aload)
         return 1
     }
+    presenceMarkOfflineAll(presences, devices, time.now())
     // measured 04/10 (A6 golden): READY must never print before the bind
     // succeeds — a lying READY let an interrupted plane hijack the port and
     // the fresh bearer 401ed against the STALE process. Probe first.
@@ -880,7 +946,8 @@ Int runServer(List<String> args) {
     controlServe(port, devices, offers,
         "server-registry.devices.json", "server-registry.offers.json",
         shares, spath, controlKey, accounts, apath, controlSecret,
-        devkeys, "server-registry.devkeys.json", sessions, "server-registry.sessions.json")
+        devkeys, "server-registry.devkeys.json", sessions, "server-registry.sessions.json",
+        presences, "server-registry.presence.json")
     return 0
 }
 
@@ -1188,6 +1255,13 @@ main(args: List<String>) {
         var rc = runDown(tail(args, start))
         if (rc != 0) {
             throw "kofshare: DOWN-ERR"
+        }
+        return
+    }
+    if (cmd == "heartbeat") {
+        var rc = runHeartbeat(tail(args, start))
+        if (rc != 0) {
+            throw "kofshare: HEARTBEAT-ERR"
         }
         return
     }
