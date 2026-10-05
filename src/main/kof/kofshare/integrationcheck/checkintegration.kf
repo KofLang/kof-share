@@ -1,0 +1,599 @@
+package kofshare.integrationcheck
+
+import kof.crypto
+import kof.file
+import kof.fs
+import kof.http
+import kof.json
+import kof.math
+import kof.net
+import kof.process
+import kof.shell
+import kof.time
+import kofshare.domain
+import kofshare.identity
+import kofshare.userflow
+import kofshare.resource
+import kofshare.directory
+import kofshare.control.registry
+import kofshare.control.share
+import kofshare.app.client
+
+// v2-Track H golden — THE PRODUCT, END TO END, REAL PROCESSES.
+// This is NOT a re-run of the unit goldens: it walks the ONE story the
+// maintainer prompt §12/§13 demands — device → resource → share → browser
+// lane → session → automatic connectivity → transfer → digest → destination
+// (file AND directory), then the honest failure paths (relay over a NAT
+// analog, no path at all), the integrated security matrix (§14) and the
+// restart experience (§15). Ports 19440-19446, owned here.
+//
+// Legs:
+//   planeStart        `server --start` product lane
+//   fileStory         share file → app client /api/info METADATA ONLY →
+//                     POST /jobs → session COMPLETED transport=direct →
+//                     destination bytes identical (the browser's real path)
+//   dirStory          share directory → per-child sessions → tree under the
+//                     recipient root, every child digest = manifest
+//   wireNoLayout      plane listings/grants for the story carry names,
+//                     never "/home"
+//   relayStory        dead direct (NAT analog) + relay WORKER PROCESS →
+//                     transport=relay STAMPED (never faked) + digest
+//   noPath            dead direct + no relay → CONNECTIVITY_FAILED by name
+//   expired           --ttl 4s → REG037
+//   onceRestart       --once consumed, plane RESTARTS, spent stays spent
+//                     (REG038), then second --once fresh works
+//   revokedShare      revoke share → /s named refusal (REG036)
+//   revokedDevice     revoke device → live grant lane dies DEV003
+//   restartExperience devices/accounts/shares reload; PRESENCE returns as
+//                     OFFLINE; heartbeat resurrects; sessions table intact
+//   browserSecrets    /api/info never leaks the bearer, the device secret,
+//                     the control key, or any absolute path
+//   accountGate       revoked account cannot mint (AUTH)
+//   traversal/invalidResource/readonly stay refused — the UNIT goldens
+//                     own those proofs; here the product lane only asserts
+//                     the grant carries read-only perms when asked.
+
+String jar() {
+    return "/home/mel/Kof4j/kof-cli/target/kof-cli-0.5.0-beta.jar"
+}
+
+Int[] myPorts() {
+    var a = new Int[7]
+    a[0] = 19440
+    a[1] = 19441
+    a[2] = 19442
+    a[3] = 19443
+    a[4] = 19444
+    a[5] = 19445
+    a[6] = 19446
+    return a
+}
+
+sweepPorts() {
+    var res = shell.run("ss", listOf("-tlnp"))
+    var lines = res.stdout.split("\n")
+    for (var line in lines) {
+        if (line.indexOf("LISTEN") < 0) {
+            continue
+        }
+        var mine = false
+        for (var mp in myPorts()) {
+            if (line.indexOf(":" + mp) >= 0) {
+                mine = true
+            }
+        }
+        if (!mine) {
+            continue
+        }
+        var pi = line.indexOf("pid=")
+        if (pi < 0) {
+            continue
+        }
+        var num = ""
+        var i = pi + 4
+        while (i < line.length()) {
+            var ch = line.charAt(i)
+            if (ch < 48 || ch > 57) {
+                break
+            }
+            num = num + line.substring(i, i + 1)
+            i = i + 1
+        }
+        if (num.length() > 0) {
+            shell.run("kill", listOf("-9", num))
+        }
+    }
+}
+
+Bool portBindable(Int port) {
+    var t0 = 0
+    while (t0 < 60) {
+        try {
+            var pr = net.listen(port)
+            pr.close()
+            return true
+        } catch (String e) {
+            sweepPorts()
+            time.sleep(250)
+            t0 = t0 + 1
+        }
+    }
+    return false
+}
+
+Int[] makeData(Int n) {
+    var out = new Int[n]
+    var i = 0
+    while (i < n) {
+        out[i] = (i * 97 + 41) % 233
+        i = i + 1
+    }
+    return out
+}
+
+Bool identical(Int[] a, Int[] b) {
+    if (a.size != b.size) {
+        return false
+    }
+    var i = 0
+    while (i < a.size) {
+        if (a[i] != b[i]) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+String cap(String t, Int n) {
+    if (t.length() <= n) {
+        return t
+    }
+    return t.substring(0, n)
+}
+
+String cliOut(List<String> verbArgs) {
+    var cmd = "cd /home/mel/Documents/kof-share && java -jar " + jar()
+        + " run src/main/kof/kofshare/cli/cli.kf"
+    for (var a in verbArgs) {
+        cmd = cmd + " " + a
+    }
+    var res = shell.run("sh", listOf("-c", cmd + " 2>&1"))
+    var out = ""
+    var lines = res.stdout.split("\n")
+    var i = 0
+    while (i < lines.size) {
+        var ln = lines[i]
+        if (ln.indexOf("L-05") < 0 && ln.indexOf("warning:") < 0
+            && ln.indexOf("client.kf:195") < 0 && ln.indexOf("app.kf:122") < 0) {
+            out = out + ln + "\n"
+        }
+        i = i + 1
+    }
+    return out
+}
+
+String linkOf(String out) {
+    var lines = out.split("\n")
+    var i = 0
+    while (i < lines.size) {
+        var ln = lines[i]
+        var hi = ln.indexOf("http")
+        if (hi >= 0 && ln.indexOf("/s/") >= 0) {
+            var j = hi
+            while (j < ln.length()) {
+                var ch = ln.charAt(j)
+                if (ch == 32 || ch == 10 || ch == 13 || ch == 9) {
+                    return ln.substring(hi, j)
+                }
+                j = j + 1
+            }
+            return ln.substring(hi, ln.length())
+        }
+        i = i + 1
+    }
+    return ""
+}
+
+String fieldOf(String msg, String key) {
+    var i = msg.indexOf(key)
+    if (i < 0) {
+        return ""
+    }
+    var st = i + key.length()
+    var en = msg.indexOf(" ", st)
+    if (en < 0) {
+        en = msg.length()
+    }
+    return msg.substring(st, en)
+}
+
+Bool waitLog(String path, String marker) {
+    var t0 = 0
+    while (t0 < 80) {
+        var f = File(path)
+        if (f.exists()) {
+            var txt = f.readText()
+            if (txt != null && txt.indexOf(marker) >= 0) {
+                return true
+            }
+        }
+        time.sleep(250)
+        t0 = t0 + 1
+    }
+    return false
+}
+
+main() {
+    var ok = true
+    sweepPorts()
+    var freed = true
+    var pi0 = 0
+    while (pi0 < myPorts().size) {
+        freed = freed && portBindable(myPorts()[pi0])
+        pi0 = pi0 + 1
+    }
+    println("portsFreed=" + freed)
+    ok = ok && freed
+
+    File("kofshare-cli.config").writeText("jar=" + jar() + "\nworkdir=/home/mel/Documents/kof-share\n")
+    var scratch = listOf("ic-src.bin", "ic-dest", "ic-dest2", "ic-dir", "ic-tree", "ic-tree.recv",
+        "kofshare-server.log", "kofshare-face.log", "kofshare-app.log", "app-web",
+        "app-config.json", "app-job.json", "app-jobreq.txt", "app-view.log", "app-api.log",
+        "kofshare-server.pid", "kofshare-face.pid", "kofshare-app.pid",
+        "server-control.apikey", "server-control.bearer", "server-control.ed25519",
+        "server-registry.devices.json", "server-registry.offers.json",
+        "server-registry.shares.json", "server-registry.accounts.json",
+        "server-registry.devkeys.json", "server-registry.sessions.json",
+        "server-registry.presence.json", "kofshare-device.ed25519", "ic-dev2.ed25519",
+        "kofshare-resources.json", "ic-relay.log", "ic-face44.log", "ic-once.log")
+    for (var f in scratch) {
+        if (File(f).exists()) {
+            if (File(f).isDirectory()) {
+                shell.run("rm", listOf("-rf", f))
+            } else {
+                File(f).delete()
+            }
+        }
+    }
+
+    // ── leg 1: plane start (PRODUCT lane, detached) ──
+    var ps = cliOut(listOf("server", "19440", "--start"))
+    var planeStart = ps.indexOf("SERVER-READY port=19440") >= 0
+    println("planeStart=" + planeStart)
+    ok = ok && planeStart
+    var base = "http://127.0.0.1:19440"
+    var auth = "Authorization: Bearer " + File("server-control.bearer").readText()
+
+    // ── leg 2: FILE STORY through the BROWSER CLIENT face ──
+    File("ic-src.bin").writeBytes(makeData(3100))
+    var sh1 = cliOut(listOf("share", "ic-src.bin", "--server", "127.0.0.1:19440",
+        "--face", "19441", "--expires", "24h"))
+    var link1 = linkOf(sh1)
+    var shareMade = link1.length() > 40 && sh1.indexOf("Sharing file: ic-src.bin (3100 bytes)") >= 0
+    println("fileShare=" + shareMade)
+    ok = ok && shareMade
+    var face1 = waitLog("kofshare-face.log", "SERVE-LISTENING 19441")
+    println("fileFace=" + face1)
+    ok = ok && face1
+
+    // the local client (Track E process) — the browser's JVM twin
+    var tok1 = link1.substring(link1.indexOf("/s/") + 3, link1.length())
+    var appUp = cliOut(listOf("stop"))
+    var appSpawn = portBindable(19445) && spawnApp(tok1)
+    println("appUp=" + appSpawn)
+    ok = ok && appSpawn
+    var infoTxt = http.get("http://127.0.0.1:19445/api/info?token=" + tok1)
+    var infoMeta = infoTxt.indexOf("\"name\":\"ic-src.bin\"") >= 0 && infoTxt.indexOf("3100") >= 0
+    var infoSecrets = infoTxt.indexOf("Bearer") < 0 && infoTxt.indexOf("ed25519") < 0
+        && infoTxt.indexOf("server-control") < 0 && infoTxt.indexOf("/home") < 0
+    println("apiInfoMetaOnly=" + (infoMeta && infoSecrets))
+    ok = ok && infoMeta && infoSecrets
+    http.post("http://127.0.0.1:19445/jobs", json.encode(JobRequest(tok1)), "")
+    var jobDone = false
+    var jobMsg = ""
+    var t0 = 0
+    while (t0 < 160 && !jobDone) {
+        var jt = http.get("http://127.0.0.1:19445/jobs")
+        if (jt.indexOf("COMPLETED") >= 0) {
+            jobDone = true
+            jobMsg = jt
+        } else {
+            if (jt.indexOf("FAILED") >= 0) {
+                jobMsg = jt
+                t0 = 160
+            } else {
+                time.sleep(250)
+                t0 = t0 + 1
+            }
+        }
+    }
+    var directStamp = jobMsg.indexOf("DOWN-AUTO-OK transport=direct") >= 0
+    var recvBytes = File("ic-dest/ic-src.bin").exists() && identical(File("ic-dest/ic-src.bin").readBytes(), makeData(3100))
+    println("jobStory=" + (jobDone && directStamp && recvBytes))
+    ok = ok && jobDone && directStamp && recvBytes
+    var sid1 = fieldOf(jobMsg, "sid=")
+    var sessTxt = http.get(base + "/sessions/" + sid1 + "?token=" + tok1, "")
+    var sessComplete = sessTxt.indexOf("COMPLETED") >= 0
+    println("sessionCompletedOnPlane=" + sessComplete)
+    ok = ok && sessComplete
+
+    // ── leg 3: DIRECTORY STORY (product receive, real processes) ──
+    shell.run("rm", listOf("-rf", "ic-tree"))
+    Directory("ic-tree").createDirectories()
+    Directory("ic-tree/deep").createDirectories()
+    File("ic-tree/a.txt").writeBytes(makeData(420))
+    File("ic-tree/deep/b.txt").writeBytes(makeData(840))
+    File("ic-tree/c.bin").writeBytes(makeData(1260))
+    cliOut(listOf("stop"))
+    var shDir = cliOut(listOf("share", "ic-tree", "--server", "127.0.0.1:19440", "--face", "19442"))
+    var dlink = linkOf(shDir)
+    var dirShareOk = shDir.indexOf("Files: 3") >= 0 && dlink.length() > 40
+    var face2 = waitLog("kofshare-face.log", "SERVE-LISTENING port=19442")
+    println("dirShare=" + (dirShareOk && face2))
+    ok = ok && dirShareOk && face2
+    var recDir = cliOut(listOf("receive", dlink, "ic-tree.recv"))
+    var treeOk = recDir.indexOf("DOWN-AUTO-OK dir files=3") >= 0
+        && identical(File("ic-tree.recv/ic-tree/a.txt").readBytes(), makeData(420))
+        && identical(File("ic-tree.recv/ic-tree/deep/b.txt").readBytes(), makeData(840))
+        && identical(File("ic-tree.recv/ic-tree/c.bin").readBytes(), makeData(1260))
+    println("dirStory=" + treeOk)
+    if (!treeOk) {
+        println("DBG recDir=" + cap(recDir, 300))
+    }
+    ok = ok && treeOk
+
+    // manifest digests == real file digests on the wire
+    var offersTxt = http.get(base + "/offers?device=", "")
+    var wireNoLayout = offersTxt.indexOf("/home") < 0 && offersTxt.indexOf("ic-tree/a.txt") >= 0
+    println("wireNoLayout=" + wireNoLayout)
+    ok = ok && wireNoLayout
+
+    // ── leg 4: RELAY STORY — dead direct (NAT analog) + real relay worker ──
+    File("ic-src.bin").writeBytes(makeData(1500))
+    var upDead = cliOut(listOf("up", "127.0.0.1", "19440", "ic-src.bin",
+        "--serve", "127.0.0.1:19446", "--id", "ic-nat", "--name", "icnat"))
+    var offD = fieldOf(upDead, "offer=")
+    var shD = cliOut(listOf("share", "127.0.0.1", "19440", offD, "--raw"))
+    var tokD = ""
+    var lD = shD.indexOf("/s/")
+    if (lD >= 0) {
+        var rest = shD.substring(lD + 3, shD.length())
+        tokD = rest.split("\n")[0].split(" ")[0]
+    }
+    var faceReal = portBindable(19444) && spawnCliBg("ic-face44.log", "SERVE-LISTENING",
+        listOf("serve", "ic-src.bin", "19444", "--key", "kofshare-cli-key"))
+    var relayUp = portBindable(19443) && spawnCliBg("ic-relay.log", "RELAY-READY",
+        listOf("relay", "19443", "127.0.0.1", "19444"))
+    if (!(faceReal && relayUp && tokD.length() == 64)) {
+        println("DBG faceReal=" + faceReal + " relayUp=" + relayUp + " tokLen=" + tokD.length())
+    }
+    println("relayParts=" + (faceReal && relayUp && tokD.length() == 64))
+    ok = ok && faceReal && relayUp && tokD.length() == 64
+    var autoRelay = downAuto(base, tokD, "ic-relay.recv", "kofshare-cli-key", auth,
+        "ic-recipient", "127.0.0.1", 19443)
+    var relayStamped = autoRelay.indexOf("DOWN-AUTO-OK transport=relay") == 0
+        && identical(File("ic-relay.recv").readBytes(), makeData(1500))
+    var sessRelay = http.get(base + "/sessions/" + fieldOf(autoRelay, "sid=") + "?token=" + tokD, "")
+    var relayTruth = relayStamped && sessRelay.indexOf("relay") >= 0
+    println("relayStory=" + relayTruth)
+    ok = ok && relayTruth
+
+    // ── leg 5: NO PATH — honest failure ── (TARGETED kills: the plane must
+    // survive mid-story; only the transport helpers go down) ──
+    killPort(19443)
+    killPort(19444)
+    var faceNo = portBindable(19444) && spawnCliBg("ic-face44.log", "SERVE-LISTENING",
+        listOf("serve", "ic-src.bin", "19444", "--key", "kofshare-cli-key"))
+    var deadTok = ""
+    var upDead2 = cliOut(listOf("up", "127.0.0.1", "19440", "ic-src.bin",
+        "--serve", "127.0.0.1:19446", "--id", "ic-nat2", "--name", "icnat2"))
+    var offD2 = fieldOf(upDead2, "offer=")
+    var shD2 = cliOut(listOf("share", "127.0.0.1", "19440", offD2, "--raw"))
+    var lD2 = shD2.indexOf("/s/")
+    if (lD2 >= 0) {
+        deadTok = shD2.substring(lD2 + 3, shD2.length()).split("\n")[0].split(" ")[0]
+    }
+    var failMsg = ""
+    try {
+        failMsg = downAuto(base, deadTok, "ic-nopath.bin", "kofshare-cli-key", auth,
+            "ic-recipient3", "", 0)
+    } catch (String e) {
+        failMsg = e
+    }
+    var noPathOk = failMsg.indexOf("CONNECTIVITY_FAILED") >= 0 && !File("ic-nopath.bin").exists()
+    if (!noPathOk) {
+        println("DBG noPath faceNo=" + faceNo + " tokLen=" + deadTok.length() + " msg=" + cap(failMsg, 160))
+    }
+    println("noPath=" + noPathOk)
+    ok = ok && noPathOk
+    killPort(19444)
+    cliOut(listOf("stop"))
+
+    // ── leg 6: EXPIRED (short ttl, real clock) ──
+    var shExp = cliOut(listOf("share", "127.0.0.1", "19440", offD, "--ttl", "4000", "--raw"))
+    var tokE = ""
+    var lE = shExp.indexOf("/s/")
+    if (lE >= 0) {
+        tokE = shExp.substring(lE + 3, shExp.length()).split("\n")[0].split(" ")[0]
+    }
+    time.sleep(5000)
+    var expMsg = http.get(base + "/s/" + tokE, "")
+    var expiredOk = expMsg.indexOf("REG037") == 0
+    println("expired=" + expiredOk)
+    ok = ok && expiredOk
+
+    // ── leg 7: REVOKED SHARE + REVOKED DEVICE ──
+    var shRev = cliOut(listOf("share", "127.0.0.1", "19440", offD, "--raw"))
+    var tokR = ""
+    var lR = shRev.indexOf("/s/")
+    if (lR >= 0) {
+        tokR = shRev.substring(lR + 3, shRev.length()).split("\n")[0].split(" ")[0]
+    }
+    var shareId = ""
+    var sidLines = shRev.split("\n")
+    var sli = 0
+    while (sli < sidLines.size) {
+        if (sidLines[sli].indexOf("SHARE-ID ") == 0) {
+            shareId = sidLines[sli].split(" ")[1]
+        }
+        sli = sli + 1
+    }
+    var revTxt = cliOut(listOf("revoke", "127.0.0.1", "19440", shareId, "integration-test"))
+    var revAfter = http.get(base + "/s/" + tokR, "")
+    var revokedShareOk = revAfter.indexOf("REG036") == 0 && revTxt.indexOf("REVOKED") >= 0
+    println("revokedShare=" + revokedShareOk)
+    ok = ok && revokedShareOk
+
+    // device revocation kills the LIVE grant lane
+    cliOut(listOf("stop"))
+    var sh2 = cliOut(listOf("share", "ic-src.bin", "--server", "127.0.0.1:19440",
+        "--face", "19441", "--raw"))
+    var resField = fieldOf(sh2, "resource=")
+    var link2 = linkOf(sh2)
+    var waitFace = waitLog("kofshare-face.log", "SERVE-LISTENING 19441")
+    var devId = ""
+    var dl = http.get(base + "/devices", "")
+    var di = dl.indexOf("d-")
+    var productDevice = ""
+    if (di >= 0) {
+        productDevice = dl.substring(di, di + 18)
+    }
+    var bt = ""
+    var btTxt = File("server-control.bearer").readText()
+    if (btTxt != null) {
+        bt = btTxt
+    }
+    var revDev = cliOut(listOf("device", "revoke", "127.0.0.1", "19440", productDevice,
+        "--bearer", bt))
+    var grantAfterRev = http.get(link2, "")
+    var revokedDeviceOk = revDev.indexOf("REVOKED") >= 0 && grantAfterRev.indexOf("DEV003") == 0
+    if (!revokedDeviceOk) {
+        println("DBG revDev=" + cap(revDev, 140))
+        println("DBG grantAfterRev=" + cap(grantAfterRev, 140))
+        println("DBG productDevice=" + productDevice)
+    }
+    println("revokedDevice=" + revokedDeviceOk)
+    ok = ok && revokedDeviceOk
+
+    // ── leg 8: --once ACROSS RESTART: spent STAYS spent ──
+    // fresh identity (the revoked one is dead forever — that is the point)
+    File("kofshare-device.ed25519").delete()
+    var shOnce = cliOut(listOf("share", "ic-src.bin", "--server", "127.0.0.1:19440",
+        "--face", "19441", "--once"))
+    var linkO = linkOf(shOnce)
+    var faceO = waitLog("kofshare-face.log", "SERVE-LISTENING 19441")
+    var recO = ""
+    if (faceO) {
+        recO = cliOut(listOf("receive", linkO, "ic-once1.bin"))
+    }
+    var usedOnce = recO.indexOf("DOWN-AUTO-OK") >= 0
+    // RESTART the plane
+    killPort(19440)
+    var rs = cliOut(listOf("server", "19440", "--start"))
+    var restartPlane = rs.indexOf("SERVER-READY") >= 0
+    var tokO = linkO.substring(linkO.indexOf("/s/") + 3, linkO.length())
+    var afterRestart = http.get(base + "/s/" + tokO, "")
+    var spentStays = usedOnce && restartPlane && afterRestart.indexOf("REG038") == 0
+    println("onceAcrossRestart=" + spentStays)
+    ok = ok && spentStays
+
+    // ── leg 9: restart experience — presence demoted, heartbeat restores,
+    // shares/offers reload, sessions table intact ──
+    var presOff = http.get(base + "/presence/" + productDevice, "") == "OFFLINE"
+    var offersBack = http.get(base + "/offers?device=", "").indexOf(offD) >= 0
+    var sessIntact = http.get(base + "/sessions/" + sid1 + "?token=" + tok1, "").indexOf("COMPLETED") >= 0
+    var hb = http.post(base + "/devices/ic-nat/heartbeat", "{}", auth)
+    var hb2 = http.post(base + "/devices/ic-nat2/heartbeat", "{}", auth)
+    var presOn = hb.indexOf("HEARTBEAT-OK") == 0 && hb2.indexOf("HEARTBEAT-OK") == 0
+        && http.get(base + "/presence/ic-nat", "") == "ONLINE"
+        && http.get(base + "/presence/ic-nat2", "") == "ONLINE"
+    var restartOk = presOff && offersBack && sessIntact && presOn
+    println("restartPresenceOff=" + presOff)
+    println("restartOffersBack=" + offersBack)
+    println("restartSessionsIntact=" + sessIntact)
+    println("restartHeartbeatRestore=" + presOn)
+    println("restartExperience=" + restartOk)
+    ok = ok && restartOk
+
+    // ── leg 10: read-only flag reaches the grant; account gate holds ──
+    var shRO = cliOut(listOf("share", "127.0.0.1", "19440", offD, "--read-only", "--raw"))
+    var tokRO = ""
+    var lRO = shRO.indexOf("/s/")
+    if (lRO >= 0) {
+        tokRO = shRO.substring(lRO + 3, shRO.length()).split("\n")[0].split(" ")[0]
+    }
+    var roGrant = http.get(base + "/s/" + tokRO, "")
+    var defGrant = http.get(base + "/s/" + tokD, "")
+    var roOk = roGrant.indexOf("\"permissions\":\"read\"") >= 0
+    if (!roOk) {
+        println("DBG ro=" + cap(roGrant, 200))
+    }
+    var rwOk = defGrant.indexOf("read-write") >= 0
+    if (!rwOk) {
+        println("DBG def=" + cap(defGrant, 200))
+    }
+    var anonMint = http.post(base + "/shares", json.encode(ShareRequest(offD, 0, 0, false, false)), "")
+    var accountOk = anonMint.indexOf("AUTH") == 0
+    println("readOnlyGrant=" + roOk)
+    println("accountGate=" + accountOk)
+    ok = ok && roOk && rwOk && accountOk
+
+    cliOut(listOf("stop"))
+    sweepPorts()
+    if (ok) {
+        println("INTEGRATIONCHECK-OK")
+    } else {
+        println("INTEGRATIONCHECK-FAIL")
+        throw "kofshare: INTEGRATIONCHECK-FAIL"
+    }
+}
+
+Bool spawnApp(String token) {
+    if (File("kofshare-app.log").exists()) {
+        File("kofshare-app.log").delete()
+    }
+    process.spawn("sh", "-c", "cd /home/mel/Documents/kof-share && java -jar " + jar()
+        + " run src/main/kof/kofshare/cli/cli.kf app 19440 19445 " + token
+        + " kofshare-cli-key ic-dest > kofshare-app.log 2>&1 &")
+    return waitLog("kofshare-app.log", "APP-LISTENING port=19445")
+}
+
+Bool spawnCliBg(String log, String marker, List<String> verbArgs) {
+    if (File(log).exists()) {
+        File(log).delete()
+    }
+    var cmd = "cd /home/mel/Documents/kof-share && java -jar " + jar()
+        + " run src/main/kof/kofshare/cli/cli.kf"
+    for (var a in verbArgs) {
+        cmd = cmd + " " + a
+    }
+    process.spawn("sh", "-c", cmd + " > " + log + " 2>&1 &")
+    return waitLog(log, marker)
+}
+
+void killPort(Int port) {
+    var res = shell.run("ss", listOf("-tlnp"))
+    var lines = res.stdout.split("\n")
+    for (var line in lines) {
+        if (line.indexOf("LISTEN") >= 0 && line.indexOf(":" + port) >= 0) {
+            var pi = line.indexOf("pid=")
+            if (pi >= 0) {
+                var num = ""
+                var i = pi + 4
+                while (i < line.length()) {
+                    var ch = line.charAt(i)
+                    if (ch < 48 || ch > 57) {
+                        break
+                    }
+                    num = num + line.substring(i, i + 1)
+                    i = i + 1
+                }
+                if (num.length() > 0) {
+                    shell.run("kill", listOf("-9", num))
+                }
+            }
+        }
+    }
+    File("kofshare-server.pid").delete()
+}

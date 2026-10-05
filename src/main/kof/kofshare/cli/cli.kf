@@ -496,7 +496,7 @@ Int runAccount(List<String> args) {
         println(body)
         return 0
     }
-    if (sub == "add" && args.size >= 5) {
+    if (sub == "add" && rest.size >= 5) {
         var resp = http.post(base + "/accounts", json.encode(AccountRequest(rest.get(3), rest.get(4), 0)), bearer)
         if (resp == null) {
             println("ACCOUNT-ERR: control plane unreachable")
@@ -505,7 +505,7 @@ Int runAccount(List<String> args) {
         println(resp)
         return 0
     }
-    if (sub == "revoke" && args.size >= 4) {
+    if (sub == "revoke" && rest.size >= 4) {
         var resp = http.post(base + "/accounts/" + rest.get(3) + "/revoke", "", bearer)
         if (resp == null) {
             println("ACCOUNT-ERR: control plane unreachable")
@@ -665,6 +665,9 @@ Int cliRunApp(List<String> args) {
 }
 
 Int runDevice(List<String> args) {
+    // RED-caught in the Track H golden: this verb reads <sub> [host] [port]…
+    // from args.get(0..), so the DISPATCHER must strip the verb token — the
+    // other verbs tail(1) internally; device parses tail(start+1).
     if (args.size < 1) {
         println("DEVICE-ERR: usage: device new | device enroll <ctrlHost> <ctrlPort> [--name <n>] [--bearer <jwt>] | device revoke <ctrlHost> <ctrlPort> <deviceId> [--bearer <jwt>] | device list <ctrlHost> <ctrlPort> [--bearer <jwt>]")
         return 1
@@ -2218,7 +2221,7 @@ main(args: List<String>) {
         return
     }
     if (cmd == "device") {
-        var rc = runDevice(tail(args, start))
+        var rc = runDevice(tail(args, start + 1))
         if (rc != 0) {
             throw "kofshare: DEVICE-ERR"
         }
