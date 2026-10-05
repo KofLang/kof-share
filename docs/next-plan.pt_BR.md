@@ -325,15 +325,13 @@ das recusas é contrato — a perna agora registra devices primeiro); deriva
 posicional no `serve --resource` (rid get(1), porta get(2), flags de 3 —
 medido por probe standalone, nunca adivinhado).
 
-GAP HONESTO ENCONTRADO (dependência da Track G, lei §20 — registrado, NÃO
-contornado): `json.decode<List<ResourceBinding>>` é INEXPRESSÍVEL na Kof — a
-gramática de tipos não aceita `List<Record>` como parâmetro de decode (o
-parser recusa `<` depois de `List` em tipo de argumento; medido). decode<T>
-de record único e CAMPOS de tipo record funcionam hoje (toda a persistência
-v1/v2 usa isso), então a Track F embarca completa; a árvore de diretórios da
-Track G (coleção de ids filhos) exige tarefa no compilador —
-`D-KOF-JSON-CONTAINER` (decode JSON de genéricos List<Record>/Map) — aberta
-no Kof4j ANTES da Track G começar.
+GAP FALSO PEGO POR RE-MEDIÇÃO (lei evidência-antes-de-inferência, a mesma
+disciplina do DEV005 da Track A): registrei primeiro `json.decode<List<Record>>`
+como inexpressível; um probe standalone REFUTOU — decode de contentor genérico
+FUNCIONA (o registry persiste `List<DeviceInfo>` exatamente nessa forma desde
+A1). Nenhuma tarefa de compilador foi aberta; a Track G começa livre. A lição
+fica no código, não escondida: afirmar um gap é AFIRMAR UM BUG e deve ter o
+mesmo dever de reprodução.
 
 Sem regressão na árvore final: RESOURCECHECK-OK, USERCHECK-OK,
 IDENTITYCHECK-OK, SESSIONCHECK-OK, CONNECTCHECK-OK, BROWSERCHECK-OK,

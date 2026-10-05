@@ -370,14 +370,13 @@ the resource checks (refusal ORDER is a contract — the leg now registers
 devices first); `serve --resource` positional drift (rid get(1), port get(2),
 flags from 3 — measured by standalone probe, never guessed).
 
-HONEST GAP FOUND (Track G dependency, §20 law — recorded, NOT worked around):
-`json.decode<List<ResourceBinding>>` is UNEXPRESSIBLE in Kof — the type
-grammar has no `List<Record>` parameter (the parser refuses `<` after `List`
-in a decode type argument; measured). Single-record decode<T> and
-record-typed FIELDS work today (all v1/v2 persistence uses them), so Track F
-ships complete; Track G's directory tree (child-id collection) needs a
-compiler task — `D-KOF-JSON-CONTAINER` (JSON decode of List<Record>/Map
-generics) — opened in Kof4j BEFORE Track G starts.
+FALSE GAP CAUGHT BY RE-MEASUREMENT (evidence-before-inference law, same
+discipline as Track A's DEV005): I first recorded `json.decode<List<Record>>`
+as inexpressible; a standalone probe REFUTED it — generic container decode
+WORKS (the registry has persisted `List<DeviceInfo>` through exactly this form
+since A1). No compiler task was opened; Track G starts unblocked. The lesson
+is written into the code, not hidden: a gap claim is a BUG CLAIM and gets the
+same reproduction duty.
 
 No-regression on the final tree: RESOURCECHECK-OK, USERCHECK-OK,
 IDENTITYCHECK-OK, SESSIONCHECK-OK, CONNECTCHECK-OK, BROWSERCHECK-OK,
