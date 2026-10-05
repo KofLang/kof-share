@@ -30,3 +30,6 @@ kofshare-cli.config
 kofshare-face.log
 kofshare-server.log
 kofshare-app.log
+ic-*
+ux-*
+fq-*
