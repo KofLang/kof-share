@@ -7,7 +7,9 @@ import kof.process
 import kof.http
 import kof.json
 import kof.keyExchange
+import kof.math
 import kof.net
+import kof.shell
 import kof.time
 
 // A5 golden — device-side `cli serve` between TWO REAL PROCESSES (JVM only;
@@ -86,6 +88,54 @@ Bool spawnServe(String log, List<String> serveArgs) {
         cmd = cmd + " " + a
     }
     cmd = cmd + " > " + log + " 2>&1 &"
+    // Measured 05/10 (connection-refused crash + zombie in ss): a STALE log
+    // from a previous run made this wait return TRUE instantly — the golden
+    // dialed a port whose NEW serve had not bound yet (and the zombie that
+    // eventually took it was the old serve from an interrupted run). Sync on
+    // a file that might be stale is no sync: delete first, then wait the
+    // CONDITION, and before spawning anything prove the port is bindable.
+    if (File(log).exists()) {
+        File(log).delete()
+    }
+    var sport = math.parseInt(serveArgs.get(1))
+    var tclear = 0
+    var cleared = false
+    while (tclear < 80 && !cleared) {
+        try {
+            var pr = net.listen(sport)
+            pr.close()
+            cleared = true
+        } catch (String e) {
+            var res = shell.run("ss", listOf("-tlnp"))
+            for (var line in res.stdout.split("\n")) {
+                if (line.indexOf("LISTEN") < 0 || line.indexOf(":" + sport) < 0) {
+                    continue
+                }
+                var pi = line.indexOf("pid=")
+                if (pi < 0) {
+                    continue
+                }
+                var num = ""
+                var i2 = pi + 4
+                while (i2 < line.length()) {
+                    var ch = line.charAt(i2)
+                    if (ch < 48 || ch > 57) {
+                        break
+                    }
+                    num = num + line.substring(i2, i2 + 1)
+                    i2 = i2 + 1
+                }
+                if (num.length() > 0) {
+                    shell.run("kill", listOf("-9", num))
+                }
+            }
+            time.sleep(250)
+            tclear = tclear + 1
+        }
+    }
+    if (!cleared) {
+        return false
+    }
     process.spawn("sh", "-c", cmd)
     var t0 = 0
     while (t0 < 120) {

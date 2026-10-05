@@ -1,0 +1,346 @@
+package kofshare.sessioncheck
+
+import kof.http
+import kof.json
+import kof.net
+import kof.process
+import kof.shell
+import kof.time
+import kofshare.identity
+import kofshare.userflow
+import kofshare.control.registry
+import kofshare.control.share
+import kofshare.control.session
+
+// TRACK C golden — session signaling over a REAL control plane (spawned
+// process, ports 19380-19382 golden-owned) and a REAL serving process for
+// the transfer that the session coordinates. The plane carries coordination
+// ONLY — the bytes ride the data plane. Every refusal asserted BY NAME:
+// AUTH001 gate, SES002 (illegal edges + the /claim-only rule), SES003 (the
+// clock stamps EXPIRED on touch), SES004 (bad token), SES005 (one ACTIVE
+// session per share), SES006 (empty recipient). The session SURVIVES a plane
+// restart (server-registry.sessions.json reload — same discipline as the
+// other tables). A real downFetch runs while the session sits in
+// TRANSFERRING and completes the ladder at COMPLETED — the coordination and
+// the data agree on one story.
+
+String jar() {
+    return "/home/mel/Kof4j/kof-cli/target/kof-cli-0.5.0-beta.jar"
+}
+
+Int portOf() {
+    return 19380
+}
+
+Int[] myPorts() {
+    var a = new Int[3]
+    a[0] = 19380
+    a[1] = 19381
+    a[2] = 19382
+    return a
+}
+
+sweepPorts() {
+    var res = shell.run("ss", listOf("-tlnp"))
+    var lines = res.stdout.split("\n")
+    for (var line in lines) {
+        if (line.indexOf("LISTEN") < 0) {
+            continue
+        }
+        var mine = false
+        for (var mp in myPorts()) {
+            if (line.indexOf(":" + mp) >= 0) {
+                mine = true
+            }
+        }
+        if (!mine) {
+            continue
+        }
+        var pi = line.indexOf("pid=")
+        if (pi < 0) {
+            continue
+        }
+        var num = ""
+        var i = pi + 4
+        while (i < line.length()) {
+            var ch = line.charAt(i)
+            if (ch < 48 || ch > 57) {
+                break
+            }
+            num = num + line.substring(i, i + 1)
+            i = i + 1
+        }
+        if (num.length() > 0) {
+            shell.run("kill", listOf("-9", num))
+        }
+    }
+}
+
+Bool spawnCli(String log, String marker, List<String> verbArgs) {
+    var cmd = "cd /home/mel/Documents/kof-share && java -jar " + jar()
+        + " run src/main/kof/kofshare/cli/cli.kf"
+    for (var a in verbArgs) {
+        cmd = cmd + " " + a
+    }
+    cmd = cmd + " > " + log + " 2>&1 &"
+    process.spawn("sh", "-c", cmd)
+    var t0 = 0
+    while (t0 < 160) {
+        var f = File(log)
+        if (f.exists()) {
+            var txt = f.readText()
+            if (txt != null && txt.indexOf(marker) >= 0) {
+                return true
+            }
+        }
+        time.sleep(250)
+        t0 = t0 + 1
+    }
+    return false
+}
+
+Int[] makeData(Int n) {
+    var out = new Int[n]
+    var i = 0
+    while (i < n) {
+        out[i] = (i * 37 + 11) % 251
+        i = i + 1
+    }
+    return out
+}
+
+Bool identical(Int[] a, Int[] b) {
+    if (a.size != b.size) {
+        return false
+    }
+    var i = 0
+    while (i < a.size) {
+        if (a[i] != b[i]) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+String secondTok(String shared) {
+    if (shared.indexOf("SHARED ") != 0) {
+        return ""
+    }
+    var bits = shared.split(" ")
+    if (bits.size > 2) {
+        return bits[2]
+    }
+    return ""
+}
+
+String sessionBodyId(String created) {
+    if (created.indexOf("SESSION-CREATED: ") != 0) {
+        return ""
+    }
+    return created.substring(17)
+}
+
+main() {
+    var ok = true
+
+    sweepPorts()
+    var t9 = 0
+    var freed = false
+    while (t9 < 80 && !freed) {
+        try {
+            var probe = net.listen(portOf())
+            probe.close()
+            freed = true
+        } catch (String e) {
+            sweepPorts()
+            time.sleep(250)
+            t9 = t9 + 1
+        }
+    }
+    println("portsFreed=" + freed)
+    var scratch = listOf("se-plane.log", "se-plane2.log", "se-serve.log",
+        "se-src.bin", "se-out.bin", "se-dev.ed25519", "server-control.apikey",
+        "server-control.bearer", "server-control.ed25519",
+        "server-registry.devices.json", "server-registry.offers.json",
+        "server-registry.shares.json", "server-registry.accounts.json",
+        "server-registry.devkeys.json", "server-registry.sessions.json")
+    for (var f in scratch) {
+        if (File(f).exists()) {
+            File(f).delete()
+        }
+    }
+
+    var planePort = portOf()
+    var base = "http://127.0.0.1:" + planePort
+    var planeUp = spawnCli("se-plane.log", "SERVER-READY", listOf("server", "" + planePort))
+    println("planeUp=" + planeUp)
+    if (!planeUp) {
+        println("SESSIONCHECK-FAIL")
+        throw "kofshare: SESSIONCHECK-FAIL"
+    }
+    var auth = "Authorization: Bearer " + File("server-control.bearer").readText()
+    File("se-src.bin").writeBytes(makeData(2200))
+
+    // owner publishes its story with a REAL identity (Track A lane)
+    var sk = identityBoot("se-dev.ed25519")
+    var ownerAddr = "127.0.0.1:" + (planePort + 1)
+    var pubRes = upPublishSigned(base, sk, "se-owner", ownerAddr, "se-src.bin", auth)
+    var published = pubRes.indexOf("UP-OK id=d-") == 0
+    println("published=" + published)
+    ok = ok && published
+    var oi = pubRes.indexOf("offer=")
+    var st = oi + 6
+    var offerId = pubRes.substring(st, pubRes.indexOf(" ", st))
+    var di = pubRes.indexOf("id=") + 3
+    var ownerId = pubRes.substring(di, pubRes.indexOf(" ", di))
+
+    var sh1 = http.post(base + "/shares", json.encode(ShareRequest(offerId, 0, 0, false)), auth)
+    var tok = secondTok(sh1)
+    var mint = tok.length() == 64
+    println("mint=" + mint)
+    ok = ok && mint
+
+    // ── refusals at the door ──
+    var anon = http.post(base + "/sessions", json.encode(SessionRequest(tok, "recip1", "")), "")
+    var gateAnon = anon.indexOf("AUTH001") == 0
+    var badTok = http.post(base + "/sessions", json.encode(SessionRequest("nope", "recip1", "")), auth)
+    var ses4 = badTok.indexOf("SES004") == 0
+    var emptyDev = http.post(base + "/sessions", json.encode(SessionRequest(tok, "", "")), auth)
+    var ses6 = emptyDev.indexOf("SES006") == 0
+    println("doorRefusals=" + (gateAnon && ses4 && ses6))
+    ok = ok && gateAnon && ses4 && ses6
+
+    // ── the ladder over the wire ──
+    var created = http.post(base + "/sessions",
+        json.encode(SessionRequest(tok, "recip-cli", "10.1.1.1:9")), auth)
+    var sid = sessionBodyId(created)
+    var sesCreated = sid.length() > 2
+    println("sessionCreated=" + sesCreated)
+    ok = ok && sesCreated
+
+    // second ACTIVE session on the same share: SES005
+    var dup = http.post(base + "/sessions", json.encode(SessionRequest(tok, "recip2", "")), auth)
+    var ses5 = dup.indexOf("SES005") == 0
+    println("activeBlock=" + ses5)
+    ok = ok && ses5
+
+    // owner DISCOVERS via the list (pull signaling — the plane has no push yet)
+    var inbox = http.get(base + "/sessions?device=" + ownerId + "&state=CREATED", auth)
+    var discover = inbox.indexOf(sid) >= 0 && inbox.indexOf("recip-cli") >= 0
+    println("ownerInbox=" + discover)
+    ok = ok && discover
+
+    // CLAIMED via /claim only (generic advance refuses by name); ownerAddr
+    // STAMPED from the registry — a lying body cannot move the rendezvous.
+    var advClaim = http.post(base + "/sessions/" + sid + "/advance?token=" + tok,
+        json.encode(AdvanceRequest("CLAIMED", "")), auth)
+    var claimOnly = advClaim.indexOf("SES002") == 0
+    var claimed = http.post(base + "/sessions/" + sid + "/claim", "{}", auth)
+    var sesClaimed = claimed.indexOf("SESSION-STATE: CLAIMED") == 0
+    var viewByToken = http.get(base + "/sessions/" + sid + "?token=" + tok, "")
+    var stamped = viewByToken.indexOf("\"ownerAddr\":\"" + ownerAddr + "\"") >= 0
+        && viewByToken.indexOf("\"state\":\"CLAIMED\"") >= 0
+        && viewByToken.indexOf("\"id\":\"" + sid + "\"") >= 0
+    println("claimPath=" + (claimOnly && sesClaimed && stamped))
+    ok = ok && claimOnly && sesClaimed && stamped
+
+    // recipient drives with the TOKEN alone (no bearer): NEGOTIATING then the
+    // illegal jump CONNECTED->TRANSFERRING skipping nothing yet — first a
+    // truly illegal edge (TRANSFERRING from NEGOTIATING) must refuse SES002.
+    var neg = http.post(base + "/sessions/" + sid + "/advance?token=" + tok,
+        json.encode(AdvanceRequest("NEGOTIATING", "")), "")
+    var sesNeg = neg.indexOf("SESSION-STATE: NEGOTIATING") == 0
+    var jump = http.post(base + "/sessions/" + sid + "/advance?token=" + tok,
+        json.encode(AdvanceRequest("TRANSFERRING", "")), "")
+    var sesJump = jump.indexOf("SES002") == 0
+    var conn = http.post(base + "/sessions/" + sid + "/advance?token=" + tok,
+        json.encode(AdvanceRequest("CONNECTED", "direct")), "")
+    var sesConn = conn.indexOf("SESSION-STATE: CONNECTED") == 0
+    var viewConn = http.get(base + "/sessions/" + sid + "?token=" + tok, "")
+    var transport = viewConn.indexOf("\"transport\":\"direct\"") >= 0
+    println("recipientLane=" + (sesNeg && sesJump && sesConn && transport))
+    ok = ok && sesNeg && sesJump && sesConn && transport
+
+    // ── the DATA moves while the session says TRANSFERRING (real serving
+    // process, real downFetch, digest verified) ──
+    var trans = http.post(base + "/sessions/" + sid + "/advance?token=" + tok,
+        json.encode(AdvanceRequest("TRANSFERRING", "")), "")
+    var sesTrans = trans.indexOf("SESSION-STATE: TRANSFERRING") == 0
+    var serveUp = spawnCli("se-serve.log", "SERVE-LISTENING",
+        listOf("serve", "se-src.bin", "" + (planePort + 1), "--key", "k0"))
+    var downMsg = ""
+    if (sesTrans && serveUp) {
+        downMsg = downFetch(base, tok, "se-out.bin", "k0")
+    }
+    var downOk = downMsg.indexOf("DOWN-OK") == 0
+        && identical(File("se-out.bin").readBytes(), makeData(2200))
+    var done = http.post(base + "/sessions/" + sid + "/advance?token=" + tok,
+        json.encode(AdvanceRequest("COMPLETED", "")), "")
+    var sesDone = done.indexOf("SESSION-STATE: COMPLETED") == 0
+    var afterDone = http.post(base + "/sessions/" + sid + "/advance?token=" + tok,
+        json.encode(AdvanceRequest("NEGOTIATING", "")), "")
+    var terminal = afterDone.indexOf("SES002") == 0
+    // terminal frees the rendezvous slot (SES005 was ACTIVE-only)
+    var reopen = http.post(base + "/sessions", json.encode(SessionRequest(tok, "recip3", "")), auth)
+    var slotFree = reopen.indexOf("SESSION-CREATED: ") == 0
+    println("transferring=" + sesTrans)
+    println("serveUp=" + serveUp)
+    println("dataWhileTransferring=" + downOk)
+    println("completed=" + (sesDone && terminal))
+    println("slotFreesAfterTerminal=" + slotFree)
+    ok = ok && sesTrans && serveUp && downOk && sesDone && terminal && slotFree
+
+    // ── cancel path + restart persistence of the session table ──
+    var sh2 = http.post(base + "/shares", json.encode(ShareRequest(offerId, 0, 0, false)), auth)
+    var tok2 = secondTok(sh2)
+    var created2 = http.post(base + "/sessions", json.encode(SessionRequest(tok2, "recip-x", "")), auth)
+    var sid2 = sessionBodyId(created2)
+    var cancelled = http.post(base + "/sessions/" + sid2 + "/advance?token=" + tok2,
+        json.encode(AdvanceRequest("CANCELLED", "")), "")
+    var sesCancel = cancelled.indexOf("SESSION-STATE: CANCELLED") == 0
+    println("cancelled=" + sesCancel)
+    ok = ok && sesCancel
+
+    sweepPorts()
+    var t8 = 0
+    var portBack = false
+    while (t8 < 60 && !portBack) {
+        try {
+            var pr = net.listen(planePort)
+            pr.close()
+            portBack = true
+        } catch (String e) {
+            sweepPorts()
+            time.sleep(250)
+            t8 = t8 + 1
+        }
+    }
+    var plane2 = spawnCli("se-plane2.log", "SERVER-READY", listOf("server", "" + planePort))
+    var reloadView = ""
+    if (plane2) {
+        reloadView = http.get(base + "/sessions/" + sid2 + "?token=" + tok2, "")
+    }
+    var survived = plane2 && reloadView.indexOf("\"state\":\"CANCELLED\"") >= 0
+        && reloadView.indexOf(sid2) >= 0
+    println("restartSurvives=" + survived)
+    ok = ok && survived
+
+    sweepPorts()
+    for (var f in listOf("se-src.bin", "se-out.bin", "se-dev.ed25519",
+            "server-control.bearer", "server-control.apikey", "server-control.ed25519",
+            "server-registry.devices.json", "server-registry.offers.json",
+            "server-registry.shares.json", "server-registry.accounts.json",
+            "server-registry.devkeys.json", "server-registry.sessions.json")) {
+        if (File(f).exists()) {
+            File(f).delete()
+        }
+    }
+
+    if (ok) {
+        println("SESSIONCHECK-OK")
+    } else {
+        println("SESSIONCHECK-FAIL")
+        throw "kofshare: SESSIONCHECK-FAIL"
+    }
+}

@@ -154,6 +154,27 @@ sweepPorts() {
     }
 }
 
+// Deterministic serve-port ownership (measured 05/10): one-shot serves can
+// leave a JVM holding 19361 after an interrupted run; the NEXT leg's spawn
+// races that zombie and the golden blocks in a socket read. Before every
+// serve spawn: kill on MY ports, wait the CONDITION (bind succeeds), only
+// then spawn — never sync a marker against a stale process.
+Bool servePortClear(Int port) {
+    var t0 = 0
+    while (t0 < 80) {
+        try {
+            var pr = net.listen(port)
+            pr.close()
+            return true
+        } catch (String e) {
+            sweepPorts()
+            time.sleep(250)
+            t0 = t0 + 1
+        }
+    }
+    return false
+}
+
 main() {
     var ok = true
 
@@ -183,7 +204,7 @@ main() {
     println("portsFreed=" + freed)
     var scratch = listOf("serve-plane.log", "serve-user1.log", "serve-user2.log",
         "serve-liar.log", "user-src.bin", "user-full.bin", "user-part.bin",
-        "user-wrong.bin", "user-tamper.bin", "user-relay.bin", "server-control.apikey",
+        "user-wrong.bin", "user-tamper.bin", "user-relay.bin", "relay-rw.up", "server-control.apikey",
         "server-control.bearer", "server-control.ed25519",
         "server-registry.devices.json", "server-registry.offers.json",
         "server-registry.shares.json", "server-registry.accounts.json")
@@ -239,7 +260,8 @@ main() {
     ok = ok && mint
 
     // leg 1: full transfer (one-shot serve)
-    var serveUp = spawnCli("serve-user1.log", "SERVE-LISTENING",
+    var clear1 = servePortClear(planePort + 1)
+    var serveUp = clear1 && spawnCli("serve-user1.log", "SERVE-LISTENING",
         listOf("serve", "user-src.bin", "" + (planePort + 1), "--key", "k0"))
     println("serveUp=" + serveUp)
     ok = ok && serveUp
@@ -254,7 +276,8 @@ main() {
     // leg 2: resume — the SAME grant (multi-use), a FRESH one-shot serve on
     // the SAME address, a 1000-byte .part announced via A3 HELLO
     File("user-part.bin").writeBytes(prefix(makeData(3000), 1000))
-    var serveUp2 = spawnCli("serve-user2.log", "SERVE-LISTENING",
+    var clear2 = servePortClear(planePort + 1)
+    var serveUp2 = clear2 && spawnCli("serve-user2.log", "SERVE-LISTENING",
         listOf("serve", "user-src.bin", "" + (planePort + 1), "--key", "k0"))
     var downResume = false
     if (serveUp2) {
@@ -271,14 +294,52 @@ main() {
     // rides an in-process spawn thread byte-pumping BOTH directions — the A3
     // HELLO negotiation and tag checks cross the pump untouched.
     File("user-relay.bin").writeBytes(prefix(makeData(3000), 500))
-    var serveUpR = spawnCli("serve-relay.log", "SERVE-LISTENING",
+    var clear3 = servePortClear(planePort + 1)
+    var serveUpR = clear3 && spawnCli("serve-relay.log", "SERVE-LISTENING",
         listOf("serve", "user-src.bin", "" + (planePort + 1), "--key", "k0"))
     var downRelay = false
     if (serveUpR) {
+// Measured 05/10 (three hangs + thread dumps): the spawn THREAD starts
+        // ~200ms after the statement; the client used to dial the relay
+        // listener instantly while relayServeOn was still in its OWN accept
+        // of the serve leg — contended JVMs made the handshake cross a
+        // half-set-up pump and both sides blocked forever. Deterministic
+        // order now: start the worker, PROBE the serve leg (a connect with
+        // timeout succeeds only once relayServeOn dials it), and only THEN
+        // let the client dial — the relay backlog holds the client until
+        // relayServeOn reaches accept. The peek sends NO bytes: the relay is
+        // a byte pump, a stray tag would be mistaken for the HELLO.
         var relayL = net.listen(planePort + 3)
-        var rw = spawn { relayServeOn(relayL, "127.0.0.1", planePort + 1) }
-        var relayMsg = downFetch(base, token, "user-relay.bin", "k0",
-            "127.0.0.1", planePort + 3)
+        if (File("relay-rw.up").exists()) {
+            File("relay-rw.up").delete()
+        }
+        var rw = spawn {
+            File("relay-rw.up").writeText("1")
+            relayServeOn(relayL, "127.0.0.1", planePort + 1)
+        }
+        // OBSERVABLE condition that the worker thread is live (the language
+        // has no connect-with-timeout — not invented here, no silent hacks):
+        // the worker touches a flag file as its FIRST statement; the client
+        // dials only after seeing it. 200 polls x 25ms = 5s ceiling.
+        var pumpUp = false
+        var tp = 0
+        while (tp < 200 && !pumpUp) {
+            if (File("relay-rw.up").exists()) {
+                pumpUp = true
+            } else {
+                time.sleep(25)
+                tp = tp + 1
+            }
+        }
+        if (File("relay-rw.up").exists()) {
+            File("relay-rw.up").delete()
+        }
+        var relayMsg = "RELAY-PUMP-ABSENT"
+        if (pumpUp) {
+            relayMsg = downFetch(base, token, "user-relay.bin", "k0",
+                "127.0.0.1", planePort + 3)
+        }
+        println("relayPumpUp=" + pumpUp)
         await rw
         downRelay = relayMsg.indexOf("DOWN-OK") == 0
             && identical(File("user-relay.bin").readBytes(), makeData(3000))
@@ -307,7 +368,8 @@ main() {
     var liarShare = http.post(base + "/shares",
         json.encode(ShareRequest("o-tamper", 0, 0, false)), auth)
     var liarTok = liarShare.split(" ")[2]
-    var serveUp3 = spawnCli("serve-liar.log", "SERVE-LISTENING",
+    var clear4 = servePortClear(planePort + 1)
+    var serveUp3 = clear4 && spawnCli("serve-liar.log", "SERVE-LISTENING",
         listOf("serve", "user-wrong.bin", "" + (planePort + 2), "--key", "k0"))
     var tamperRefuse = false
     if (serveUp3) {

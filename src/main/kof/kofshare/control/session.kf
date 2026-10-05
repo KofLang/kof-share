@@ -1,0 +1,244 @@
+package kofshare.control
+
+import kofshare.control.registry
+import kofshare.control.share
+import kof.json
+
+// TRACK C (product evolution 05/10) — the control plane learns COORDINATION:
+// a TransferSession is the meeting point where recipient and owner exchange
+// intent BEFORE any byte moves. The session never carries file content
+// (architecture law: the plane coordinates, the data plane transfers).
+//
+// Lifecycle (maintainer prompt — CLAIMED is the OWNER taking the recipient's
+// request; the recipient's own POST is CREATED):
+//
+//   CREATED ──CLAIMED──► NEGOTIATING ──CONNECTED──► TRANSFERRING ──► COMPLETED
+//      │         │            │            │             │
+//      └─────────┴────────────┴────┬───────┴─────────────┘
+//                              CANCELLED / FAILED (per matrix) · EXPIRED (clock)
+//
+// Only these edges are legal; every other transition refuses BY NAME (R6):
+//   SES001 unknown session · SES002 invalid transition X->Y ·
+//   SES003 session expired (clock caught at any touch) ·
+//   SES004 share token not valid for a session · SES005 share already has an
+//   active session (first-claim wins) · SES006 empty recipient ·
+//   SES041 corrupt sessions file.
+// Terminal states (COMPLETED/FAILED/CANCELLED/EXPIRED) accept nothing —
+// SES002 again. A new session over the same token becomes legal only when
+// the share itself still has uses left (the grant at /s stays the consumption
+// point — the session is coordination, NOT a second spender).
+
+record SessionInfo(String id, String shareId, String token, String ownerDeviceId,
+                  String offerId, String recipientDevice, String recipientAddr,
+                  String ownerAddr, String state, Long createdAt, Long expiresAt,
+                  String transport)
+
+record SessionRequest(String token, String recipientDevice, String recipientAddr)
+
+record AdvanceRequest(String to, String transport)
+
+String sessionTtlState() {
+    return "CREATED"
+}
+
+Long sessionTtlMs() {
+    return 1800000
+}
+
+Bool sessionTerminal(String state) {
+    return state == "COMPLETED" || state == "FAILED" || state == "CANCELLED" || state == "EXPIRED"
+}
+
+// The legal-edge matrix — ONE function, the routes and the golden share it.
+Bool sessionLegal(String from, String to) {
+    if (sessionTerminal(from)) {
+        return false
+    }
+    if (to == "EXPIRED") {
+        return true
+    }
+    if (to == "CANCELLED") {
+        return true
+    }
+    if (from == "CREATED") {
+        return to == "CLAIMED"
+    }
+    if (from == "CLAIMED") {
+        return to == "NEGOTIATING"
+    }
+    if (from == "NEGOTIATING") {
+        return to == "CONNECTED" || to == "FAILED"
+    }
+    if (from == "CONNECTED") {
+        return to == "TRANSFERRING" || to == "FAILED"
+    }
+    if (from == "TRANSFERRING") {
+        return to == "COMPLETED" || to == "FAILED"
+    }
+    return false
+}
+
+// Recipient opens the story: possession of a VALID, ACTIVE, UNEXPIRED share
+// token plus a non-empty recipient device. SES005 keeps the rendezvous
+// single: while a session for this share is non-terminal nobody else claims
+// the slot (matches --once semantics).
+String sessionCreate(Map<String, SessionInfo> sessions, Map<String, ShareInfo> shares,
+                     String id, SessionRequest r, Long now) {
+    if (r.recipientDevice == null || r.recipientDevice.length() == 0) {
+        return "SES006: empty recipient device"
+    }
+    var s: ShareInfo? = shareResolve(shares, r.token)
+    if (s == null) {
+        return "SES004: unknown share token"
+    }
+    if (s.status != "active") {
+        return "SES004: share not active: " + s.status
+    }
+    if (s.expiresAt > 0 && now > s.expiresAt) {
+        return "SES004: share expired"
+    }
+    var ids = sessions.keys()
+    ids.sort()
+    for (var sid in ids) {
+        var e: SessionInfo? = sessions.get(sid)
+        if (e != null && e.shareId == s.id && !sessionTerminal(e.state)) {
+            return "SES005: share already has an active session " + sid
+        }
+    }
+    if (id.length() == 0) {
+        return "SES006: empty session id"
+    }
+    var raddr = r.recipientAddr
+    if (raddr == null) {
+        raddr = ""
+    }
+    var rdev = r.recipientDevice
+    sessions.put(id, SessionInfo(id, s.id, s.token, s.deviceId, s.offerId,
+        rdev, raddr, "", "CREATED", now, now + sessionTtlMs(), ""))
+    return "OK"
+}
+
+SessionInfo? sessionResolve(Map<String, SessionInfo> sessions, String id) {
+    return sessions.get(id)
+}
+
+// Clock discipline (same law as shares): an expired NON-terminal session
+// transitions to EXPIRED the moment anyone touches it, and the touch itself
+// refuses SES003 — stale sessions never keep negotiating.
+String sessionAdvance(Map<String, SessionInfo> sessions, String id, String to,
+                      String transport, Long now) {
+    var e: SessionInfo? = sessions.get(id)
+    if (e == null) {
+        return "SES001: unknown session " + id
+    }
+    if (!sessionTerminal(e.state) && now > e.expiresAt) {
+        sessions.put(id, SessionInfo(e.id, e.shareId, e.token, e.ownerDeviceId, e.offerId,
+            e.recipientDevice, e.recipientAddr, e.ownerAddr, "EXPIRED", e.createdAt, e.expiresAt, e.transport))
+        return "SES003: session expired " + id
+    }
+    if (!sessionLegal(e.state, to)) {
+        return "SES002: invalid transition " + e.state + "->" + to
+    }
+    var t = e.transport
+    if (to == "CONNECTED" && transport != null && transport.length() > 0) {
+        t = transport
+    }
+    sessions.put(id, SessionInfo(e.id, e.shareId, e.token, e.ownerDeviceId, e.offerId,
+        e.recipientDevice, e.recipientAddr, e.ownerAddr, to, e.createdAt, e.expiresAt, t))
+    return "OK"
+}
+
+// The owner-side step only the bearer may take: pickup of the recipient's
+// request. ownerAddr is stamped FROM THE REGISTRY (the offer's device
+// address), never from the caller's body — a lying owner address would send
+// the recipient nowhere; the plane is the authority on addresses (C2 law).
+String sessionClaim(Map<String, SessionInfo> sessions, Map<String, DeviceInfo> devices,
+                    String id, Long now) {
+    var e: SessionInfo? = sessions.get(id)
+    if (e == null) {
+        return "SES001: unknown session " + id
+    }
+    if (!sessionTerminal(e.state) && now > e.expiresAt) {
+        sessions.put(id, SessionInfo(e.id, e.shareId, e.token, e.ownerDeviceId, e.offerId,
+            e.recipientDevice, e.recipientAddr, e.ownerAddr, "EXPIRED", e.createdAt, e.expiresAt, e.transport))
+        return "SES003: session expired " + id
+    }
+    if (e.state != "CREATED") {
+        return "SES002: invalid transition " + e.state + "->CLAIMED"
+    }
+    var addr = ""
+    var d: DeviceInfo? = devices.get(e.ownerDeviceId)
+    if (d != null) {
+        addr = d.address
+    }
+    sessions.put(id, SessionInfo(e.id, e.shareId, e.token, e.ownerDeviceId, e.offerId,
+        e.recipientDevice, e.recipientAddr, addr, "CLAIMED", e.createdAt, e.expiresAt, e.transport))
+    return "OK"
+}
+
+// Boot hygiene: a session — terminal or not — lives exactly until its TTL.
+// Terminal sessions are KEPT until then on purpose: they are the audit trail
+// of the coordination (restart-survival of a CANCELLED session is asserted
+// by the golden — measured 05/10: the first purge dropped terminal entries
+// immediately, so nothing terminal could ever survive a plane restart).
+Int sessionPurgeExpired(Map<String, SessionInfo> sessions, Long now) {
+    var dropped = 0
+    var ids = sessions.keys()
+    ids.sort()
+    for (var id in ids) {
+        var e: SessionInfo? = sessions.get(id)
+        if (e != null) {
+            if (now > e.expiresAt) {
+                sessions.remove(id)
+                dropped = dropped + 1
+            }
+        }
+    }
+    return dropped
+}
+
+String sessionMarkExpired(Map<String, SessionInfo> sessions, String id) {
+    var e: SessionInfo? = sessions.get(id)
+    if (e == null) {
+        return "SES001: unknown session " + id
+    }
+    sessions.put(id, SessionInfo(e.id, e.shareId, e.token, e.ownerDeviceId, e.offerId,
+        e.recipientDevice, e.recipientAddr, e.ownerAddr, "EXPIRED", e.createdAt, e.expiresAt, e.transport))
+    return "OK"
+}
+
+String sessionsJson(Map<String, SessionInfo> sessions, String ownerDeviceId, String state) {
+    var out = new List<SessionInfo>()
+    var ids = sessions.keys()
+    ids.sort()
+    for (var id in ids) {
+        var e: SessionInfo? = sessions.get(id)
+        if (e != null) {
+            if ((ownerDeviceId.length() == 0 || e.ownerDeviceId == ownerDeviceId)
+                && (state.length() == 0 || e.state == state)) {
+                out.add(e)
+            }
+        }
+    }
+    return json.encode(out)
+}
+
+String sessionLoadList(Map<String, SessionInfo> sessions, String path) {
+    var f = File(path)
+    if (!f.exists()) {
+        return "OK"
+    }
+    var txt = f.readText()
+    if (txt == null) {
+        return "SES041: unreadable sessions registry " + path
+    }
+    try {
+        var list: List<SessionInfo> = json.decode<List<SessionInfo>>(txt)
+        for (var e in list) {
+            sessions.put(e.id, e)
+        }
+    } catch (String e) {
+        return "SES041: corrupt sessions registry " + path + ": " + e
+    }
+    return "OK"
+}

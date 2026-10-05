@@ -229,6 +229,58 @@ Bool identityLeg() {
         && !tampered && !wrongKey && everified && !elied
 }
 
+// `--check` leg 9 — Track C session machine, pure single-process (the exact
+// sequence the sprobe measured 05/10 — expectations copied from GROUND TRUTH,
+// not from hope): the legal ladder walks once; ownerAddr is STAMPED from the
+// registry at CLAIMED; every shortcut/backstep/terminal-reentry refuses
+// SES002; a terminal slot frees the token for a new rendezvous (SES005 only
+// blocks ACTIVE sessions); the clock stamps EXPIRED and the touch refuses
+// SES003; bad token SES004; empty recipient SES006; purge drops terminal.
+Bool sessionLeg() {
+    var shares = new Map<String, ShareInfo>()
+    var devices = new Map<String, DeviceInfo>()
+    var sessions = new Map<String, SessionInfo>()
+    devices.put("d1", DeviceInfo("d1", "n", "127.0.0.1:1"))
+    devices.put("d9", DeviceInfo("d9", "n", "127.0.0.9:9"))
+    shares.put("sh1", ShareInfo("sh1", "tok1", "d1", "o1", "read", 1, 0, 0, 0, "active", "", ""))
+    shares.put("sh2", ShareInfo("sh2", "tok2", "d9", "o2", "read", 1, 0, 0, 0, "active", "", ""))
+    var ladder = new List<String>()
+    ladder.add("CLAIMED")
+    ladder.add("NEGOTIATING")
+    ladder.add("CONNECTED")
+    ladder.add("TRANSFERRING")
+    ladder.add("COMPLETED")
+    var created = sessionCreate(sessions, shares, "s1", SessionRequest("tok1", "d2", "10.0.0.2:5"), 100) == "OK"
+    var walkOk = true
+    for (var to in ladder) {
+        if (to == "CLAIMED") {
+            walkOk = walkOk && sessionClaim(sessions, devices, "s1", 200) == "OK"
+        } else {
+            walkOk = walkOk && sessionAdvance(sessions, "s1", to, "", 200) == "OK"
+        }
+    }
+    var e1: SessionInfo? = sessionResolve(sessions, "s1")
+    var oaddr = ""
+    if (e1 != null) {
+        oaddr = e1.ownerAddr
+    }
+    var completed = e1 != null && e1.state == "COMPLETED" && oaddr == "127.0.0.1:1"
+    var backstep = sessionAdvance(sessions, "s1", "NEGOTIATING", "", 300).indexOf("SES002") == 0
+    var afterTerminalOk = sessionCreate(sessions, shares, "s2", SessionRequest("tok1", "d3", ""), 300).indexOf("OK") == 0
+    var activeBlock = sessionCreate(sessions, shares, "s3", SessionRequest("tok1", "d4", ""), 300).indexOf("SES005") == 0
+    var s8 = sessionCreate(sessions, shares, "s8", SessionRequest("tok2", "d8", ""), 100) == "OK"
+    var skipRef = sessionAdvance(sessions, "s8", "CONNECTED", "", 400).indexOf("SES002") == 0
+    var expire = sessionAdvance(sessions, "s8", "TRANSFERRING", "", 99999999).indexOf("SES003") == 0
+    var e8: SessionInfo? = sessionResolve(sessions, "s8")
+    var expiredStamped = e8 != null && e8.state == "EXPIRED"
+    var afterExpire = sessionAdvance(sessions, "s8", "COMPLETED", "", 99999999).indexOf("SES002") == 0
+    var badTok = sessionCreate(sessions, shares, "s5", SessionRequest("nope", "d6", ""), 500).indexOf("SES004") == 0
+    var emptyDev = sessionCreate(sessions, shares, "s6", SessionRequest("tok2", "", ""), 500).indexOf("SES006") == 0
+    var purged = sessionPurgeExpired(sessions, 99999999) >= 3
+    return created && walkOk && completed && backstep && afterTerminalOk && activeBlock
+        && s8 && skipRef && expire && expiredStamped && afterExpire && badTok && emptyDev && purged
+}
+
 Int runCheck() {
     var reg = registryLeg()
     var plain = plainLeg()
@@ -246,7 +298,9 @@ Int runCheck() {
     println("resume=" + resume)
     var identity = identityLeg()
     println("identity=" + identity)
-    if (reg && persist && plain && secure && share && auth && resume && identity) {
+    var sess = sessionLeg()
+    println("session=" + sess)
+    if (reg && persist && plain && secure && share && auth && resume && identity && sess) {
         println("CHECK-OK")
         return 0
     }
@@ -784,6 +838,16 @@ Int runServer(List<String> args) {
         println(kload)
         return 1
     }
+    var sessions = new Map<String, SessionInfo>()
+    var nload = sessionLoadList(sessions, "server-registry.sessions.json")
+    if (nload.indexOf("SES041") == 0) {
+        println(nload)
+        return 1
+    }
+    var snPurge = sessionPurgeExpired(sessions, time.now())
+    if (snPurge > 0) {
+        controlSaveList("server-registry.sessions.json", sessionsJson(sessions, "", ""))
+    }
     var shares = new Map<String, ShareInfo>()
     var spath = "server-registry.shares.json"
     var load = shareLoadList(shares, spath)
@@ -816,7 +880,7 @@ Int runServer(List<String> args) {
     controlServe(port, devices, offers,
         "server-registry.devices.json", "server-registry.offers.json",
         shares, spath, controlKey, accounts, apath, controlSecret,
-        devkeys, "server-registry.devkeys.json")
+        devkeys, "server-registry.devkeys.json", sessions, "server-registry.sessions.json")
     return 0
 }
 

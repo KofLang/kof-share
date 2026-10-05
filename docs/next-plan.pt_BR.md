@@ -150,4 +150,52 @@ verify completo contra server.kf standalone com controlServe de 12 args),
 USERCHECK-OK 13 pernas, SHARECHECK-OK, SERVECHECK-OK, RELAY-OK,
 RESUMECHECK-OK, PERSIST-OK, CHECK-OK ×8 pernas JVM+Script, 25/25 arquivos
 check-clean isolados.
+### v2-Track C — sessão & sinalização (POUSADA 05/10, `SESSIONCHECK-OK`)
+
+O plano de controle aprende COORDENAÇÃO sem jamais carregar bytes. Domínio
+puro `control/session.kf`: TransferSession{id, shareId, token,
+ownerDeviceId, offerId, recipientDevice, recipientAddr, ownerAddr, state,
+createdAt, expiresAt, transport}; ciclo CREATED→CLAIMED→NEGOTIATING→
+CONNECTED→TRANSFERRING→COMPLETED com FAILED/CANCELLED por aresta e EXPIRED
+pelo relógio — UMA função de matriz legal compartilhada por rotas e golden;
+transição inválida = SES002 por nome, desconhecida SES001, carimbo do relógio
+SES003 no toque (mesma disciplina dos shares), token ruim SES004, recipient
+vazio SES006, uma sessão ATIVA por share SES005 (terminal libera o slot),
+arquivo corrompido SES041. Rotas (`app.kf`, controlServe de 14 args):
+POST /sessions (bearer — destinatário se anuncia com o token do share),
+GET /sessions?device=&state= (dono DESCOBRE por pull — sinalização v1
+honesto: a face web do runtime ainda não tem push de servidor, documentado
+não escondido), GET /sessions/:id (detentor do token OU bearer — destinatário
+lê a própria sessão sem conta), POST /sessions/:id/claim (só do dono; CLAIMED
+recusa pelo advance genérico — medido antes de pousar: o primeiro guarda
+`!holdsToken` deixava o DESTINATÁRIO se auto-claimar quando o POST também
+carregava conta — exatamente a confusão de autorização que o prompt proíbe),
+POST /sessions/:id/advance (face só-token para os passos do destinatário).
+ownerAddr é CARIMBADO do REGISTRO no claim (o plano é a autoridade de endereço
+— lei C2; o body não move o encontro). Persistência:
+server-registry.sessions.json (quase-atômico; purge no boot MANTÉM sessões
+TERMINAIS até o próprio TTL — medido: o purge antigo as descartava na hora e a
+perna de sobrevivência-a-restart recusou corretamente). CHECK perna 9
+`session=` (escada pura + todas recusas, verde JVM E Script). Golden
+`sessioncheck/checksession.kf` (portas 19380-19382, processo de serve REAL +
+plano REAL + restart): recusas na porta (AUTH001/SES004/SES006), escada pelo
+wire com ownerAddr carimbado verificado no JSON, campo transport (direct)
+registrado no CONNECTED, DADOS fluindo enquanto state==TRANSFERRING (bytes do
+downFetch idênticos), COMPLETED e regras de terminal, caminho CANCELLED,
+reload da tabela de sessões após RESTART do plano. Três bugs de golden
+pegados pelo RED (cada um com condição nomeada, não sono): claimPath false
+(chaves JSON afirmadas com nomes inventados — o discriminante é `state`, o id
+é `id`); restartSurvives false (janela do purge, acima); e o hang do RELAY do
+usercheck (três reproduções + thread dumps: a THREAD spawn começa ~200ms após
+a instrução — o cliente discava o listener do relay antes de relayServeOn ter
+aceito/discado, JVMs disputadas cruzavam um pump meio-construído; correção =
+flag-file como PRIMEIRA instrução do spawn, cliente disca só depois de vê-lo —
+a linguagem não tem connect-com-timeout e não inventei um; spawnServe do
+servecheck confiava em marcador de log STALE — deletar-e-sincronizar + prova
+de porta bindável antes de cada spawn, e o usercheck ganhou servePortClear nas
+quatro pernas de serve). Sem regressão: USERCHECK-OK (15 impressões),
+IDENTITYCHECK-OK, SHARECHECK-OK, SERVECHECK-OK, RESUMECHECK-OK, PERSIST-OK,
+RELAY-OK, HTTPCHECK-OK + RESTART-OK (ciclo standalone completo com
+controlServe de 14 args), CHECK-OK 9 pernas × JVM+Script, 27/27 arquivos
+check-clean isolados.
 

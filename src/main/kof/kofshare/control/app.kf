@@ -3,6 +3,7 @@ package kofshare.control
 import kofshare.control.registry
 import kofshare.control.share
 import kofshare.control.auth
+import kofshare.control.session
 import kof.json
 import kof.security
 import kof.time
@@ -21,7 +22,7 @@ import kof.auth
 // /s/<token> is the authorization gate (shareTouch decides; only "OK"
 // serves offer metadata). The SECRET stays a Secret handle end to end.
 
-void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferInfo> offers, String dpath, String opath, Map<String, ShareInfo> shares, String spath, Secret controlKey, Map<String, Account> accounts, String apath, String controlSecret, Map<String, DeviceKey> devkeys, String kpath) {
+void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferInfo> offers, String dpath, String opath, Map<String, ShareInfo> shares, String spath, Secret controlKey, Map<String, Account> accounts, String apath, String controlSecret, Map<String, DeviceKey> devkeys, String kpath, Map<String, SessionInfo> sessions, String npath) {
     var app = web.app()
 
     app.get("/devices") {
@@ -308,6 +309,122 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
             controlSaveList(spath, sharesJson(shares))
         }
         return "SHARE-REVOKED: " + param("id")
+    }
+
+    // ── TRACK C — session signaling (the plane COORDINATES, never carries
+    // bytes). POST /sessions: recipient (bearer-gated — the same account law
+    // as every mutation) opens the rendezvous with the share TOKEN plus its
+    // own device identity; the owner learns about it ONLY through
+    // GET/sessions?device=self&state=CREATED (pull — the runtime web face has
+    // no server-push yet, honest v1 signaling; SSE is a Kof4j face already
+    // available server-side for Track E's page). Role matrix enforced below:
+    // CLAIMED is owner-only (bearer); the token holder may drive
+    // NEGOTIATING/CONNECTED/TRANSFERRING/FAILED/CANCELLED; COMPLETED belongs
+    // to whoever holds proof (either face); persistence after every mutation.
+    app.post("/sessions") {
+        var g = controlAuthGate(accounts)
+        if (g != "OK") {
+            return g
+        }
+        var req = json.decode<SessionRequest>(body())
+        var sid = "se" + security.randomHex(8)
+        var r = sessionCreate(sessions, shares, sid, req, time.now())
+        if (r != "OK") {
+            return r
+        }
+        if (npath.length() > 0) {
+            controlSaveList(npath, sessionsJson(sessions, "", ""))
+        }
+        return "SESSION-CREATED: " + sid
+    }
+
+    app.get("/sessions") {
+        var g = controlAuthGate(accounts)
+        if (g != "OK") {
+            return g
+        }
+        var dv: String? = query("device")
+        var st: String? = query("state")
+        var device = ""
+        if (dv != null) {
+            device = dv
+        }
+        var state = ""
+        if (st != null) {
+            state = st
+        }
+        return sessionsJson(sessions, device, state)
+    }
+
+    app.get("/sessions/:id") {
+        var e: SessionInfo? = sessionResolve(sessions, param("id"))
+        if (e == null) {
+            return "SES001: unknown session " + param("id")
+        }
+        var tk: String? = query("token")
+        var holdsToken = tk != null && tk == e.token
+        if (!holdsToken) {
+            var g = controlAuthGate(accounts)
+            if (g != "OK") {
+                return g
+            }
+        }
+        return json.encode(e)
+    }
+
+    app.post("/sessions/:id/claim") {
+        var g = controlAuthGate(accounts)
+        if (g != "OK") {
+            return g
+        }
+        var r = sessionClaim(sessions, devices, param("id"), time.now())
+        if (r != "OK") {
+            return r
+        }
+        if (npath.length() > 0) {
+            controlSaveList(npath, sessionsJson(sessions, "", ""))
+        }
+        var e: SessionInfo? = sessionResolve(sessions, param("id"))
+        if (e == null) {
+            return "SES001: unknown session " + param("id")
+        }
+        return "SESSION-STATE: CLAIMED"
+    }
+
+    // Advance: token-holder (recipient client) OR account bearer (owner) —
+    // SES003/SES002 refusals ride the pure matrix, never re-decided here.
+    app.post("/sessions/:id/advance") {
+        var e: SessionInfo? = sessionResolve(sessions, param("id"))
+        if (e == null) {
+            return "SES001: unknown session " + param("id")
+        }
+        var tk: String? = query("token")
+        var holdsToken = tk != null && tk == e.token
+        if (!holdsToken) {
+            var g = controlAuthGate(accounts)
+            if (g != "OK") {
+                return g
+            }
+        }
+        var a = json.decode<AdvanceRequest>(body())
+        var to = a.to
+        if (to == "CLAIMED") {
+            // CLAIMED has its own door ONLY (sessionClaim stamps the owner
+            // address from the registry) — never the generic advance, not
+            // even for a bearer, and DEFINITELY not for the token holder:
+            // the recipient cannot pick up its own request (measured 05/10:
+            // the first guard was !holdsToken, which let exactly that pass
+            // whenever the recipient's POST also carried an account).
+            return "SES002: use /claim to pick up a session"
+        }
+        var r = sessionAdvance(sessions, param("id"), to, a.transport, time.now())
+        if (r != "OK") {
+            return r
+        }
+        if (npath.length() > 0) {
+            controlSaveList(npath, sessionsJson(sessions, "", ""))
+        }
+        return "SESSION-STATE: " + to
     }
 
     app.listen(port)

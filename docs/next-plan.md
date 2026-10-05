@@ -149,4 +149,51 @@ No-regression: HTTPCHECK-OK + RESTART-OK (full seed→restart→verify against
 standalone server.kf with the 12-arg controlServe), USERCHECK-OK 13 legs,
 SHARECHECK-OK, SERVECHECK-OK, RELAY-OK, RESUMECHECK-OK, PERSIST-OK, CHECK-OK
 ×8 legs JVM+Script, 25/25 files check-clean standalone.
+### v2-Track C — session & signaling (LANDED 05/10, `SESSIONCHECK-OK`)
+
+The control plane learns COORDINATION without ever carrying bytes. Pure
+domain `control/session.kf`: TransferSession{id, shareId, token,
+ownerDeviceId, offerId, recipientDevice, recipientAddr, ownerAddr, state,
+createdAt, expiresAt, transport}; lifecycle CREATED→CLAIMED→NEGOTIATING→
+CONNECTED→TRANSFERRING→COMPLETED with FAILED/CANCELLED per edge and EXPIRED
+by clock — ONE legal-matrix function shared by routes and golden; invalid
+transition = SES002 by name, unknown SES001, clock-stamp SES003 on touch
+(same discipline as shares), bad-token SES004, empty-recipient SES006,
+one-ACTIVE-session-per-share SES005 (terminal frees the slot), corrupt file
+SES041. Routes (`app.kf`, 14-arg controlServe): POST /sessions (bearer —
+recipient announces itself with the share token), GET /sessions?device=&state=
+(owner DISCOVERS via pull — honest v1 signaling: the runtime web face has no
+server-push yet, documented not hidden), GET /sessions/:id (token holder OR
+bearer — recipient reads its own session without an account),
+POST /sessions/:id/claim (owner-only; CLAIMED refuses through generic
+advance — measured pre-landing: the first guard `!holdsToken` let the
+recipient SELF-CLAIM whenever its POST also carried an account, exactly the
+authorization confusion the prompt forbids), POST /sessions/:id/advance
+(token-only face for the recipient steps). ownerAddr is STAMPED from the
+REGISTRY at claim (the plane is the address authority — C2 law; a body cannot
+move the rendezvous). Persistence: server-registry.sessions.json (quasi-atomic,
+purge-at-boot keeps TERMINAL sessions until their own TTL — measured: the
+first purge dropped terminal entries immediately and the restart-survival leg
+correctly refused it). CHECK leg 9 `session=` (pure ladder + all refusals,
+green JVM AND Script). Golden `sessioncheck/checksession.kf` (ports
+19380-19382, REAL serving process + REAL plane + restart): door refusals
+(AUTH001/SES004/SES006), ladder over the wire incl. stamped ownerAddr
+verified in the JSON, transport field (direct) recorded at CONNECTED,
+DATA moves while state==TRANSFERRING (downFetch bytes identical), COMPLETED
+then terminal rules, CANCELLED path, session table reload after plane RESTART.
+Three golden bugs caught BY THE RED (each fixed with a named condition, not
+a sleep): claimPath false (JSON keys asserted with invented names — the
+discriminator is `state`, the id field `id`); restartSurvives false (purge
+window, above); and the usercheck RELAY hang (three reproductions + thread
+dumps: the Kof spawn THREAD starts ~200ms after the statement — the client
+dialed the relay listener before relayServeOn had accepted/dialed, contended
+JVMs crossed a half-set-up pump; fix = flag-file FIRST statement in the spawn,
+client dials only after seeing it — the language has no connect-with-timeout
+and I did not invent one; also servecheck's spawnServe trusted a STALE log
+marker — delete-then-sync + bindable-port proof before every spawn, and
+usercheck got servePortClear before all four serve legs). No-regression:
+USERCHECK-OK (15 prints), IDENTITYCHECK-OK, SHARECHECK-OK, SERVECHECK-OK,
+RESUMECHECK-OK, PERSIST-OK, RELAY-OK, HTTPCHECK-OK + RESTART-OK (full
+standalone-server cycle with the 14-arg controlServe), CHECK-OK 9 legs ×
+JVM+Script, 27/27 files check-clean standalone.
 
