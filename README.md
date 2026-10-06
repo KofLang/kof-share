@@ -107,10 +107,11 @@ paths). Proof per property: `SECURITY` section of `STATUS.md` and each golden.
 - **Desktop GUI, billing, Android, central storage**: out of scope by design.
 - `web.app().listen()` binds 0.0.0.0 (runtime contract): the plane page is
   LAN-reachable by construction; hardening is a known open item, not hidden.
-- Upstream compiler issues FILED: KofLang/Kof4j#770 (`COMP002` nullable
-  parameters) and #771 (HTTP `ConnectException` escape) — packets in
-  `docs/upstream/`. `compiler_upstream_pending =
-  COMP002` — workarounds proven, product not blocked.
+- Upstream compiler issues CLOSED/FIXED (verified by reproduction A/B
+  06/10): KofLang/Kof4j#770 (`COMP002` nullable parameters — ledger
+  §609+§610+§612) and #771 (HTTP `ConnectException` escape — §608). The
+  permanent reproduction packets stay in `docs/upstream/`; product
+  workarounds stay (tested, correct, wire-independent).
 
 ## Tests
 
@@ -125,5 +126,6 @@ Per-suite markers: `UXCHECK-OK`, `INTEGRATIONCHECK-OK`, `FOLDERCHECK-OK`,
 `SHARECHECK-OK`, `PERSIST-OK`, `RELAY-OK`, `HTTPCHECK-OK`, `RESTART-OK`.
 
 The compiler history of this product (bugs caught by the goldens, with
-reproductions) is in the Kof4j ledger (`§583/§588/§590/§593/§603`, and the
-two pending packets under `docs/upstream/`).
+reproductions) is in the Kof4j ledger (`§583/§588/§590/§593/§603` + the
+#770/#771 family §608/§609/§610/§612); the permanent reproduction packets live
+under `docs/upstream/`.

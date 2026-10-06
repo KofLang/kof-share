@@ -345,6 +345,10 @@ main() {
         "fc-docs", 1, travHash, travSig, resourceIdFor(devId, "fc-docs", 1, travHash),
         "fc-docs", 0, "DIRECTORY", dirEntriesJson(travEntries))), auth)
     var tamperOk = tamper.indexOf("REG016") == 0 && trav.indexOf("REG015") == 0
+    if (!tamperOk) {
+        println("tamperBody=" + tamper.substring(0, 80))
+        println("travBody=" + trav.substring(0, 80))
+    }
     println("planeRefusesManifests=" + tamperOk)
     ok = ok && tamperOk
 

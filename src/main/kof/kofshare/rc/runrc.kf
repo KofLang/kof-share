@@ -93,16 +93,21 @@ void main(List<String> args) {
     steps = steps + 1
     if (!step("HTTPCYCLE-OK",
         "rm -f server-registry.*.json server-control.bearer kofshare-server.log; " +
+        "k(){ W=$1; for t in $(seq 1 60); do O=$(ss -tlnp 2>/dev/null | grep ':18322 ' | grep -oE 'pid=[0-9]+' | cut -d= -f2); [ -z \"$O\" ] && return 0; for X in $W $O; do kill $X 2>/dev/null; done; sleep 0.5; done; " +
+        "for t in $(seq 1 60); do O=$(ss -tlnp 2>/dev/null | grep ':18322 ' | grep -oE 'pid=[0-9]+' | cut -d= -f2); [ -z \"$O\" ] && return 0; for X in $W $O; do kill -9 $X 2>/dev/null; done; sleep 0.5; done; " +
+        "echo 'HTTPCYCLE-FAIL port-stuck'; exit 1; }; " +
+        "f=0; for t in $(seq 1 60); do ss -tln 2>/dev/null | grep -q ':18322 ' || { f=1; break; }; sleep 0.5; done; " +
+        "[ $f -eq 1 ] || { echo 'HTTPCYCLE-FAIL port-busy-before-boot'; exit 1; }; " +
         "nohup " + j + " run src/main/kof/kofshare/server/server.kf > kofshare-server.log 2>&1 & P=$!; " +
-        "r=0; for t in $(seq 1 240); do if ss -tln 2>/dev/null | grep -q ':18322 '; then r=1; break; fi; sleep 0.5; done; " +
-        "[ $r -eq 1 ] || { echo 'HTTPCYCLE-FAIL no plane'; exit 1; }; " +
-        j + " run src/main/kof/kofshare/httpcheck/checkhttp.kf 2>&1 | grep -q HTTPCHECK-OK || { echo 'HTTPCYCLE-FAIL httpcheck'; exit 1; }; " +
-        "kill $P 2>/dev/null; wait $P 2>/dev/null; sleep 1; " +
+        "r=0; for t in $(seq 1 240); do if ss -tln 2>/dev/null | grep -q ':18322 '; then r=1; break; fi; kill -0 $P 2>/dev/null || { echo 'HTTPCYCLE-FAIL plane-died-before-bind'; exit 1; }; sleep 0.5; done; " +
+        "[ $r -eq 1 ] || { echo 'HTTPCYCLE-FAIL no plane'; k $P; exit 1; }; " +
+        j + " run src/main/kof/kofshare/httpcheck/checkhttp.kf 2>&1 | grep -q HTTPCHECK-OK || { echo 'HTTPCYCLE-FAIL httpcheck'; k $P; exit 1; }; " +
+        "k $P; wait $P 2>/dev/null; " +
         "nohup " + j + " run src/main/kof/kofshare/server/server.kf > kofshare-server.log 2>&1 & P=$!; " +
-        "r=0; for t in $(seq 1 240); do if ss -tln 2>/dev/null | grep -q ':18322 '; then r=1; break; fi; sleep 0.5; done; " +
-        "[ $r -eq 1 ] || { echo 'HTTPCYCLE-FAIL no reborn'; exit 1; }; " +
-        j + " run src/main/kof/kofshare/restart/probe.kf 2>&1 | grep -q RESTART-OK || { echo 'HTTPCYCLE-FAIL probe'; exit 1; }; " +
-        "kill $P 2>/dev/null; wait $P 2>/dev/null; echo HTTPCYCLE-OK")) {
+        "r=0; for t in $(seq 1 240); do if ss -tln 2>/dev/null | grep -q ':18322 '; then r=1; break; fi; kill -0 $P 2>/dev/null || { echo 'HTTPCYCLE-FAIL plane-died-before-rebind'; exit 1; }; sleep 0.5; done; " +
+        "[ $r -eq 1 ] || { echo 'HTTPCYCLE-FAIL no reborn'; k $P; exit 1; }; " +
+        j + " run src/main/kof/kofshare/restart/probe.kf 2>&1 | grep -q RESTART-OK || { echo 'HTTPCYCLE-FAIL probe'; k $P; exit 1; }; " +
+        "k $P; wait $P 2>/dev/null; echo HTTPCYCLE-OK")) {
         failed = failed + " httpcycle"
     }
     steps = steps + 1

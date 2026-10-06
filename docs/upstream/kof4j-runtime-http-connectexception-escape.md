@@ -1,6 +1,13 @@
 # HTTP-ERR-ESCAPE — `http.get` lets raw `java.net.ConnectException` escape `catch (String e)`
 
-- **Status:** UPSTREAM FILED — HTTP-ERR-ESCAPE -> KofLang/Kof4j#771 FILED 05/10 (this file remains the permanent reproduction packet) (same dirty-tree note as COMP002 packet).
+- **Status:** UPSTREAM FIXED — issue KofLang/Kof4j#771 CLOSED/COMPLETED 05/10; ledger
+  §608 records it as the SAME root as §598 (the #756 wrap already landed); the
+  original report measured a stale jar. THIS FILE REMAINS THE PERMANENT
+  REPRODUCTION PACKET.
+- **Verified 06/10 (this lane):** rebuilt tip `f2629e32d` runs the repro verbatim
+  (`try { http.get(dead) } catch (String e)`) → `HTTPRESULT=caught`.
+  The product `net.connect` probe (`healthNow`) STAYS — it is a correct
+  liveness probe, not a workaround to remove.
 - **Found by:** KofShare v2-Track I (05/10) while probing a dead control plane.
 
 ## Symptom

@@ -1,10 +1,20 @@
 # COMP002 — JVM backend frame crash: `T?` value read through compound `&&` guards or threaded through branches
 
-- **Status:** UPSTREAM FILED — COMP002 -> KofLang/Kof4j#770 FILED 05/10 (this file remains the permanent reproduction packet) (repo tree currently dirty with §603/§604
-  work by the same lane; entry to be pasted into `docs/bugs-and-gaps/known-bugs.md`
-  as §605 when the tree is clean, then opened as a GitHub issue at `KofLang/Kof4j`).
+- **Status:** UPSTREAM FIXED — issue KofLang/Kof4j#770 CLOSED/COMPLETED; ledger
+  §609 (std-namespace arg unwrap, `NullableNarrowingStdCallE2ETest` 4/4),
+  §610 (residual `if`-expression + call-boundary faces, `NullableGuardFrameE2ETest`
+  13/13) and §612 (native face, issue #772) close the family. The proposed
+  numbers §605/§606 were consumed by other entries while the tree merged; the
+  registry owner's numbering stands. THIS FILE REMAINS THE PERMANENT
+  REPRODUCTION PACKET.
+- **A/B verified 06/10 (this lane):** jar filed (05/10 build, kept at
+  `/tmp` during the check) → both reproducers crash with the exact
+  `frame crash`; rebuilt tip `f2629e32d` → `comp002-r2` prints `r=42`,
+  `comp002-r1` prints `{"a":"5","b":"5"}` + `{"a":"parent","b":"x"}` — the §609
+  golden verbatim. Full KofShare battery re-run on the fixed jar:
+  `RC-CHECK-OK steps=23` (`/tmp` log 06/10) — RC VERIFIED on both jars.
 - **Found by:** KofShare v2-Track G/H (05/10), three independent crash sites.
-- **Compiler:** kof-cli 0.5.0-beta (tip measured 05/10). Owner lane: security/connectors
+- **Compiler:** kof-cli 0.5.0-beta (reported 05/10 at the 05/10 tip; FIXED verified 06/10 at `f2629e32d`). Owner lane: security/connectors
   `192.150.15.15:9092` (same lane that landed §603 — related phase, DIFFERENT root shape:
   §603 was the SAM `invoke` descriptor; this one fires WITHOUT any function types).
 - **Product impact:** NONE today — every site has a proven workaround (coalesce the
@@ -122,4 +132,4 @@ current jar with the exact `frame crash` text.
 2. Never pass a narrowed nullable PARAMETER into a call argument inside a
    later branch; rebind first.
 
-<!-- Keep in sync with STATUS.md "upstream: COMP002 pending" -->
+<!-- Keep in sync with STATUS.md "upstream: FIXED/verified" -->
