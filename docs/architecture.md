@@ -1,7 +1,8 @@
 # KofShare — architecture (100% Kof)
 
-status: v2 RELEASE CANDIDATE (05/10) — every plane below is implemented and
-golden-proven; per-track proofs in `STATUS.md`.
+status: v2 RELEASE (cut 06/10) — every plane below is implemented and
+golden-proven on the pinned compiler (`f2629e32d`, jar sha256 `0b1893b4…`);
+per-track proofs in `STATUS.md`, release battery `RC-CHECK-OK steps=23`.
 last: decision `D-KOFSHARE-100KOF` (Kof repo, 01/10/2026): KofShare is a 100%
 Kof application; JVM interop is NOT a product route. Priority law:
 correção → compatibilidade → segurança → testes → simplicidade → feature.

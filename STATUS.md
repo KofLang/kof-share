@@ -3,12 +3,12 @@ English below
 # KofShare — STATUS (05/10, v2 RELEASE CANDIDATE)
 
 ```text
-state                v2 release candidate (RC-CHECK-OK steps=23, medido 05/10)
+state                v2 RELEASE (corte 06/10; RC-CHECK-OK steps=23 na bateria final)
 domain               file/directory sharing — link, cliente, autorização, conexão direta
-last                 v2 Tracks A/C/D/E/F/G/H/I/J + RC LANDED (05/10)
+last                 v2 RELEASE cortado 06/10 (pin verificado + docs de corte)
 doing                aguardando corte da mantenedora para marcar v2
-next                 decisão pós-RC da mantenedora; bump opcional do jar exige bateria nova (§8)
-proof                RC-CHECK-OK steps=23 (rc/runrc.kf) — ver §RC abaixo
+next                 votos D7–D10 (docs/post-v2-architecture.md); bump de pin exige bateria completa
+proof                RC-CHECK-OK steps=23 na arvore do corte (rc-cut.log, 06/10, jar pin f2629e32d)
 result               share/receive/stop em 5 linhas; pastas; browser; relay honesto
 tests                14 pernas --check JVM+Script; 40/40 arquivos check-clean standalone
 goldens              USER IDENTITY SESSION CONNECT BROWSER RESOURCE SERVE RESUME
@@ -17,7 +17,9 @@ compiler_changes     nenhum produto depende de tip não-lançado; D-KOF-SIGN já
 upstream             COMP002 (#770) + HTTP-ERR-ESCAPE (#771) — UPSTREAM FIXED/VERIFIED 06/10 (§609/§610/§612 + §608); packets in docs/upstream/
 known_gaps           envelope selado em árvore (adiado, documentado); STUN/ICE
                      (reservado, não fingido); web.listen 0.0.0.0 (contrato runtime)
-release_candidate    SIM — todo tip que imprimir RC-CHECK-OK é RC por definição
+release_candidate    FECHADO — cortado como v2 RELEASE
+compiler_pin         kof4j f2629e32d / jar sha256 0b1893b4e4de365c… (byte-identico ao medido)
+candidate_20a3207e1  NAO REPINADO: 3 baterias, 3 falhas de corrida em steps distintos (folder/relay/ux), todas verdes isoladas; f2629e32d verde completo na arvore final
 ```
 
 ## Pronto e MEDIDO neste tip (output esperado abaixo)
@@ -74,6 +76,39 @@ LANE FECHADA 06/10 — upstream: os DOIS pacotes de `docs/upstream/` estão VERI
 (b) Limites honestos registrados na §10 do architecture: envelope selado sobre árvores de diretório adiado (documentado, não fingido), `web.app().listen()` binda 0.0.0.0 (contrato do runtime), STUN/ICE reservado.
 
 
+
+## Corte do v2 (06/10) — medição do candidate e decisão de pin
+
+`f2629e32d` foi o jar verificado pelo RC. O HEAD `20a3207e1` (7 commits
+à frente — superfície image/docs/test) foi medido como superfície de release
+independente, na ordem exigida (barato→caro):
+
+| Gate no candidate `20a3207e1` | Resultado |
+|---|---|
+| `--check` JVM + Script | ✅ CHECK-OK ×2 |
+| sweep standalone 40/40 | ✅ 40/40 |
+| unit goldens (REGCHECK, TAMPER) | ✅ |
+| E2E JVM + Script | ✅ |
+| bateria completa (tentativa 1) | ❌ FOLDER — substring do MEU print de diagnóstico (bug de harness, corrigido para `brief()`) |
+| bateria (tentativa 2) | ❌ RELAY — `BindException` em 19421: relaycheck era o único golden sem sweep de boot (lei Track C não estava aplicada nele); endurecido |
+| bateria (tentativa 3) | ❌ UX — face 19432 recusando sob carga; standalone no MESMO jar → `UXCHECK-OK` |
+| goldens isolados no candidate | todos verdes, repetidas vezes |
+
+Classificação das três falhas: **ENVIRONMENT/LOAD RACE** na bateria (passos
+distintos, sempre verdes em isolamento), não regressão atribuída aos 7
+commits nem ao produto. Decisão: **NÃO repinar** — `HEAD novo não é
+automaticamente melhor que o jar verificado`. Pin permanece `f2629e32d`
+(sha256 `0b1893b4e4de365cacd3d4cdfcdd2bcd066fcd9f8ca2352910077a07107effe0`,
+backup byte-exato mantido). A bateria final do CORTE foi revalidada na
+árvore final (com os endurecimentos de harness/infra): **`RC-CHECK-OK
+steps=23` 23/23** (`rc-cut.log`, jar pin restaurado, zero carga concorrente).
+
+Endurecimentos de infra que o corte carregou (zero mudança de produto/contrato):
+`rc/runrc.kf` kill pelo dono real da porta (wrapper × child JVM; readiness
+observável; port-free antes de boot); `foldercheck` print de corpo apenas no
+fail, via `brief()`; `relaycheck` sweep+await-bindable no boot (a lei que os
+outros goldens já tinham). Se o bump `20a3207e1` um dia for desejado, medir
+de novo — com estes endurecimentos presentes — antes de re-pinar.
 ---
 
 # English

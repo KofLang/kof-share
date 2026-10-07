@@ -4,6 +4,8 @@ import kofshare.relay
 import kofshare.session
 import kofshare.domain
 import kof.keyExchange
+import kof.shell
+import kof.time
 import kof.secrets
 import kof.security
 
@@ -152,7 +154,80 @@ Boolean tamperLeg(String src, Int resume, Int[] data) {
     return ok
 }
 
+Int[] myPorts() {
+    var a = new Int[4]
+    a[0] = 19421
+    a[1] = 19422
+    a[2] = 19423
+    a[3] = 19424
+    return a
+}
+
+// Startup discipline of the v2 goldens (Track C law): sweep the golden-owned
+// ports and WAIT until bindable — never assume the previous battery step's
+// JVM released sockets instantly (measured 06/10: relay flaked on a stale
+// LISTEN inside the full RC battery; standalone never reproduced).
+void sweepAndAwaitFree() {
+    var attempt = 0
+    while (attempt < 120) {
+        var res = shell.run("ss", listOf("-tlnp"))
+        var lines = res.stdout.split("\n")
+        for (var line in lines) {
+            if (line.indexOf("LISTEN") < 0) {
+                continue
+            }
+            var mine = false
+            for (var mp in myPorts()) {
+                if (line.indexOf(":" + mp + " ") >= 0) {
+                    mine = true
+                }
+            }
+            if (!mine) {
+                continue
+            }
+            var pi = line.indexOf("pid=")
+            if (pi >= 0) {
+                var num = ""
+                var j = pi + 4
+                while (j < line.length()) {
+                    var cv = line.charAt(j)
+                    if (cv < 48 || cv > 57) {
+                        break
+                    }
+                    num = num + line.substring(j, j + 1)
+                    j = j + 1
+                }
+                if (num.length() > 0) {
+                    shell.run("kill", listOf("-9", num))
+                }
+            }
+        }
+        var bound = 0
+        try {
+            var pr = net.listen(directPeerPort())
+            pr.close()
+            bound = bound + 1
+        } catch (String e) {
+            bound = 0
+        }
+        try {
+            var pr2 = net.listen(tamperRelayPort())
+            pr2.close()
+            bound = bound + 1
+        } catch (String e) {
+            bound = 0
+        }
+        if (bound == 2) {
+            return
+        }
+        time.sleep(500)
+        attempt = attempt + 1
+    }
+    throw "RELAY-ERR: ports not free after sweep"
+}
+
 main() {
+    sweepAndAwaitFree()
     var src = "relaycheck-src.bin"
     var resume = 100000
     var data = makeSource()

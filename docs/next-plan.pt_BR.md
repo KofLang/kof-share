@@ -107,10 +107,7 @@ e ABRE tarefa explícita no Kof4j — nunca workaround arquitetural silencioso):
                                completa do produto, arquitetura v2,
                                quick-start EN+PT, limites honestos na §10 do
                                architecture + Limits do README)
-10. Release candidate         `rc/runrc.kf` (24 passos: sweep check-clean da
-                               árvore inteira, CHECK/E2E JVM E Script, todos
-                               os goldens incluindo browser/UX/integração com
-                               processos reais) → RC-CHECK-OK
+10. Release candidate         CORTADO 06/10 — v2 = RELEASE. Pin kof4j `f2629e32d` (jar sha256 0b1893b4…); candidate `20a3207e1` medido e NÃO repinado (3 races de carga em 3 baterias, passos verdes em isolamento; lei: HEAD ≠ automaticamente melhor que o jar verificado). Bateria final do corte na árvore endurecida: RC-CHECK-OK steps=23.
 ```
 
 Não-agora, dito pelo prompt: billing, GUI desktop, Android, storage central.
