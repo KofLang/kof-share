@@ -114,6 +114,11 @@ explicit Kof4j task — no silent architectural workaround):
                                  the hardened tree: RC-CHECK-OK steps=23.
 ```
 
+Post-v2 program gate: the SHAPE of what comes next is DECIDED and
+recorded in `docs/post-v2-architecture.md` (D7–D10, 06/10) — no new track
+starts without one of its registered triggers firing (GUI scheduling,
+sealed-tree protocol decision, compiler pin bump).
+
 Not-now, stated by the prompt: billing, desktop GUI, Android, central
 storage. The architecture must not FORECLOSE them (Account/Organization/
 Policy/Usage/RelayQuota/Audit stay addable without a protocol rewrite) — the

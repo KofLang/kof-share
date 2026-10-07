@@ -545,3 +545,16 @@ goldens manualmente colidiu na porta compartilhada do plano — a lei fica
 registrada: nunca paralelizar uma segunda sessão de compilação/serve com a
 bateria RC. A bateria é o instrumento de release: qualquer tip futuro que
 imprima `RC-CHECK-OK` é RC por definição; o que não imprimir, não é.
+
+
+## 6. PÓS-V2 (decidido 06/10, sem código)
+
+A arquitetura depois do v2 é um REGISTRO DE DECISÃO:
+`docs/post-v2-architecture.md` (+ .pt_BR.md). D7 papel do plano de controle
+= coordenador central / zero conteúdo (ACEITA; análise de HA RESERVADA). D8
+cliente definitivo = CLI + futura GUI desktop sobre kofshare-core, opção C
+(ACEITADA; extração ADIADA ao agendamento). D9 tabela de posse + lista NUNCA
+(ACEITA). D10 DIRECT→(NAT/ICE reservado)→RELAY para sempre; transporte
+cresce só aditivamente (ACEITA/RESERVADO). Envelope selado em árvore:
+ADIADO com sua pergunta de protocolo. Isto fecha o programa: nada aqui é
+track; tracks começam somente quando um gatilho registrado dispara.

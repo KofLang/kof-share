@@ -157,6 +157,9 @@ src/main/kof/kofshare/
 
 ## 10. Known gaps (honest)
 
+The categories and decision procedures live in
+`docs/post-v2-architecture.md` (D7–D10 DECIDIDO 06/10).
+
 * COMP002 + HTTP-ConnectException upstream packets: `docs/upstream/`.
 * Sealed-envelope directory trees: deferred, documented.
 * `web.app().listen()` binds 0.0.0.0 (runtime contract) — plane page is

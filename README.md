@@ -121,6 +121,12 @@ java -jar $J run src/main/kof/kofshare/cli/cli.kf --check          # 14 legs
 java -jar $J run src/main/kof/kofshare/rc/runrc.kf                 # release battery → RC-CHECK-OK steps=23
 ```
 
+The post-v2 architecture is a recorded DECISION (D7–D10, 06/10): central
+control plane / decentralized data plane forever, CLI+desktop GUI over one
+kofshare-core, ownership table + NEVER-list of secrets, session.transport
+grows additively only — see `docs/post-v2-architecture.md`. The cut itself
+changed no contract.
+
 Per-suite markers: `UXCHECK-OK`, `INTEGRATIONCHECK-OK`, `FOLDERCHECK-OK`,
 `RESOURCECHECK-OK`, `BROWSERCHECK-OK`, `CONNECTCHECK-OK`, `SESSIONCHECK-OK`,
 `IDENTITYCHECK-OK`, `USERCHECK-OK`, `SERVECHECK-OK`, `RESUMECHECK-OK`,
