@@ -7,7 +7,7 @@ state                v2 RELEASE (corte 06/10; RC-CHECK-OK steps=23 na bateria fi
 domain               file/directory sharing — link, cliente, autorização, conexão direta
 last                 v2 RELEASE cortado 06/10 (pin verificado + docs de corte)
 doing                aguardando corte da mantenedora para marcar v2
-next                 nada a implementar: D7–D10 DECIDIDAS em docs/post-v2-architecture.md (06/10); próxima ação é agendamento (GUI/sealed-tree/bump de pin), cada uma com procedimento já registrado
+next                 go da mantenedora para FASE 1 (desktop shell) — plano com ajustes ancorados no pin em docs/desktop/discovery.md §9; D8 trigger disparado (GUI scheduled)
 proof                RC-CHECK-OK steps=23 na arvore do corte (rc-cut.log, 06/10, jar pin f2629e32d)
 result               share/receive/stop em 5 linhas; pastas; browser; relay honesto
 tests                14 pernas --check JVM+Script; 40/40 arquivos check-clean standalone
