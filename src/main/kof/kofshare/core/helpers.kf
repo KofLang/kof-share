@@ -1,0 +1,312 @@
+package kofshare.core
+
+// kofshare-core extraction (post-v2 D8 trigger FIRED by the desktop
+// gigaprompt; docs/desktop/discovery.md §8-E). The CLI-process helpers the
+// desktop daemon ALSO needs, moved VERBATIM from kofshare/cli/cli.kf — zero
+// behavior change, proven by `RC-CHECK-OK steps=23` on this commit with no
+// golden edit (goldens import kofshare.cli only for the verb main, and the
+// two kept-shape wrappers below preserve the names cli.kf uses internally).
+// Scope law: identity/auth/crypto/transfer do NOT live here — only the
+// process/lifecycle/human-layer helpers, the exact set discovery §8-E named.
+
+import kof.http
+import kof.time
+import kof.process
+import kof.shell
+import kofshare.identity
+
+// Config precedent: kofshare-cli.config (jar=…, workdir=…) read by key.
+String selfConfigPath() {
+    if (File("kofshare-cli.config").exists()) {
+        return "kofshare-cli.config"
+    }
+    return ""
+}
+
+String selfConfigField(String key) {
+    var p = selfConfigPath()
+    if (p.length() == 0) {
+        return ""
+    }
+    var t = File(p).readText()
+    if (t == null) {
+        return ""
+    }
+    var lines = t.split("\n")
+    var i = 0
+    while (i < lines.size) {
+        var ln = lines[i]
+        if (ln.indexOf(key + "=") == 0) {
+            return ln.substring(key.length() + 1, ln.length())
+        }
+        i = i + 1
+    }
+    return ""
+}
+
+String selfJar() {
+    return selfConfigField("jar")
+}
+
+// The plane bearer lives next to the registry (control plane's own lane).
+String localBearer() {
+    var f = File("server-control.bearer")
+    if (!f.exists()) {
+        return ""
+    }
+    var t = f.readText()
+    if (t == null) {
+        return ""
+    }
+    return t
+}
+
+// LIVENESS by TCP connect, NOT http.get: the http module lets a raw
+// java.net.ConnectException escape Kof's `catch (String e)` (measured;
+// upstream HTTP-ERR-ESCAPE §608 — the net module DOES wrap refusals into
+// named String errors, so the port probe is the safe shape).
+// hostOfBase/basePort split "http://h:p" by hand (no url parser in stdlib).
+String baseHost(String base) {
+    var cut = base.indexOf("//")
+    var hp = base.substring(cut + 2, base.length())
+    var colon = hp.indexOf(":")
+    if (colon < 0) {
+        return hp
+    }
+    return hp.substring(0, colon)
+}
+
+Int basePort(String base) {
+    var cut = base.indexOf("//")
+    var hp = base.substring(cut + 2, base.length())
+    var colon = hp.indexOf(":")
+    var rest = hp.substring(colon + 1, hp.length())
+    var slash = rest.indexOf("/")
+    if (slash >= 0) {
+        rest = rest.substring(0, slash)
+    }
+    return math.parseInt(rest)
+}
+
+Bool healthNow(String base) {
+    try {
+        var c = net.connect(baseHost(base), basePort(base))
+        c.close()
+        return true
+    } catch (String e) {
+        return false
+    }
+}
+
+Bool waitHealth(String base) {
+    var t0 = 0
+    while (t0 < 60) {
+        if (healthNow(base)) {
+            return true
+        }
+        time.sleep(250)
+        t0 = t0 + 1
+    }
+    return false
+}
+
+// Detached helper process, same spawn/sh pattern the goldens proved — the
+// face OUTLIVES the command that spawned it. ENTRY is the .kf route to run:
+// cli.kf passes its own path (wrapper below keeps the old 3-arg shape);
+// the desktop daemon passes the desktop route. This parameterization is the
+// ONLY change vs the moved body — everything else is verbatim.
+Int spawnDetachedEntry(String log, List<String> verbArgs, String pidfile, String entry) {
+    if (File(log).exists()) {
+        File(log).delete()
+    }
+    var jar = selfJar()
+    if (jar.length() == 0) {
+        return 0 - 1
+    }
+    var wd = selfConfigField("workdir")
+    if (wd.length() == 0) {
+        wd = "."
+    }
+    var cmd = "cd " + wd + " && nohup java -jar " + jar
+        + " run " + entry
+    for (var a in verbArgs) {
+        cmd = cmd + " " + a
+    }
+    cmd = cmd + " > " + log + " 2>&1 & echo $! > " + pidfile
+    process.spawn("sh", "-c", cmd)
+    return 1
+}
+
+void stopHelper(String pidfile) {
+    if (!File(pidfile).exists()) {
+        return
+    }
+    // COALESCE before use: the nullable readText result threaded through the
+    // guard into a call argument crashes the JVM backend (COMP002 — same
+    // shape as the T? parameter bug; fresh local after the guard is the
+    // compiling shape).
+    var pid = ""
+    var raw = File(pidfile).readText()
+    if (raw != null) {
+        pid = raw
+    }
+    pid = "" + pid
+    var cut = pid.indexOf("\n")
+    if (cut >= 0) {
+        pid = pid.substring(0, cut)
+    }
+    if (pid.length() > 0) {
+        shell.run("kill", listOf(pid))
+    }
+    File(pidfile).delete()
+}
+
+// Face heartbeat: renews presence every minute for the life of the process
+// (the spawn worker is the daemon's lane — Track D law: presence is
+// heartbeat, never a synthesized row).
+void startFaceHeartbeat(String serverAddr, Int port) {
+    var sp = serverAddr.indexOf(":")
+    var h = serverAddr.substring(0, sp)
+    var pp = serverAddr.substring(sp + 1, serverAddr.length())
+    var dev = identityDeviceId(identityPub(identityBoot("kofshare-device.ed25519")))
+    var auth = "Authorization: Bearer " + localBearer()
+    spawn {
+        while (true) {
+            http.post("http://" + h + ":" + pp + "/devices/" + dev + "/heartbeat", "{}", auth)
+            time.sleep(60000)
+        }
+    }
+}
+
+// Named internal codes stay INTACT (the goldens prove them); the hint only
+// ADDS the human sentence. Pure, CHECK-leg green (§10).
+String errText(String raw) {
+    if (raw.indexOf("REG038") >= 0) {
+        return "This link was already used and is spent. Ask for a new share link."
+    }
+    if (raw.indexOf("REG034") >= 0 || raw.indexOf("REG035") >= 0) {
+        return "That link no longer exists on the plane — it expired or the file was un-shared. Ask for a new link."
+    }
+    if (raw.indexOf("DEV003") >= 0) {
+        return "The sharer revoked this device. The transfer is closed by its owner — nothing more happens with this link."
+    }
+    if (raw.indexOf("DEV-OFFLINE") >= 0) {
+        return "The sharer's device is offline right now. Ask them to run kofshare share again (it renews presence) — the link itself is still valid."
+    }
+    if (raw.indexOf("CONNECTIVITY_FAILED") >= 0) {
+        return "No path to the other device: direct was refused and no relay was given. Ask the sharer for `--relay <host:port>` from a machine both sides can reach, and pass it to kofshare receive."
+    }
+    if (raw.indexOf("REG013") >= 0 || raw.indexOf("REG014") >= 0) {
+        return "The resource identity does not check out (path-shaped or foreign id). This is refused by design — re-share the file from its own device."
+    }
+    if (raw.indexOf("REG015") >= 0 || raw.indexOf("REG016") >= 0) {
+        return "The directory manifest did not match what the plane recomputes (traversal or digest mismatch). This is refused by design — re-share the folder."
+    }
+    if (raw.indexOf("AUTH001") >= 0 || raw.indexOf("AUTH") >= 0) {
+        return "The control plane needs credentials. Run kofshare server first (it writes the bearer next to the registry), or pass --bearer."
+    }
+    if (raw.indexOf("UP-ERR") >= 0 || raw.indexOf("SHARE-ERR") >= 0) {
+        return "The plane refused the publish/share step. Check the server is up (kofshare server) and retry; the line above keeps the exact reason."
+    }
+    return ""
+}
+
+Long parseTtlMs(String v) {
+    var digits = ""
+    var i = 0
+    while (i < v.length()) {
+        var ch = v.charAt(i)
+        if (ch >= 48 && ch <= 57) {
+            digits = digits + v.substring(i, i + 1)
+        }
+        i = i + 1
+    }
+    // BARE NUMBER = MILLISECONDS (the legacy `--ttl <ms>` meaning is kept);
+    // suffixes s/m/h/d are the human lane.
+    var mult = 1
+    if (v.indexOf("ms") == v.length() - 2) {
+        mult = 1
+    } else if (v.indexOf("s") == v.length() - 1) {
+        mult = 1000
+    } else if (v.indexOf("m") == v.length() - 1) {
+        mult = 60000
+    } else if (v.indexOf("h") == v.length() - 1) {
+        mult = 3600000
+    } else if (v.indexOf("d") == v.length() - 1) {
+        mult = 86400000
+    }
+    if (digits.length() == 0) {
+        return 0 - 0
+    }
+    return math.parseLong(digits) * mult
+}
+
+// Field extraction from the machine lane's key:value lines (--raw precedent;
+// the desktop API's events reuse the same shapes, §3 discovery).
+String fieldOf(String msg, String key) {
+    var i = msg.indexOf(key)
+    if (i < 0) {
+        return ""
+    }
+    var st = i + key.length()
+    var en = msg.indexOf(" ", st)
+    if (en < 0) {
+        en = msg.length()
+    }
+    return msg.substring(st, en)
+}
+
+// Port readiness with the Track I orphan sweep: bindable-poll via net.listen
+// probe, DIAGNOSING the holder by `ss` pid match (the documented kill lane
+// for THIS device's stale helper on THIS port — same body as cli.kf shipped,
+// moved verbatim; Bool returns whether the port became bindable).
+Bool freePort(Int port) {
+    var t0 = 0
+    while (t0 < 40) {
+        var bindable = false
+        try {
+            var pr = net.listen(port)
+            pr.close()
+            bindable = true
+        } catch (String e) {
+            bindable = false
+        }
+        if (bindable) {
+            return true
+        }
+        var res = shell.run("ss", listOf("-tlnp"))
+        var lines = res.stdout.split("\n")
+        var i = 0
+        while (i < lines.size) {
+            var line = lines[i]
+            if (line.indexOf("LISTEN") >= 0 && line.indexOf(":" + port) >= 0) {
+                var pi = line.indexOf("pid=")
+                if (pi >= 0) {
+                    var num = ""
+                    var j = pi + 4
+                    while (j < line.length()) {
+                        var ch = line.charAt(j)
+                        if (ch < 48 || ch > 57) {
+                            break
+                        }
+                        num = num + line.substring(j, j + 1)
+                        j = j + 1
+                    }
+                    if (num.length() > 0) {
+                        shell.run("kill", listOf("-9", num))
+                    }
+                }
+            }
+            i = i + 1
+        }
+        time.sleep(250)
+        t0 = t0 + 1
+    }
+    return false
+}
+
+// The CLI's own spawn lane (entry path baked) — keeps cli.kf call sites at
+// their original arity; the desktop daemon uses spawnDetachedEntry directly.
+Int spawnDetachedCli(String log, List<String> verbArgs, String pidfile) {
+    return spawnDetachedEntry(log, verbArgs, pidfile, "src/main/kof/kofshare/cli/cli.kf")
+}
