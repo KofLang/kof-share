@@ -176,6 +176,8 @@ identity, auth, crypto, dialing. The GUI cannot read the private key file
 | R5 | double-resolve of `--once` (Track I RED law) | `downAutoWithGrant` family | the API takes grant-or-link exactly once; `receive` handler resolves via the WithGrant paths only |
 | R6 | new daemon verb grows cli.kf drift | post-v2 §5 recorded | §8-E marks the extraction boundary explicitly so the daemon does NOT re-implement; daemon calls userflow directly |
 
+| R7 | shared FIXED-name state files (`server-control.bearer`, `server-registry.*`) poison concurrent suites — MEASURED this session: a desktop golden plane running while the RC battery starts = 3 early-suite FAILs with raw ConnectException stacks; same suites GREEN standalone with clean state. Law: no external plane state may exist when the battery starts (kill + rm the named files; the battery is sequential BY DESIGN). |
+
 ## 8. Core dependencies / extension points (requests, NOT hacks — §12/§18)
 
 Small, named, upstream-first (each needs its own Kof4j decision; none is a
@@ -204,7 +206,7 @@ Nothing here blocks FASE 1–6: every degraded path is honest and tested.
 
 ```
 F0 discovery            THIS DOCUMENT                                [done]
-F1 desktop shell        daemon verb + lifecycle + window open      → DESKTOP-BOOT-OK
+F1 desktop shell        daemon verb + lifecycle + window open      → DESKTOP-BOOT-OK steps=21 DELIVERED (boot.kf; hot re-run OK; F7-launcher scripts + install/uninstall smoke included; matrix in docs/desktop/phase0-matrix.md)
 F2 local API            /api/v1/* + token auth + events            → DESKTOP-IPC-OK
 F3 identity/account/devices screens on the existing client lanes   → DESKTOP-IDENTITY-OK
 F4 share/receive screens (file+folder, pickers-degraded)            → DESKTOP-SHARE-OK

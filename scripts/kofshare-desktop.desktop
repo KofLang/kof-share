@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=KofShare
+Comment=P2P sharing with central identity, no central file storage
+Exec=kofshare-desktop
+Terminal=false
+Icon=kofshare

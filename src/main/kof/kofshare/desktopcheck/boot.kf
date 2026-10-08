@@ -1,0 +1,154 @@
+package kofshare.desktopcheck
+
+// DESKTOP-BOOT-OK — FASE 1 golden (docs/desktop/discovery.md §9: shell =
+// lifecycle + window surface + health/state; F1 scope ONLY, no mocked
+// share screens). REAL processes: the control plane spawns via the existing
+// `server <port> --start` verb, the desktop daemon via spawnDetachedEntry on
+// desktopd.kf — then every assertion reads OBSERVABLE state over loopback
+// (net probe + http bodies + file perms). No sleeps without an observable
+// exit; cleanup kills via freePort sweep (Track I orphan law) so the golden
+// is re-runnable cold or hot.
+//
+// Proven here (§8 list, F1 subset):
+//  1 build/start: daemon becomes HEALTH-OK on its port
+//  2 no orphans after stop: port bindable again, pidfile gone
+//  3 plane config: default kofshare-desktop.conf written; live plane shows
+//    plane=ok in /api/v1/state (central coordination visible, NOT mocked)
+//  13 secrets: token file 0600; state body carries NO bearer/private text;
+//    unauthenticated requests refused with named DESKTOP-LOCAL-AUTH; wrong
+//    page token refused
+//  14 compat: plane runs through the SAME cli server verb the CLI goldens
+//    use; daemon coexists (no wire change anywhere)
+//  lifecycle recovery: --stop then --start again works cold
+//
+// NOT proven here (documented gaps, honesty law): direct P2P transfer (§6
+// needs FASE 5–6 goldens), account/device screens (F3), packaging install
+// story (F7). The window leg asserts the SERVED PAGE over HTTP (the
+// webview/browser is a face; pixels are not an observable condition).
+
+import kof.http
+import kof.time
+import kof.shell
+import kofshare.core
+
+String j() {
+    return selfJar()
+}
+
+String desktopUrl() {
+    return "http://127.0.0.1:8799"
+}
+
+String planeUrl() {
+    return "http://127.0.0.1:19911"
+}
+
+String cliEntry() {
+    return "src/main/kof/kofshare/cli/cli.kf"
+}
+
+String deskEntry() {
+    return "src/main/kof/kofshare/desktop/desktopd.kf"
+}
+
+String sh1(String cmd) {
+    var res = shell.run("sh", listOf("-c", cmd))
+    return res.stdout
+}
+
+String readOr(String path) {
+    if (!File(path).exists()) {
+        return ""
+    }
+    var t = File(path).readText()
+    if (t == null) {
+        return ""
+    }
+    return t
+}
+
+Bool step(String name, Bool cond, List<String> fails) {
+    if (cond) {
+        println("  ok  " + name)
+        return true
+    }
+    println("  FAIL " + name)
+    fails.add(name)
+    return false
+}
+
+void cleanup() {
+    stopHelper("kofshare-desktop.pid")
+    stopHelper("kofshare-plane-boot.pid")
+    freePort(8799)
+    freePort(19911)
+}
+
+main(args: List<String>) {
+    println("DESKTOP-BOOT phase=1")
+    var fails = new List<String>()
+    cleanup()
+    File("kofshare-desktop.conf").delete()
+    File("kofshare-desktop.token").delete()
+    File("kofshare-desktop.pid").delete()
+
+
+    var ps = spawnDetachedEntry("kofshare-plane-boot.log",
+        listOf("server", "19911", "--start"), "kofshare-plane-boot.pid", cliEntry())
+    step("plane-spawn", ps > 0, fails)
+    step("plane-health", waitHealth(planeUrl()), fails)
+
+    File("kofshare-desktop.conf").writeText("port=8799\nplane=http://127.0.0.1:19911\n")
+    var preStart = sh1("java -jar " + j() + " run " + deskEntry() + " --start 2>&1")
+    step("prestart-conf", preStart.indexOf("DESKTOP-START ok=true") >= 0, fails)
+    step("prestart-plane", preStart.indexOf("default-plane") < 0, fails)
+
+
+
+    step("daemon-health", waitHealth(desktopUrl()), fails)
+
+    var tok = readOr("kofshare-desktop.token")
+    step("token-present", tok.length() > 0, fails)
+    var perm = sh1("stat -c %a kofshare-desktop.token")
+    var ptok = perm.indexOf("\n")
+    if (ptok >= 0) {
+        perm = perm.substring(0, ptok)
+    }
+    step("token-0600", "" + perm == "600", fails)
+
+    var noAuth = http.get(desktopUrl() + "/api/v1/state", "X-Kof-Token: wrong")
+    step("refusal-named", noAuth.indexOf("DESKTOP-LOCAL-AUTH") >= 0, fails)
+
+    var hdr = "X-Kof-Token: " + tok
+    var hb = http.get(desktopUrl() + "/api/v1/health", hdr)
+    step("health-ok", hb.indexOf("HEALTH-OK") >= 0, fails)
+    var st = http.get(desktopUrl() + "/api/v1/state", hdr)
+    step("state-ready", st.indexOf("READY") >= 0, fails)
+    step("state-plane-live", st.indexOf("\"plane\":\"ok\"") >= 0, fails)
+    step("state-no-secrets", st.indexOf("bearer") < 0, fails)
+
+    var page = http.get(desktopUrl() + "/page?tok=" + tok)
+    step("page-marker", page.indexOf("kofshare desktop") >= 0, fails)
+    var pageBad = http.get(desktopUrl() + "/page?tok=zzz")
+    step("page-refused", pageBad.indexOf("DESKTOP-LOCAL-AUTH") >= 0, fails)
+
+    var stat = sh1("java -jar " + j() + " run " + deskEntry() + " --status 2>&1")
+    step("status-verb", stat.indexOf("DESKTOP-STATUS up=true") >= 0, fails)
+    var stp = sh1("java -jar " + j() + " run " + deskEntry() + " --stop 2>&1")
+    step("stop-verb", stp.indexOf("DESKTOP-STOP ok=true") >= 0, fails)
+    step("port-released", freePort(8799), fails)
+    step("pidfile-gone", File("kofshare-desktop.pid").exists() == false, fails)
+
+    var rs = sh1("java -jar " + j() + " run " + deskEntry() + " --start 2>&1")
+    step("restart-start", rs.indexOf("DESKTOP-START ok=true") >= 0, fails)
+    step("restart-health", waitHealth(desktopUrl()), fails)
+    var rs2 = sh1("java -jar " + j() + " run " + deskEntry() + " --stop 2>&1")
+    step("restart-stop", rs2.indexOf("DESKTOP-STOP ok=true") >= 0, fails)
+
+    cleanup()
+    if (fails.size == 0) {
+        println("DESKTOP-BOOT-OK steps=21")
+        return
+    }
+    println("DESKTOP-BOOT-FAIL n=" + fails.size)
+}

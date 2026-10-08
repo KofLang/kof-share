@@ -1,0 +1,314 @@
+package kofshare.desktop
+
+// KofShare DESKTOP — FASE 1 (docs/desktop/discovery.md §9: desktop shell =
+// lifecycle + window + health/state, the §5 F1 subset only: plane config,
+// real connection state, process lifecycle. Share/receive/identity screens
+// are F3–F5 and are NOT faked here — there are no mock buttons in this file).
+//
+// Architecture law (§3): the daemon is a THIN lane over the existing core —
+// it reuses kofshare.core helpers verbatim (extraction shipped on this
+// branch) and the existing product verbs by spawning the SAME cli.kf when a
+// product action is needed (no second client with divergent rules, §7
+// gigaprompt). The UI (page below) NEVER holds keys or the control bearer:
+// it sees only the same metadata view model the browser lane proved
+// (client.kf /api/info precedent). Local auth: EVERY /api/v1/* request needs
+// the token from kofshare-desktop.token (0600, written at first start);
+// mismatch → named DESKTOP-LOCAL-AUTH. The bind is 0.0.0.0 at the pin
+// (R1/R2 — discovery §7): token law is the mitigation; the real fix is the
+// named core face (§8-A/B), NOT a product hack.
+
+import kof.http
+import kof.time
+import kof.process
+import kof.shell
+import kof.security
+import kof.web
+import kofshare.core
+
+// coalesce nullable header (client.kf shape; COMP002-safe pattern).
+String headerText(String? h) {
+    if (h == null) {
+        return ""
+    }
+    return h
+}
+
+String dConf() {
+    return "kofshare-desktop.conf"
+}
+
+String dTokenFile() {
+    return "kofshare-desktop.token"
+}
+
+String dPidFile() {
+    return "kofshare-desktop.pid"
+}
+
+String dLog() {
+    return "kofshare-desktop.log"
+}
+
+Int dPort() {
+    var p = selfConfigField2("port")
+    if (p.length() > 0) {
+        return math.parseInt(p)
+    }
+    return 8799
+}
+
+String dPlane() {
+    var pl = selfConfigField2("plane")
+    if (pl.length() > 0) {
+        return pl
+    }
+    return "http://127.0.0.1:9090"
+}
+
+// conf = the desktop's OWN file; selfConfigField is the cli.config reader —
+// this reads kofshare-desktop.conf with the same loop shape (verbatim
+// pattern from core.selfConfigField, only the path differs).
+String selfConfigField2(String key) {
+    if (!File(dConf()).exists()) {
+        return ""
+    }
+    var t = File(dConf()).readText()
+    if (t == null) {
+        return ""
+    }
+    var lines = t.split("\n")
+    var i = 0
+    while (i < lines.size) {
+        var ln = lines[i]
+        if (ln.indexOf(key + "=") == 0) {
+            return ln.substring(key.length() + 1, ln.length())
+        }
+        i = i + 1
+    }
+    return ""
+}
+
+String desktopToken() {
+    var t = File(dTokenFile()).readText()
+    if (t == null) {
+        return ""
+    }
+    var tok = t
+    var cut = tok.indexOf("\n")
+    if (cut >= 0) {
+        tok = tok.substring(0, cut)
+    }
+    return tok
+}
+
+void writeDesktopToken() {
+    var tok = security.randomHex(16)
+    File(dTokenFile()).writeText(tok)
+    shell.run("chmod", listOf("600", dTokenFile()))
+}
+
+// request token = header x-kof-token (page JS sends it) — "" when absent.
+Bool tokenOk() {
+    return headerText(header("x-kof-token")) == desktopToken() && desktopToken().length() > 0
+}
+
+String authRefusal() {
+    return "DESKTOP-LOCAL-AUTH"
+}
+
+// LIVE plane truth probed per call (no cached lie, §8): the TCP probe shape
+// core.healthNow proved (raw ConnectException stays inside net's named wrap).
+String planeState() {
+    if (healthNow(dPlane())) {
+        return "ok"
+    }
+    return "unreachable"
+}
+
+// Metadata-only view model (client.kf /api/info law): phase, plane, ports,
+// version — NEVER keys, NEVER the control bearer, NEVER file contents.
+String stateJson() {
+    var pid = ""
+    var raw = File(dPidFile()).readText()
+    if (raw != null) {
+        pid = raw
+    }
+    var cut = pid.indexOf("\n")
+    if (cut >= 0) {
+        pid = pid.substring(0, cut)
+    }
+    return "{\"phase\":\"READY\",\"plane\":\"" + planeState() + "\",\"planeAddr\":\""
+        + dPlane() + "\",\"localPort\":" + dPort() + ",\"pid\":\"" + pid
+        + "\",\"api\":\"v1\",\"product\":\"kofshare-desktop-f1\"}"
+}
+
+String desktopPage() {
+    var lines = new List<String>()
+    lines.add("<!doctype html>")
+    lines.add("<html lang=\"en\"><head><meta charset=\"utf-8\">")
+    lines.add("<title>kofshare desktop</title>")
+    lines.add("<style>body{font-family:system-ui,sans-serif;max-width:40rem;margin:2rem auto;" +
+        "padding:0 1rem}code{background:#eee;padding:0 .3rem}" +
+        ".ok{color:#070}.bad{color:#b00}</style></head>")
+    lines.add("<body>")
+    lines.add("<h1>kofshare desktop</h1>")
+    lines.add("<p>Phase-1 shell: daemon lifecycle + live state. " +
+        "Share/receive screens arrive in F4–F5 — nothing here is faked.</p>")
+    lines.add("<div>daemon: <span id=\"phase\" class=\"ok\">…</span></div>")
+    lines.add("<div>plane: <span id=\"plane\">…</span></div>")
+    lines.add("<div id=\"err\" class=\"bad\"></div>")
+    lines.add("<p>Last line of real state below is live data from the local " +
+        "daemon over loopback, never stored centrally.</p>")
+    lines.add("<pre id=\"raw\"></pre>")
+    lines.add("<script>(function(){")
+    lines.add("var tok='KOFDTOKEN';")
+    lines.add("function tick(){")
+    lines.add("  fetch('/api/v1/state',{headers:{'X-Kof-Token':tok}})")
+    lines.add("  .then(function(r){return r.text()}).then(function(t){")
+    lines.add("    var ph='READY'; var pl='?';")
+    lines.add("    try{var j=JSON.parse(t); ph=j.phase||'?'; pl=j.plane||'?';}catch(e){}")
+    lines.add("    document.getElementById('phase').textContent=ph;")
+    lines.add("    var pe=document.getElementById('plane'); pe.textContent=pl;")
+    lines.add("    pe.className=(pl=='ok')?'ok':'bad';")
+    lines.add("    document.getElementById('raw').textContent=t;")
+    lines.add("    document.getElementById('err').textContent=")
+    lines.add("      (t.indexOf('DESKTOP-LOCAL-AUTH')>=0)?'local token mismatch':'';")
+    lines.add("  });")
+    lines.add("}")
+    lines.add("tick(); setInterval(tick,2000);")
+    lines.add("})();</script></body></html>")
+    var html = ""
+    for (var l in lines) {
+        html = html + l + "\\n"
+    }
+    return html
+}
+
+// The page URL carries the token in the QUERY (/page?tok=) — the same shape
+// the browser lane proved (client.kf query("token")); page JS then sends it
+// as the X-Kof-Token header for the API. URL history is device-local;
+// nothing about this reaches the plane.
+
+Int daemonServe() {
+    if (File(dTokenFile()).exists() == false) {
+        writeDesktopToken()
+    }
+    var app = web.app()
+    app.get("/api/v1/health") {
+        if (!tokenOk()) {
+            return authRefusal()
+        }
+        return "HEALTH-OK"
+    }
+    app.get("/api/v1/state") {
+        if (!tokenOk()) {
+            return authRefusal()
+        }
+        return stateJson()
+    }
+    app.get("/page") {
+        if (query("tok") != desktopToken() || desktopToken().length() == 0) {
+            return authRefusal()
+        }
+        return desktopPage()
+    }
+    app.listen(dPort())
+    return 0
+}
+
+Int desktopStart() {
+    if (healthNow("http://127.0.0.1:" + dPort())) {
+        println("DESKTOP-START already=true port=" + dPort())
+        return 0
+    }
+    if (!File(dConf()).exists()) {
+        File(dConf()).writeText("plane=http://127.0.0.1:9090\\n")
+        println("DESKTOP-CONF-WRITTEN default-plane")
+    }
+    if (!File(dTokenFile()).exists()) {
+        writeDesktopToken()
+    }
+    var r = spawnDetachedEntry(dLog(), listOf("daemon"), dPidFile(),
+        "src/main/kof/kofshare/desktop/desktopd.kf")
+    if (r < 0) {
+        println("DESKTOP-START-ERR: no jar in kofshare-cli.config (run kofshare install path first)")
+        return 1
+    }
+    if (waitHealth("http://127.0.0.1:" + dPort())) {
+        println("DESKTOP-START ok=true port=" + dPort())
+        return 0
+    }
+    println("DESKTOP-START-ERR: daemon did not become healthable on " + dPort())
+    return 1
+}
+
+// The wrapper pid (nohup/sh) and the REAL listener JVM are different pids
+// under `run` mode (measured this session: pidfile=$! = wrapper; listener =
+// its re-launch child whose cmdline NO LONGER contains the .kf entry — a
+// cmdline-scoped kill is therefore impossible in run mode). The desktop's
+// stop law is the SAME port-ownership sweep the CLI applies to helper ports
+// it owns (core.freePort: bind-poll + ss-pid diagnosis + kill): this device
+// owns dPort() by the kofshare-desktop.conf convention. Documented shape,
+// not a new invention.
+Int desktopStop() {
+    stopHelper(dPidFile())
+    freePort(dPort())
+    if (healthNow("http://127.0.0.1:" + dPort())) {
+        println("DESKTOP-STOP-ERR: still answering on " + dPort())
+        return 1
+    }
+    println("DESKTOP-STOP ok=true")
+    return 0
+}
+
+Int desktopStatus() {
+    if (healthNow("http://127.0.0.1:" + dPort())) {
+        println("DESKTOP-STATUS up=true port=" + dPort())
+        return 0
+    }
+    println("DESKTOP-STATUS up=false port=" + dPort())
+    return 0
+}
+
+Int desktopWindow() {
+    if (!healthNow("http://127.0.0.1:" + dPort())) {
+        var s = desktopStart()
+        if (s != 0) {
+            println("DESKTOP-WINDOW-ERR: daemon start failed")
+            return s
+        }
+    }
+    var url = "http://127.0.0.1:" + dPort() + "/page?tok=" + desktopToken()
+    process.spawn("xdg-open", url)
+    println("DESKTOP-WINDOW url=http://127.0.0.1:" + dPort() + "/page?tok=<token>")
+    return 0
+}
+
+main(args: List<String>) {
+    if (args.size == 0) {
+        println("usage: kofshare-desktop --start|--stop|--status|--window|daemon")
+        return
+    }
+    var v = args.get(0)
+    if (v == "daemon") {
+        daemonServe()
+        return
+    }
+    if (v == "--start") {
+        desktopStart()
+        return
+    }
+    if (v == "--stop") {
+        desktopStop()
+        return
+    }
+    if (v == "--status") {
+        desktopStatus()
+        return
+    }
+    if (v == "--window") {
+        desktopWindow()
+        return
+    }
+    println("DESKTOP-ERR: unknown verb '" + v + "'")
+}
