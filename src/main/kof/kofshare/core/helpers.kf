@@ -9,6 +9,8 @@ package kofshare.core
 // Scope law: identity/auth/crypto/transfer do NOT live here — only the
 // process/lifecycle/human-layer helpers, the exact set discovery §8-E named.
 
+import kof.config
+import kof.file
 import kof.http
 import kof.time
 import kof.process
@@ -16,6 +18,58 @@ import kof.shell
 import kofshare.identity
 
 // Config precedent: kofshare-cli.config (jar=…, workdir=…) read by key.
+// ══ PLANE LAYOUT (production deployment, gigaprompt §6) ══
+// kofshare.dir (kof.config: KOF_CONFIG file, KOF_KOFSHARE_DIR env, or
+// kof.config profile in the plane's working directory) points ALL control
+// state — registry files, control keys, admin bearer — into one directory:
+// backup = copy that directory, restore = point config back at it. Empty/
+// "." means the working directory: EVERY existing golden runs byte-identical
+// (measured — the deployment lane is additive, not a rename regime).
+String pcDir() {
+    var d = config.str("kofshare.dir", "")
+    if (d.length() == 0) {
+        return "."
+    }
+    return d
+}
+
+String planeFile(String name) {
+    var d = pcDir()
+    if (d == ".") {
+        return name
+    }
+    if (!Directory(d).exists()) {
+        var mk = Directory(d)
+        if (!mk.createDirectories()) {
+            throw "SERVER-CONF-ERR: cannot create plane directory " + d
+        }
+    }
+    return d + "/" + name
+}
+
+Int pcPort(Int def) {
+    var p = config.int("kofshare.port", def)
+    if (p <= 0 || p > 65535) {
+        throw "SERVER-CONF-ERR: invalid kofshare.port " + p
+    }
+    return p
+}
+
+// The link the world sees. Behind a reverse proxy/TLS terminator the plane
+// is reached by hostname while it binds any local address — publicurl makes
+// minted links honest (and is the documented TLS lane; the runtime has no
+// native TLS — see docs/deploy.md).
+String pcPublicUrl() {
+    var u = config.str("kofshare.publicurl", "")
+    if (u.length() > 0) {
+        var e = u.length() - 1
+        if (u.charAt(e) == "/") {
+            return u.substring(0, e)
+        }
+    }
+    return u
+}
+
 String selfConfigPath() {
     if (File("kofshare-cli.config").exists()) {
         return "kofshare-cli.config"
@@ -50,7 +104,7 @@ String selfJar() {
 
 // The plane bearer lives next to the registry (control plane's own lane).
 String localBearer() {
-    var f = File("server-control.bearer")
+    var f = File(planeFile("server-control.bearer"))
     if (!f.exists()) {
         return ""
     }

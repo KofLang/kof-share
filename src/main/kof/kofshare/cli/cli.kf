@@ -1162,7 +1162,7 @@ Int runRelay(List<String> args) {
 // `server` — the control plane daemon (listen blocks; stop = process).
 Int runServer(List<String> args) {
     var rest = tail(args, 1)
-    var port = defaultControlPort()
+    var port = pcPort(defaultControlPort())
     var key = defaultKey()
     // `server --start` = detached product launch: returns when SERVER-READY
     // is on the log; the plane keeps running (Track I happy path).
@@ -1217,41 +1217,41 @@ Int runServer(List<String> args) {
     }
     var devices = new Map<String, DeviceInfo>()
     var offers = new Map<String, OfferInfo>()
-    controlLoadList("server-registry.devices.json", devices, null)
-    controlLoadList("server-registry.offers.json", null, offers)
+    controlLoadList(planeFile("server-registry.devices.json"), devices, null)
+    controlLoadList(planeFile("server-registry.offers.json"), null, offers)
     var devkeys = new Map<String, DeviceKey>()
-    var kload = controlLoadDevkeys(devkeys, "server-registry.devkeys.json")
+    var kload = controlLoadDevkeys(devkeys, planeFile("server-registry.devkeys.json"))
     if (kload.indexOf("REG009") == 0) {
         println(kload)
         return 1
     }
     var presences = new Map<String, PresenceInfo>()
-    var pload = presenceLoadList(presences, "server-registry.presence.json")
+    var pload = presenceLoadList(presences, planeFile("server-registry.presence.json"))
     if (pload.indexOf("PRES041") == 0) {
         println(pload)
         return 1
     }
     var sessions = new Map<String, SessionInfo>()
-    var nload = sessionLoadList(sessions, "server-registry.sessions.json")
+    var nload = sessionLoadList(sessions, planeFile("server-registry.sessions.json"))
     if (nload.indexOf("SES041") == 0) {
         println(nload)
         return 1
     }
     var snPurge = sessionPurgeExpired(sessions, time.now())
     if (snPurge > 0) {
-        controlSaveList("server-registry.sessions.json", sessionsJson(sessions, "", ""))
+        controlSaveList(planeFile("server-registry.sessions.json"), sessionsJson(sessions, "", ""))
     }
     var shares = new Map<String, ShareInfo>()
-    var spath = "server-registry.shares.json"
+    var spath = planeFile("server-registry.shares.json")
     var load = shareLoadList(shares, spath)
     if (load.indexOf("REG041") == 0) {
         println(load)
         return 1
     }
     sharesPurgeExpired(shares, time.now())
-    var controlKey = loadControlKey("server-control.ed25519")
+    var controlKey = loadControlKey(planeFile("server-control.ed25519"))
     var accounts = new Map<String, Account>()
-    var apath = "server-registry.accounts.json"
+    var apath = planeFile("server-registry.accounts.json")
     var aload = authLoadList(accounts, apath)
     if (aload.indexOf("AUTH043") == 0) {
         println(aload)
@@ -1272,15 +1272,15 @@ Int runServer(List<String> args) {
     bootstrapAdmin(accounts, apath, controlSecret)
     println("SERVER-READY port=" + port + " key=" + key + " devices=" + devices.size() + " offers=" + offers.size() + " shares=" + shares.size() + " accounts=" + accounts.size())
     controlServe(port, devices, offers,
-        "server-registry.devices.json", "server-registry.offers.json",
+        planeFile("server-registry.devices.json"), planeFile("server-registry.offers.json"),
         shares, spath, controlKey, accounts, apath, controlSecret,
-        devkeys, "server-registry.devkeys.json", sessions, "server-registry.sessions.json",
-        presences, "server-registry.presence.json")
+        devkeys, planeFile("server-registry.devkeys.json"), sessions, planeFile("server-registry.sessions.json"),
+        presences, planeFile("server-registry.presence.json"))
     return 0
 }
 
 String loadControlSecret() {
-    var f = File("server-control.apikey")
+    var f = File(planeFile("server-control.apikey"))
     if (f.exists()) {
         var txt = f.readText()
         if (txt != null && txt.length() >= 32) {
@@ -1325,7 +1325,7 @@ void bootstrapAdmin(Map<String, Account> accounts, String apath, String controlS
         return
     }
     controlSaveList(apath, authAccountsJson(accounts))
-    var bearer = File("server-control.bearer")
+    var bearer = File(planeFile("server-control.bearer"))
     if (!bearer.writeText(authMint(controlSecret, "admin", "owner", 86400))) {
         println("SERVER-ERR: cannot persist admin bearer")
     }
@@ -1473,6 +1473,13 @@ Int shareProduct(List<String> args) {
         facePort = defaultControlPort() + 78
     }
     var base = "http://" + host + ":" + port
+    // publicurl = the DISPLAY locator (reverse-proxy/TLS front). The health
+    // probe and every plane CALL still ride the real host:port — the plane
+    // never depends on DNS of the public face.
+    var linkBase = pcPublicUrl()
+    if (linkBase.length() == 0) {
+        linkBase = base
+    }
     if (!healthNow(base)) {
         println("KofShare needs a control plane, and none answered on " + base + ".")
         println("  Start one (this machine):  kofshare server " + (defaultControlPort() + 1) + " --start")
@@ -1530,7 +1537,7 @@ Int shareProduct(List<String> args) {
     var token = resp.split(" ")[2]
     if (raw) {
         println(resp)
-        println("SHARE-LINK " + base + "/s/" + token)
+        println("SHARE-LINK " + linkBase + "/s/" + token)
     }
     // ONE active offer per device: replace the previous face BEFORE binding
     // (share twice, serve the second — the port must not EADDRINUSE-fail
@@ -1558,7 +1565,7 @@ Int shareProduct(List<String> args) {
     if (!raw) {
         println("")
         println("Link (copy and send):")
-        println("  " + base + "/s/" + token)
+        println("  " + linkBase + "/s/" + token)
         println("")
         if (to.length() > 0) {
             println("This link is RESTRICTED: only " + to + " can open it, and only")

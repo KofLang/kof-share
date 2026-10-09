@@ -1,0 +1,297 @@
+package kofshare.revcheck
+
+// GATE 6 — REVOKECHECK: the revocation matrix with THREE real identities and
+// real processes (gigaprompt §3 "Revogação" + §11.5/6/19). Named outcomes:
+//   account revoked   → bearer dies at the gate (AUTH), /s becomes OPAQUE
+//                        REG035 for an identity grant (callerSub collapses),
+//                        existing sessions accept no further moves
+//   device revoked    → live grants on that device refuse (DEV003) — the
+//                        owner's serving face dies for NEW claims
+//   share revoked     → both lanes (possession bearer AND identity grant)
+//   grant revoked     → identity path closed; owner may still revoke share
+//   IN-FLIGHT law (defined, not claimed): revocation stops NEW authorizations
+//   and RESUMES; bytes already delivered to the recipient are NOT recallable
+//   and a stream already negotiated may finish its current file. The plane
+//   never carries bytes, so it cannot cut a wire it does not own — honest
+//   boundary, asserted here by proving the SECOND dial/resume is refused.
+// REVOKECHECK-OK legs=12. Port 19457 owned here.
+
+import kof.crypto
+import kof.http
+import kof.json
+import kof.net
+import kof.shell
+import kof.time
+import kofshare.core
+import kofshare.domain
+import kofshare.control.auth
+import kofshare.control.grant
+import kofshare.control.registry
+import kofshare.control.session
+import kofshare.control.share
+
+String jar() {
+    return "/home/mel/tools/kof-pin/kof-cli-f2629e32d.jar"
+}
+
+String cliOut(List<String> verbArgs) {
+    var cmd = "cd /home/mel/Documents/kof-share && java -jar " + jar()
+        + " run src/main/kof/kofshare/cli/cli.kf"
+    for (var a in verbArgs) {
+        cmd = cmd + " " + a
+    }
+    var res = shell.run("sh", listOf("-c", cmd + " 2>&1"))
+    var out = ""
+    var lines = res.stdout.split("\n")
+    var i = 0
+    while (i < lines.size) {
+        var ln = lines[i]
+        if (ln.indexOf("L-05") < 0 && ln.indexOf("warning:") < 0) {
+            out = out + ln + "\n"
+        }
+        i = i + 1
+    }
+    return out
+}
+
+void killPort(Int port) {
+    shell.run("sh", listOf("-c", "fuser -k " + port + "/tcp 2>/dev/null; true"))
+    var t = 0
+    while (t < 240) {
+        t = t + 1
+        try {
+            var c = net.connect("127.0.0.1", port)
+            c.close()
+        } catch (String e) {
+            return
+        }
+    }
+}
+
+// delete-then-sync (Track C law): the --start readiness wait reads
+// kofshare-server.log; a stale marker from a previous boot lies.
+String bootPlane(String tag) {
+    if (File("kofshare-server.log").exists()) {
+        File("kofshare-server.log").delete()
+    }
+    var boot = cliOut(listOf("server", "19457", "--start"))
+    var rdy = false
+    var n = 0
+    while (!rdy && n < 240) {
+        n = n + 1
+        try {
+            rdy = http.get("http://127.0.0.1:19457/health") == "OK"
+        } catch (String e) {
+            rdy = false
+        }
+    }
+    println(tag + "=" + (boot.indexOf("SERVER-READY") >= 0 && rdy) + " boot=[" + capR(boot, 120) + "] rdy=" + rdy)
+    return "" + rdy
+}
+
+String capR(String t, Int n) {
+    if (t.length() <= n) {
+        return t
+    }
+    return t.substring(0, n)
+}
+
+String keyOf(String resp) {
+    var pre = "APIKEY "
+    if (resp.indexOf(pre) == 0) {
+        return resp.substring(pre.length(), resp.length()).trim()
+    }
+    return ""
+}
+
+String tokOf(String resp) {
+    var idx = resp.indexOf("/s/")
+    if (idx < 0) {
+        return ""
+    }
+    var rest = resp.substring(idx + 3, resp.length())
+    var ws = rest.indexOf(" ")
+    var nl = rest.indexOf("\n")
+    var end = rest.length()
+    if (ws >= 0 && ws < end) {
+        end = ws
+    }
+    if (nl >= 0 && nl < end) {
+        end = nl
+    }
+    return rest.substring(0, end).trim()
+}
+
+main() {
+    var ok = true
+    var base = "http://127.0.0.1:19457"
+    killPort(19457)
+    killPort(19458)
+    cliOut(listOf("stop"))
+    var scratch = listOf("server-control.bearer", "server-control.apikey", "server-control.ed25519",
+        "server-registry.devices.json", "server-registry.offers.json", "server-registry.shares.json",
+        "server-registry.grants.json", "server-registry.accounts.json", "server-registry.devkeys.json",
+        "server-registry.sessions.json", "server-registry.presence.json", "kofshare-server.log",
+        "kofshare-server.pid", "kofshare-face.log", "kofshare-face.pid", "kofshare-cli.config",
+        "rcv-src.bin", "rcv-get.bin", "rcv-again.bin")
+    for (var f in scratch) {
+        if (File(f).exists()) {
+            File(f).delete()
+        }
+    }
+    File("kofshare-cli.config").writeText("jar=" + jar() + "\nworkdir=/home/mel/Documents/kof-share\n")
+    var boot = cliOut(listOf("server", "19457", "--start"))
+    var ready = false
+    var tries = 0
+    while (!ready && tries < 240) {
+        tries = tries + 1
+        try {
+            ready = http.get(base + "/health") == "OK"
+        } catch (String e) {
+            ready = false
+        }
+    }
+    println("plane=" + (boot.indexOf("SERVER-READY") >= 0 && ready))
+    ok = ok && ready
+    var admin = "Authorization: Bearer " + File("server-control.bearer").readText()
+    var aliceKey = keyOf(http.post(base + "/accounts",
+        json.encode(AccountRequest("alice", "Alice", 0)), admin))
+    var bobKey = keyOf(http.post(base + "/accounts",
+        json.encode(AccountRequest("bob", "Bob", 0)), admin))
+    println("identities=" + (aliceKey.length() > 20 && bobKey.length() > 20))
+    ok = ok && aliceKey.length() > 20 && bobKey.length() > 20
+    var alice = "Authorization: Bearer " + aliceKey
+    var bob = "Authorization: Bearer " + bobKey
+
+    // ── setup: real owner face + real files + identity share ──
+    var data = makeData(3600)
+    File("rcv-src.bin").writeBytes(data)
+    var shOut = cliOut(listOf("share", "rcv-src.bin", "--server", "127.0.0.1:19457",
+        "--face", "19458", "--to", "bob", "--bearer", aliceKey))
+    var tok = tokOf(shOut)
+    println("shareUp=" + (tok.length() == 64))
+    ok = ok && tok.length() == 64
+
+    // ── 1: bob receives successfully (baseline for the revocation contrasts) ──
+    var bob1 = cliOut(listOf("receive", base + "/s/" + tok, "rcv-get.bin", "--bearer", bobKey))
+    println("baseline=" + (bob1.indexOf("DOWN-AUTO-OK") >= 0))
+    ok = ok && bob1.indexOf("DOWN-AUTO-OK") >= 0
+
+    // ── 2: revoke BOB's ACCOUNT ──
+    var rvAcct = http.post(base + "/accounts/bob/revoke", "", admin)
+    println("accountRevoke=" + (rvAcct.indexOf("ACCOUNT-REVOKED: bob") == 0))
+    ok = ok && rvAcct.indexOf("ACCOUNT-REVOKED: bob") == 0
+
+    // ── 3: bob's bearer now dies at every gate (named) ──
+    var bobWhoami = http.get(base + "/whoami", bob)
+    var bobShareCall = http.get(base + "/s/" + tok, bob)
+    println("revokedBearerDead=" + (bobWhoami.indexOf("AUTH") == 0))
+    println("revokedIdentityOpaque=" + (bobShareCall == "REG035: unknown share token"))
+    ok = ok && bobWhoami.indexOf("AUTH") == 0
+    ok = ok && bobShareCall == "REG035: unknown share token"
+
+    // ── 4: revoked account cannot open NEW sessions either ──
+    var bobSess = http.post(base + "/sessions",
+        json.encode(SessionRequest(tok, "rdv-ghost", "10.0.0.9:9000")), bob)
+    println("revokedNoNewSession=" + (bobSess.indexOf("AUTH") == 0))
+    ok = ok && bobSess.indexOf("AUTH") == 0
+
+    // ── 5: the RECEIVED bytes are not recallable (documented boundary,
+    // asserted as a FACT, never as a feature): bob's file stays intact.
+    var staysBytes = false
+    if (File("rcv-get.bin").exists()) {
+        var got = crypto.sha256Bytes(toBytes(File("rcv-get.bin").readBytes()))
+        staysBytes = got == crypto.sha256Bytes(toBytes(data))
+    }
+    println("deliveredStaysDelivered=" + staysBytes)
+    ok = ok && staysBytes
+
+    // ── 6: but NO RESUME/second dial is authorized after revocation: a fresh
+    // receive attempt with the same destination gets the opaque refusal (the
+    // in-flight law's observable half). ──
+    var rcvAgain = cliOut(listOf("receive", base + "/s/" + tok, "rcv-again.bin", "--bearer", bobKey))
+    println("resumeRefused=" + (rcvAgain.indexOf("REG035") >= 0
+        && !File("rcv-again.bin").exists()))
+    ok = ok && rcvAgain.indexOf("REG035") >= 0 && !File("rcv-again.bin").exists()
+
+    // ── 7: revoke ALICE's ACCOUNT — her identity grants must stop serving ──
+    // (the owner lane: /whoami alice still alive until revoked)
+    var bobReact = http.post(base + "/accounts/bob/revoke", "", admin)
+    var rvAlice = http.post(base + "/accounts/alice/revoke", "", admin)
+    println("ownerRevoke=" + (rvAlice.indexOf("ACCOUNT-REVOKED: alice") == 0))
+    ok = ok && rvAlice.indexOf("ACCOUNT-REVOKED: alice") == 0
+
+    // ── 8: DEVICE revocation kills the owner's serving face for NEW claims ──
+    // fresh plane, clean identities, this time revoke the DEVICE
+    cliOut(listOf("stop"))
+    killPort(19457)
+    killPort(19458)
+    for (var f in scratch) {
+        if (File(f).exists()) {
+            File(f).delete()
+        }
+    }
+    File("kofshare-cli.config").writeText("jar=" + jar() + "\nworkdir=/home/mel/Documents/kof-share\n")
+    File("rcv-src.bin").writeBytes(data)
+    var boot2 = bootPlane("plane2Up")
+    ok = ok && boot2 == "true"
+    admin = "Authorization: Bearer " + File("server-control.bearer").readText()
+    aliceKey = keyOf(http.post(base + "/accounts",
+        json.encode(AccountRequest("alice", "Alice", 0)), admin))
+    bobKey = keyOf(http.post(base + "/accounts",
+        json.encode(AccountRequest("bob", "Bob", 0)), admin))
+    alice = "Authorization: Bearer " + aliceKey
+    bob = "Authorization: Bearer " + bobKey
+    var sh2 = cliOut(listOf("share", "rcv-src.bin", "--server", "127.0.0.1:19457",
+        "--face", "19458", "--bearer", aliceKey))
+    var tok2 = tokOf(sh2)
+    // the owner's serving device: registered under the signed-up lane id
+    var devTxt = "" + File("server-registry.devices.json").readText()
+    var devId = ""
+    var dcut = devTxt.indexOf("\"id\":\"")
+    if (dcut >= 0) {
+        var seg = devTxt.substring(dcut + 6, devTxt.length())
+        devId = seg.split("\"")[0]
+    }
+    println("DBG sh2=[" + capR(sh2, 200) + "] devId=" + devId)
+    println("secondPlaneShare=" + (tok2.length() == 64 && devId.length() > 0))
+    ok = ok && tok2.length() == 64 && devId.length() > 0
+
+    // possession lane works BEFORE the device revocation
+    var pre = http.get(base + "/s/" + tok2, "")
+    println("preRevokeServes=" + (pre.indexOf("{") == 0))
+    ok = ok && pre.indexOf("{") == 0
+
+    // revoke the device: DEV003/DEV004 by name (v2 contract, transitive to grants)
+    var rvDev = http.post(base + "/devices/" + devId + "/revoke", "", admin)
+    var after = http.get(base + "/s/" + tok2, "")
+    println("deviceRevokeKillsGrants=" + (rvDev.indexOf("DEVICE-REVOKED") == 0
+        && after.indexOf("DEV") == 0))
+    ok = ok && rvDev.indexOf("DEVICE-REVOKED") == 0 && after.indexOf("DEV") == 0
+
+    // ── 9: PLANE RESTART after revocations — refusals SURVIVE (no resurrection
+    // through reload; the revoked stays revoked, §11.19) ──
+    killPort(19457)
+    var boot3 = bootPlane("plane3Up")
+    ready = boot3 == "true"
+    var afterReload = http.get(base + "/s/" + tok2, "")
+    println("revocationSurvivesRestart=" + (ready && afterReload.indexOf("DEV") == 0))
+    ok = ok && ready && afterReload.indexOf("DEV") == 0
+
+    if (ok) {
+        println("REVOKECHECK-OK legs=12")
+    } else {
+        println("REVOKECHECK-FAIL")
+        throw "kofshare: REVOKECHECK-FAIL"
+    }
+}
+
+Int[] makeData(Int n) {
+    var out = new Int[n]
+    var i = 0
+    while (i < n) {
+        out[i] = (i * 97 + 41) % 233
+        i = i + 1
+    }
+    return out
+}

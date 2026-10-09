@@ -1,6 +1,7 @@
 package kofshare.server
 
 import kofshare.control.app
+import kofshare.core
 import kofshare.control.registry
 import kofshare.control.share
 import kofshare.control.auth
@@ -19,42 +20,42 @@ import kof.time
 main() {
     var devices = new Map<String, DeviceInfo>()
     var offers = new Map<String, OfferInfo>()
-    controlLoadList("server-registry.devices.json", devices, null)
-    controlLoadList("server-registry.offers.json", null, offers)
+    controlLoadList(planeFile("server-registry.devices.json"), devices, null)
+    controlLoadList(planeFile("server-registry.offers.json"), null, offers)
     var opurge = controlPurgeExpired(offers, devices, time.now(), offerTtlMs())
     if (opurge > 0) {
         println("server: purged " + opurge + " stale offers (A4 hygiene)")
-        controlSaveList("server-registry.offers.json", controlOffersJson(offers, ""))
+        controlSaveList(planeFile("server-registry.offers.json"), controlOffersJson(offers, ""))
     }
 
     var devkeys = new Map<String, DeviceKey>()
-    var kload = controlLoadDevkeys(devkeys, "server-registry.devkeys.json")
+    var kload = controlLoadDevkeys(devkeys, planeFile("server-registry.devkeys.json"))
     if (kload.indexOf("REG009") == 0) {
         throw kload
     }
     var presences = new Map<String, PresenceInfo>()
-    var pload = presenceLoadList(presences, "server-registry.presence.json")
+    var pload = presenceLoadList(presences, planeFile("server-registry.presence.json"))
     if (pload.indexOf("PRES041") == 0) {
         throw pload
     }
     var sessions = new Map<String, SessionInfo>()
-    var nload = sessionLoadList(sessions, "server-registry.sessions.json")
+    var nload = sessionLoadList(sessions, planeFile("server-registry.sessions.json"))
     if (nload.indexOf("SES041") == 0) {
         throw nload
     }
     var snPurge = sessionPurgeExpired(sessions, time.now())
     if (snPurge > 0) {
-        controlSaveList("server-registry.sessions.json", sessionsJson(sessions, "", ""))
+        controlSaveList(planeFile("server-registry.sessions.json"), sessionsJson(sessions, "", ""))
     }
     var shares = new Map<String, ShareInfo>()
-    var spath = "server-registry.shares.json"
+    var spath = planeFile("server-registry.shares.json")
     var load = shareLoadList(shares, spath)
     if (load.indexOf("REG041") == 0) {
         throw load
     }
     sharesPurgeExpired(shares, time.now())
 
-    var kpath = "server-control.ed25519"
+    var kpath = planeFile("server-control.ed25519")
     var kf = File(kpath)
     var controlKey = secrets.of("")
     if (kf.exists()) {
@@ -72,7 +73,7 @@ main() {
 
     presenceMarkOfflineAll(presences, devices, time.now())
     var accounts = new Map<String, Account>()
-    var apath = "server-registry.accounts.json"
+    var apath = planeFile("server-registry.accounts.json")
     var aload = authLoadList(accounts, apath)
     if (aload.indexOf("AUTH043") == 0) {
         throw aload
@@ -80,11 +81,11 @@ main() {
     var controlSecret = loadControlSecret()
     bootstrapAdmin(accounts, apath, controlSecret)
 
-    controlServe(18322, devices, offers,
-        "server-registry.devices.json", "server-registry.offers.json",
+    controlServe(pcPort(18322), devices, offers,
+        planeFile("server-registry.devices.json"), planeFile("server-registry.offers.json"),
         shares, spath, controlKey, accounts, apath, controlSecret,
-        devkeys, "server-registry.devkeys.json", sessions, "server-registry.sessions.json",
-        presences, "server-registry.presence.json")
+        devkeys, planeFile("server-registry.devkeys.json"), sessions, planeFile("server-registry.sessions.json"),
+        presences, planeFile("server-registry.presence.json"))
 }
 
 // C3: the control secret signs every bearer JWT. Minted ONCE via
@@ -92,7 +93,7 @@ main() {
 // v1 single-host trade-off as the Ed25519 key), re-registered into the
 // runtime auth layer on every boot.
 String loadControlSecret() {
-    var f = File("server-control.apikey")
+    var f = File(planeFile("server-control.apikey"))
     if (f.exists()) {
         var txt = f.readText()
         if (txt != null && txt.length() >= 32) {
@@ -135,7 +136,7 @@ void bootstrapAdmin(Map<String, Account> accounts, String apath, String controlS
         throw "server: admin bootstrap refused: " + r
     }
     controlSaveList(apath, authAccountsJson(accounts))
-    var bearer = File("server-control.bearer")
+    var bearer = File(planeFile("server-control.bearer"))
     if (!bearer.writeText(authMint(controlSecret, "admin", "owner", 86400))) {
         throw "server: cannot persist admin bearer"
     }

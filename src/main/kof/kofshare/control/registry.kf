@@ -235,7 +235,7 @@ String controlLoadList(String path, Map<String, DeviceInfo> devices, Map<String,
 // invalid · DEV003 device revoked · DEV004 signature required ·
 // DEV005 deviceId does not match public key.
 
-record DeviceKey(String deviceId, String pub, String status)
+record DeviceKey(String deviceId, String pub, String status, String owner)
 
 // What the NEW client posts on /devices (superset of DeviceInfo; a v1 body
 // decodes with null pub/regSig — the app route treats that as the LEGACY
@@ -290,7 +290,7 @@ String controlEnroll(Map<String, DeviceInfo> devices, Map<String, DeviceKey> dev
         return "DEV005: device id already bound to a different public key"
     }
     devices.put(id, DeviceInfo(id, name, address))
-    devkeys.put(id, DeviceKey(id, pub, "active"))
+    devkeys.put(id, DeviceKey(id, pub, "active", ""))
     return "OK"
 }
 
@@ -325,7 +325,7 @@ String controlDeviceRevoke(Map<String, DeviceKey> devkeys, String id) {
     if (key == null) {
         return "DEV001: no public key for device " + id
     }
-    devkeys.put(id, DeviceKey(key.deviceId, key.pub, "revoked"))
+    devkeys.put(id, DeviceKey(key.deviceId, key.pub, "revoked", key.owner))
     return "OK"
 }
 

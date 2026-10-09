@@ -1,0 +1,268 @@
+package kofshare.acctischeck
+
+// GATE 4 — ACCOUNTISOLATIONCHECK: multi-user isolation on the central plane,
+// real processes, three accounts, SIGNED device lane (owner bound at TOFU
+// enroll) + keyless v1 lane (ownerless by design, Track M — preserved).
+// Proves §11.3/4 (user A cannot touch B's resources), §4 (isolation, admin
+// lane explicit, nothing elevated silently) and restart honesty (owners
+// survive reload; a refusal never degrades into permission).
+// ACCOUNTISOLATIONCHECK-OK legs=11. Port 19459 owned here.
+
+import kof.http
+import kof.crypto
+import kof.json
+import kof.net
+import kof.shell
+import kof.time
+import kofshare.control.auth
+import kofshare.control.registry
+import kofshare.control.share
+import kofshare.control.grant
+import kofshare.identity
+
+String jar() {
+    return "/home/mel/tools/kof-pin/kof-cli-f2629e32d.jar"
+}
+
+String cliOut(List<String> verbArgs) {
+    var cmd = "cd /home/mel/Documents/kof-share && java -jar " + jar()
+        + " run src/main/kof/kofshare/cli/cli.kf"
+    for (var a in verbArgs) {
+        cmd = cmd + " " + a
+    }
+    var res = shell.run("sh", listOf("-c", cmd + " 2>&1"))
+    var out = ""
+    var lines = res.stdout.split("\n")
+    var i = 0
+    while (i < lines.size) {
+        var ln = lines[i]
+        if (ln.indexOf("L-05") < 0 && ln.indexOf("warning:") < 0) {
+            out = out + ln + "\n"
+        }
+        i = i + 1
+    }
+    return out
+}
+
+void killPort(Int port) {
+    shell.run("sh", listOf("-c", "fuser -k " + port + "/tcp 2>/dev/null; true"))
+    var t = 0
+    while (t < 240) {
+        t = t + 1
+        try {
+            var c = net.connect("127.0.0.1", port)
+            c.close()
+        } catch (String e) {
+            return
+        }
+    }
+}
+
+String keyOf(String resp) {
+    var pre = "APIKEY "
+    if (resp.indexOf(pre) == 0) {
+        return resp.substring(pre.length(), resp.length()).trim()
+    }
+    return ""
+}
+
+String sha64(String v) {
+    var h = crypto.sha256(v)
+    while (h.length() < 64) {
+        h = h + "0"
+    }
+    return h.substring(0, 64)
+}
+
+main() {
+    var ok = true
+    var base = "http://127.0.0.1:19459"
+    killPort(19459)
+    cliOut(listOf("stop"))
+    var scratch = listOf("server-control.bearer", "server-control.apikey", "server-control.ed25519",
+        "server-registry.devices.json", "server-registry.offers.json", "server-registry.shares.json",
+        "server-registry.grants.json", "server-registry.accounts.json", "server-registry.devkeys.json",
+        "server-registry.sessions.json", "server-registry.presence.json", "kofshare-server.log",
+        "kofshare-server.pid", "kofshare-cli.config", "ac-alice.ed25519", "ac-bob.ed25519")
+    for (var f in scratch) {
+        if (File(f).exists()) {
+            File(f).delete()
+        }
+    }
+    File("kofshare-cli.config").writeText("jar=" + jar() + "\nworkdir=/home/mel/Documents/kof-share\n")
+    if (File("kofshare-server.log").exists()) {
+        File("kofshare-server.log").delete()
+    }
+    var boot = cliOut(listOf("server", "19459", "--start"))
+    var ready = false
+    var tries = 0
+    while (!ready && tries < 240) {
+        tries = tries + 1
+        try {
+            ready = http.get(base + "/health") == "OK"
+        } catch (String e) {
+            ready = false
+        }
+    }
+    println("plane=" + (boot.indexOf("SERVER-READY") >= 0 && ready))
+    ok = ok && ready
+    var admin = "Authorization: Bearer " + File("server-control.bearer").readText()
+    var aliceKey = keyOf(http.post(base + "/accounts",
+        json.encode(AccountRequest("alice", "Alice", 0)), admin))
+    var bobKey = keyOf(http.post(base + "/accounts",
+        json.encode(AccountRequest("bob", "Bob", 0)), admin))
+    var carolKey = keyOf(http.post(base + "/accounts",
+        json.encode(AccountRequest("carol", "Carol", 0)), admin))
+    println("accounts=" + (aliceKey.length() > 20 && bobKey.length() > 20 && carolKey.length() > 20))
+    ok = ok && aliceKey.length() > 20 && bobKey.length() > 20 && carolKey.length() > 20
+    var alice = "Authorization: Bearer " + aliceKey
+    var bob = "Authorization: Bearer " + bobKey
+    var carol = "Authorization: Bearer " + carolKey
+
+    // ── signed enrollments: alice owns AL_DEV, bob owns BOB_DEV (TOFU) ──
+    var skA = identityBoot("ac-alice.ed25519")
+    var pubA = identityPub(skA)
+    var idA = identityDeviceId(pubA)
+    var regA = DeviceRegister(idA, "alice-laptop", "10.1.0.1:8021", pubA,
+        signReg(skA, idA, "alice-laptop", "10.1.0.1:8021", pubA))
+    var regOutA = http.post(base + "/devices/register", json.encode(regA), alice)
+    var skB = identityBoot("ac-bob.ed25519")
+    var pubB = identityPub(skB)
+    var idB = identityDeviceId(pubB)
+    var regB = DeviceRegister(idB, "bob-book", "10.2.0.1:8021", pubB,
+        signReg(skB, idB, "bob-book", "10.2.0.1:8021", pubB))
+    var regOutB = http.post(base + "/devices/register", json.encode(regB), bob)
+    println("enrollBoth=" + (regOutA.indexOf("REGISTERED: " + idA) == 0
+        && regOutB.indexOf("REGISTERED: " + idB) == 0))
+    ok = ok && regOutA.indexOf("REGISTERED: " + idA) == 0
+    ok = ok && regOutB.indexOf("REGISTERED: " + idB) == 0
+
+    // ── 1: bob offers on ALICE's device → AUTH004, nothing inserted ──
+    var badOffer = http.post(base + "/offers", json.encode(
+        OfferRequest("x-off", idA, "alice.bin", 1024, sha64("/srv/alice.bin"),
+            signOffer(skB, "x-off", idA, "alice.bin", 1024, sha64("/srv/alice.bin")),
+            "", "alice.bin", 0, "FILE", "")), bob)
+    var offersA = http.get(base + "/offers?device=" + idA, "")
+    println("foreignOfferRefused=" + (badOffer.indexOf("AUTH004") == 0
+        && offersA.indexOf("x-off") < 0))
+    ok = ok && badOffer.indexOf("AUTH004") == 0 && offersA.indexOf("x-off") < 0
+
+    // ── 2: alice's own offer lands ──
+    var goodOffer = http.post(base + "/offers", json.encode(
+        OfferRequest("al-off", idA, "alice.bin", 1024, sha64("/srv/alice.bin"),
+            signOffer(skA, "al-off", idA, "alice.bin", 1024, sha64("/srv/alice.bin")),
+            "", "alice.bin", 0, "FILE", "")), alice)
+    println("ownerOffer=" + (goodOffer.indexOf("OFFERED: al-off") == 0))
+    ok = ok && goodOffer.indexOf("OFFERED: al-off") == 0
+
+    // ── 3: bob mints a share on alice's offer → AUTH004 (the §11.4 attack) ──
+    var badMint = http.post(base + "/shares", json.encode(ShareRequest("al-off", 0, 0, true, false)), bob)
+    println("foreignMintRefused=" + (badMint.indexOf("AUTH004") == 0))
+    ok = ok && badMint.indexOf("AUTH004") == 0
+
+    // ── 4: alice mints her own; possession lane answers ──
+    var goodMint = http.post(base + "/shares", json.encode(ShareRequest("al-off", 0, 0, true, false)), alice)
+    var tok = ""
+    if (goodMint.indexOf("SHARED ") == 0) {
+        var parts = goodMint.split(" ")
+        tok = parts[2]
+    }
+    var serveOk = http.get(base + "/s/" + tok, "")
+    println("ownerMint=" + (tok.length() == 64 && serveOk.indexOf("{") == 0))
+    ok = ok && tok.length() == 64 && serveOk.indexOf("{") == 0
+
+    // ── 5: keyless legacy lane preserved (Track M) — bob registers keyless,
+    // offers, mints: NO owner record exists, the v1 single-host lane lives ──
+    var keyless = http.post(base + "/devices",
+        json.encode(DeviceInfo("lk-dev", "legacy", "10.3.0.1:8021")), bob)
+    var klOffer = http.post(base + "/offers", json.encode(
+        OfferRequest("lk-off", "lk-dev", "/srv/legacy.bin", 512, sha64("/srv/legacy.bin"),
+            "", "", "legacy.bin", 0, "FILE", "")), bob)
+    var klMint = http.post(base + "/shares", json.encode(ShareRequest("lk-off", 0, 0, true, false)), bob)
+    println("keylessLane=" + (keyless.indexOf("REGISTERED: lk-dev") == 0
+        && klOffer.indexOf("OFFERED: lk-off") == 0 && klMint.indexOf("SHARED ") == 0))
+    ok = ok && keyless.indexOf("REGISTERED: lk-dev") == 0
+    ok = ok && klOffer.indexOf("OFFERED: lk-off") == 0 && klMint.indexOf("SHARED ") == 0
+
+    // ── 6: carol cannot revoke alice's share (device-owner derivation) ──
+    var sid = ""
+    if (goodMint.indexOf("SHARED ") == 0) {
+        sid = goodMint.split(" ")[1]
+    }
+    var carolRevoke = http.post(base + "/shares/" + sid + "/revoke", "", carol)
+    var aliceRevoke = http.post(base + "/shares/" + sid + "/revoke?reason=done", "", alice)
+    println("strangerRevoke=" + (carolRevoke.indexOf("AUTH005") == 0
+        && aliceRevoke.indexOf("SHARE-REVOKED") == 0))
+    ok = ok && carolRevoke.indexOf("AUTH005") == 0 && aliceRevoke.indexOf("SHARE-REVOKED") == 0
+
+    // ── 7: admin lane passes by design (bootstrap recovery, documented) ──
+    var adminMint = http.post(base + "/shares", json.encode(ShareRequest("al-off", 0, 0, true, false)), admin)
+    println("adminLane=" + (adminMint.indexOf("SHARED ") == 0))
+    ok = ok && adminMint.indexOf("SHARED ") == 0
+
+    // ── 8: RESTART — owners survive; a refusal never degrades into permission ──
+    killPort(19459)
+    if (File("kofshare-server.log").exists()) {
+        File("kofshare-server.log").delete()
+    }
+    var boot2 = cliOut(listOf("server", "19459", "--start"))
+    ready = false
+    tries = 0
+    while (!ready && tries < 240) {
+        tries = tries + 1
+        try {
+            ready = http.get(base + "/health") == "OK"
+        } catch (String e) {
+            ready = false
+        }
+    }
+    var bobAfter = http.post(base + "/offers", json.encode(
+        OfferRequest("x-off2", idA, "alice2.bin", 1024, sha64("/srv/alice2.bin"),
+            signOffer(skB, "x-off2", idA, "alice2.bin", 1024, sha64("/srv/alice2.bin")),
+            "", "alice2.bin", 0, "FILE", "")), bob)
+    println("ownersSurviveRestart=" + (ready && bobAfter.indexOf("AUTH004") == 0))
+    ok = ok && ready && bobAfter.indexOf("AUTH004") == 0
+
+    // ── 9: bob's own signed device stays usable BY BOB (isolation is a
+    // fence, not a lockout of legitimate owners) ──
+    var bobOffer = http.post(base + "/offers", json.encode(
+        OfferRequest("bb-off", idB, "bob.bin", 700, sha64("/srv/bob.bin"),
+            signOffer(skB, "bb-off", idB, "bob.bin", 700, sha64("/srv/bob.bin")),
+            "", "bob.bin", 0, "FILE", "")), bob)
+    var bobMint = http.post(base + "/shares", json.encode(ShareRequest("bb-off", 0, 0, true, false)), bob)
+    println("ownerOwnDevice=" + (bobOffer.indexOf("OFFERED: bb-off") == 0
+        && bobMint.indexOf("SHARED ") == 0))
+    ok = ok && bobOffer.indexOf("OFFERED: bb-off") == 0 && bobMint.indexOf("SHARED ") == 0
+
+    // ── 10: devkeys file carries owner (state shape, audit) ──
+    var dkTxt = "" + File("server-registry.devkeys.json").readText()
+    println("ownerPersisted=" + (dkTxt.indexOf("\"owner\":\"alice\"") >= 0
+        && dkTxt.indexOf("\"owner\":\"bob\"") >= 0))
+    ok = ok && dkTxt.indexOf("\"owner\":\"alice\"") >= 0
+    ok = ok && dkTxt.indexOf("\"owner\":\"bob\"") >= 0
+
+    // ── 11: the admin bearer never impersonates a user account (separation of
+    // control key vs user credential — §4 audit) ──
+    var whoAdmin = http.get(base + "/whoami", admin)
+    var mintAsAdmin = http.post(base + "/shares/identity", json.encode(
+        GrantRequest("al-off", "admin", 0, 0, true, false, true)), admin)
+    // GRANT016 is fine (admin self), any AUTH is fine — the invariant: admin's
+    // SUB is "admin", distinct from alice/bob/carol accounts.
+    println("adminSubDistinct=" + (whoAdmin == "WHOAMI admin"))
+    ok = ok && whoAdmin == "WHOAMI admin"
+
+    cliOut(listOf("stop"))
+    killPort(19459)
+    for (var f in scratch) {
+        if (File(f).exists()) {
+            File(f).delete()
+        }
+    }
+
+    if (ok) {
+        println("ACCOUNTISOLATIONCHECK-OK legs=11")
+    } else {
+        println("ACCOUNTISOLATIONCHECK-FAIL")
+        throw "kofshare: ACCOUNTISOLATIONCHECK-FAIL"
+    }
+}

@@ -1,0 +1,229 @@
+package kofshare.deploycheck
+
+// GATE 3 — remote/production server deployment golden.
+// Proves with REAL processes:
+//   - kofshare.dir moves ALL control state (keys, bearer, 7 registries) into
+//     the chosen directory; zero state files in cwd
+//   - health check answers "OK" and leaks no paths/keys
+//   - publicurl rewrites the minted link locator for reverse proxies (docs/deploy.md)
+//   - backup = directory copy, restore = pointing config back: survives reboot
+//   - FAIL-CLOSED on corruption (§6): corrupted grants file stops plane boot by
+//     name (GRANT041), preventing silent downgrade to possession mode
+//   - body cap: payloads >65KB refused as REG042
+//   - bad port in config refused as SERVER-CONF-ERR
+// DEPLOYMENTCHECK-OK legs=10. Port 19456 owned here.
+
+import kof.http
+import kof.json
+import kof.net
+import kof.process
+import kof.shell
+import kof.time
+import kofshare.core
+import kofshare.control.auth
+
+String jar() {
+    return "/home/mel/tools/kof-pin/kof-cli-f2629e32d.jar"
+}
+
+String cliCmd(String configPath, List<String> verbArgs) {
+    var cmd = "cd /home/mel/Documents/kof-share && KOF_CONFIG=" + configPath
+        + " java -jar " + jar() + " run src/main/kof/kofshare/cli/cli.kf"
+    for (var a in verbArgs) {
+        cmd = cmd + " " + a
+    }
+    var res = shell.run("sh", listOf("-c", cmd + " 2>&1"))
+    var out = ""
+    var lines = res.stdout.split("\n")
+    var i = 0
+    while (i < lines.size) {
+        var ln = lines[i]
+        if (ln.indexOf("L-05") < 0 && ln.indexOf("warning:") < 0) {
+            out = out + ln + "\n"
+        }
+        i = i + 1
+    }
+    return out
+}
+
+void killPort(Int port) {
+    shell.run("sh", listOf("-c", "fuser -k " + port + "/tcp 2>/dev/null; true"))
+    var t = 0
+    while (t < 240) {
+        t = t + 1
+        try {
+            var c = net.connect("127.0.0.1", port)
+            c.close()
+        } catch (String e) {
+            return
+        }
+    }
+}
+
+Bool quickProbe(String base) {
+    var t = 0
+    while (t < 12) {
+        t = t + 1
+        try {
+            var c = net.connect("127.0.0.1", 19456)
+            c.close()
+            return true
+        } catch (String e) {
+            time.sleep(500)
+        }
+    }
+    return false
+}
+
+Bool waitReady(String base) {
+    var t = 0
+    while (t < 240) {
+        t = t + 1
+        try {
+            if (http.get(base + "/health") == "OK") {
+                return true
+            }
+        } catch (String e) {
+            time.sleep(250)
+        }
+    }
+    return false
+}
+
+String keyOf(String resp) {
+    var pre = "APIKEY "
+    if (resp.indexOf(pre) == 0) {
+        return resp.substring(pre.length(), resp.length()).trim()
+    }
+    return ""
+}
+
+main() {
+    var ok = true
+    var port = 19456
+    var base = "http://127.0.0.1:" + port
+    var dir1 = "/tmp/kofshare-deploy-1"
+    var dir2 = "/tmp/kofshare-deploy-restored"
+    var conf1 = "/tmp/kofshare-deploy-1.conf"
+    var conf2 = "/tmp/kofshare-deploy-2.conf"
+    var confBad = "/tmp/kofshare-deploy-bad.conf"
+
+    killPort(port)
+    shell.run("rm", listOf("-rf", dir1, dir2, conf1, conf2, confBad))
+    File("kofshare-cli.config").writeText("jar=" + jar() + "\nworkdir=/home/mel/Documents/kof-share\n")
+
+    // config: explicit directory + port + public URL
+    File(conf1).writeText("kofshare.dir=" + dir1 + "\nkofshare.port=" + port
+        + "\nkofshare.publicurl=https://share.example.com\n")
+
+    // ── 1: plane starts up, creates dir, all state isolated ──
+    var boot = cliCmd(conf1, listOf("server", "" + port, "--start"))
+    var up = waitReady(base)
+    println("deployStart=" + up)
+    ok = ok && up
+
+    // ── 2: all state files live in dir1, zero in cwd ──
+    var inDir = File(dir1 + "/server-control.bearer").exists()
+        && File(dir1 + "/server-control.apikey").exists()
+        && File(dir1 + "/server-control.ed25519").exists()
+    println("stateIsolatedToDir=" + inDir)
+    ok = ok && inDir
+
+    // ── 3: health endpoint is clean, no secrets or paths ──
+    var h = http.get(base + "/health")
+    var cleanHealth = h == "OK"
+    println("healthClean=" + cleanHealth)
+    ok = ok && cleanHealth
+
+    // ── 4: account minted in this plane lands inside dir1 ──
+    var bearerTxt = File(dir1 + "/server-control.bearer").readText()
+    var bearerClean = ""
+    if (bearerTxt != null) {
+        bearerClean = bearerTxt.trim()
+    }
+    var admin = "Authorization: Bearer " + bearerClean
+    var aliceKey = keyOf(http.post(base + "/accounts",
+        json.encode(AccountRequest("alice", "Alice", 0)), admin))
+    var acctsTxt = "" + File(dir1 + "/server-registry.accounts.json").readText()
+    var acctInDir = aliceKey.length() > 20 && acctsTxt.indexOf("alice") >= 0
+    println("accountSavedInDir=" + acctInDir)
+    ok = ok && acctInDir
+
+    // ── 5: publicurl rewrites the link locator for reverse proxies ──
+    File("deploy-src.bin").writeText("deploy-content-test")
+    var shOut = cliCmd(conf1, listOf("share", "deploy-src.bin", "--server", "127.0.0.1:" + port,
+        "--bearer", aliceKey, "--raw"))
+    var linkPublic = shOut.indexOf("https://share.example.com/s/") >= 0
+    println("publicUrlRewritten=" + linkPublic)
+    ok = ok && linkPublic
+    File("deploy-src.bin").delete()
+
+    // ── 6: restart reloads from dir1 cleanly ──
+    killPort(port)
+    var reboot = cliCmd(conf1, listOf("server", "" + port, "--start"))
+    var reUp = waitReady(base)
+    var whoReboot = http.get(base + "/whoami", "Authorization: Bearer " + aliceKey)
+    var reloadOk = reUp && whoReboot == "WHOAMI alice"
+    println("restartReloadsFromDir=" + reloadOk)
+    ok = ok && reloadOk
+
+    // ── 7: backup & restore procedure (copy dir, point config to copy) ──
+    killPort(port)
+    shell.run("cp", listOf("-r", dir1, dir2))
+    File(conf2).writeText("kofshare.dir=" + dir2 + "\nkofshare.port=" + port + "\n")
+    var bootRestored = cliCmd(conf2, listOf("server", "" + port, "--start"))
+    var restoredUp = waitReady(base)
+    var whoRestored = http.get(base + "/whoami", "Authorization: Bearer " + aliceKey)
+    var backupWorks = restoredUp && whoRestored == "WHOAMI alice"
+    println("backupAndRestoreWorks=" + backupWorks)
+    ok = ok && backupWorks
+
+    // ── 8: FAIL-CLOSED on corruption (gigaprompt §6) ──
+    killPort(port)
+    File(dir2 + "/server-registry.grants.json").writeText("{corrupt:not-json")
+    var corruptBoot = cliCmd(conf2, listOf("server", "--start"))
+    // --start: the throw lives in the CHILD log; the parent times out with
+    // SERVER-ERR. Both are honest evidence; assert child marker + never-ready.
+    var blog = "" + File("kofshare-server.log").readText()
+    var corruptRefused = blog.indexOf("GRANT041") >= 0 && !quickProbe(base)
+    println("failClosedOnCorruption=" + corruptRefused)
+    ok = ok && corruptRefused
+
+    // ── 9: abuse protection / body cap (REG042) ──
+    // start clean plane for cap assertion
+    killPort(port)
+    File(dir2 + "/server-registry.grants.json").delete()
+    cliCmd(conf2, listOf("server", "--start"))
+    waitReady(base)
+    var bigBody = "x"
+    var bi = 0
+    while (bi < 17) {
+        bigBody = bigBody + bigBody
+        bi = bi + 1
+    }
+    // bigBody is now >65KB
+    var bigPost = http.post(base + "/shares", bigBody, admin)
+    var bodyCapRefused = bigPost.indexOf("REG042") >= 0
+    println("bodyCapRefused=" + bodyCapRefused)
+    ok = ok && bodyCapRefused
+
+    // ── 10: bad config is rejected by name (SERVER-CONF-ERR) ──
+    File(confBad).writeText("kofshare.port=999999\n")
+    var badConfBoot = cliCmd(confBad, listOf("server", "--start"))
+    var badLog = "" + File("kofshare-server.log").readText()
+    var confErrOk = badConfBoot.indexOf("SERVER-CONF-ERR") >= 0
+        || badLog.indexOf("SERVER-CONF-ERR") >= 0
+    println("badConfigRefused=" + confErrOk)
+    ok = ok && confErrOk
+
+    // teardown
+    killPort(port)
+    shell.run("rm", listOf("-rf", dir1, dir2, conf1, conf2, confBad))
+
+    if (ok) {
+        println("DEPLOYMENTCHECK-OK legs=10")
+    } else {
+        println("DEPLOYMENTCHECK-FAIL")
+        throw "kofshare: DEPLOYMENTCHECK-FAIL"
+    }
+}

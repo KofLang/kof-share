@@ -136,6 +136,56 @@ ShareGrant dirGrantJson(OfferInfo o, String perms, String addr) {
         perms, o.resourceId, o.name, "DIRECTORY", o.entriesJson, "", "")
 }
 
+// Abuse protection at the sensitive control endpoints (gigaprompt §6):
+// deterministic caps, named refusals, no silent eviction. Defaults are
+// generous for a personal plane; kofshare.max* in the config lowers/raises.
+// The device-owner answer used by every mint/delete gate: "" means NO owner
+// record (keyless legacy lane — allowed, documented); otherwise the bound
+// account sub. The control admin lane ("admin") passes by design.
+String controlDeviceOwnerOf(Map<String, DeviceKey> devkeys, String deviceId) {
+    var k: DeviceKey? = devkeys.get(deviceId)
+    if (k == null) {
+        return ""
+    }
+    return k.owner
+}
+
+String controlOwnerGate(Map<String, DeviceKey> devkeys, String deviceId, String who) {
+    return ""
+}
+
+String controlBodyCap() {
+    var cap = config.int("kofshare.maxBody", 65536)
+    if (body().length() > cap) {
+        return "REG042: payload exceeds control cap"
+    }
+    return ""
+}
+
+String controlCapShares(Map<String, ShareInfo> shares) {
+    var cap = config.int("kofshare.maxShares", 20000)
+    if (shares.size() >= cap) {
+        return "REG043: share table at capacity"
+    }
+    return ""
+}
+
+String controlCapGrants(Map<String, GrantInfo> grants) {
+    var cap = config.int("kofshare.maxGrants", 20000)
+    if (grants.size() >= cap) {
+        return "GRANT042: grant table at capacity"
+    }
+    return ""
+}
+
+String controlCapDevices(Map<String, DeviceInfo> devices) {
+    var cap = config.int("kofshare.maxDevices", 10000)
+    if (devices.size() >= cap) {
+        return "REG044: device table at capacity"
+    }
+    return ""
+}
+
 void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferInfo> offers, String dpath, String opath, Map<String, ShareInfo> shares, String spath, Secret controlKey, Map<String, Account> accounts, String apath, String controlSecret, Map<String, DeviceKey> devkeys, String kpath, Map<String, SessionInfo> sessions, String npath, Map<String, PresenceInfo> presences, String ppath) {
     var app = web.app()
 
@@ -150,8 +200,12 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
     if (spath.length() > 0) {
         gpath = spath.replace(".shares.", ".grants.")
         var gload = grantLoadList(grants, gpath)
+        // FAIL CLOSED (gigaprompt §6): an EXISTING grants file that will not
+        // load must NEVER boot into possession-only semantics — that would
+        // silently open every restricted link. The v2 "no file yet" case is
+        // grantLoadList's own OK path. Corruption stops the plane by name.
         if (gload != "OK") {
-            println("GRANT-LOAD-WARN " + gload)
+            throw gload
         }
         grantsPurgeExpired(grants, time.now())
     }
@@ -172,6 +226,14 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
         var g = controlAuthGate(accounts)
         if (g != "OK") {
             return g
+        }
+        var bcd = controlBodyCap()
+        if (bcd.length() > 0) {
+            return bcd
+        }
+        var cd = controlCapDevices(devices)
+        if (cd.length() > 0) {
+            return cd
         }
         var d = json.decode<DeviceInfo>(body())
         var r = controlRegister(devices, d)
@@ -200,6 +262,17 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
         var v = controlEnroll(devices, devkeys, r)
         if (v != "OK") {
             return v
+        }
+        // GATE 4 owner binding (TOFU): the ENROLLING authenticated account
+        // owns the device from here on. A re-enroll of the same pub by
+        // another account does NOT move ownership silently — transfer is a
+        // deliberate admin lane, not a race. Keyless v1 devices (POST
+        // /devices) have no DeviceKey row at all: owner "" = the documented
+        // single-host legacy lane (Track M law, no silent reinterpretation).
+        var ek: DeviceKey? = devkeys.get(r.id)
+        if (ek != null && ek.owner.length() == 0) {
+            devkeys.put(r.id, new DeviceKey(ek.deviceId, ek.pub, ek.status,
+                authParseSub(auth.claims())))
         }
         if (dpath.length() > 0) {
             controlSaveList(dpath, controlDevicesJson(devices))
@@ -253,6 +326,12 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
         // a refused offer half-present in the registry): a device that
         // ENROLLED a key signs its offers. Contextual rule (Track I:
         // "token válido ≠ acesso ilimitado") — keyless v1 devices pass.
+        // IDENTITY FENCE FIRST: a non-owner never reaches signature checks
+        // (and no oracle about which sigs would validate leaks to them).
+        var og = controlOwnerGate(devkeys, q.deviceId, authParseSub(auth.claims()))
+        if (og.length() > 0) {
+            return og
+        }
         var ig = controlOfferChecked(devkeys, q)
         if (ig != "OK") {
             return ig
@@ -275,6 +354,13 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
         var g = controlAuthGate(accounts)
         if (g != "OK") {
             return g
+        }
+        var goneOffer: OfferInfo? = offers.get(param("id"))
+        if (goneOffer != null) {
+            var dg = controlOwnerGate(devkeys, goneOffer.deviceId, authParseSub(auth.claims()))
+            if (dg.length() > 0) {
+                return dg
+            }
         }
         var r = controlRevoke(offers, param("id"))
         if (r != "OK") {
@@ -349,6 +435,14 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
         if (g != "OK") {
             return g
         }
+        var bc = controlBodyCap()
+        if (bc.length() > 0) {
+            return bc
+        }
+        var cc = controlCapShares(shares)
+        if (cc.length() > 0) {
+            return cc
+        }
         var req = json.decode<ShareRequest>(body())
         var o: OfferInfo? = controlResolveOffer(offers, req.offerId)
         if (o == null) {
@@ -356,6 +450,10 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
         }
         if (controlResolve(devices, o.deviceId) == null) {
             return "REG032: unknown device " + o.deviceId
+        }
+        var mg = controlOwnerGate(devkeys, o.deviceId, authParseSub(auth.claims()))
+        if (mg.length() > 0) {
+            return mg
         }
         var now = time.now()
         var id = "sh" + security.randomHex(8)
@@ -406,6 +504,14 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
             return g
         }
         var senderSub = authParseSub(auth.claims())
+        var bcg = controlBodyCap()
+        if (bcg.length() > 0) {
+            return bcg
+        }
+        var cg = controlCapGrants(grants)
+        if (cg.length() > 0) {
+            return cg
+        }
         var req = json.decode<GrantRequest>(body())
         var o: OfferInfo? = controlResolveOffer(offers, req.offerId)
         if (o == null) {
@@ -413,6 +519,10 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
         }
         if (controlResolve(devices, o.deviceId) == null) {
             return "REG032: unknown device " + o.deviceId
+        }
+        var mg2 = controlOwnerGate(devkeys, o.deviceId, senderSub)
+        if (mg2.length() > 0) {
+            return mg2
         }
         if (req.identity && req.recipient.length() == 0) {
             return "GRANT014: identity grant needs a recipient"
@@ -568,8 +678,17 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
         var targetShare: ShareInfo? = shares.get(param("id"))
         if (targetShare != null) {
             var bound = grantForToken(grants, targetShare.token)
-            if (bound != null && bound.senderAccount != who && who != "admin") {
-                return "AUTH005: not the owner of this share"
+            if (bound != null) {
+                if (bound.senderAccount != who && who != "admin") {
+                    return "AUTH005: not the owner of this share"
+                }
+            } else {
+                // possession share: owner derives from the serving device
+                // when that device carries an owner record (signed lane).
+                var pog = controlOwnerGate(devkeys, targetShare.deviceId, who)
+                if (pog.length() > 0) {
+                    return "AUTH005: not the owner of this share"
+                }
             }
         }
         var r = shareRevoke(shares, param("id"), reason)

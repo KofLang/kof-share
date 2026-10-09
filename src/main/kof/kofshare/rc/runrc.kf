@@ -97,6 +97,14 @@ void main(List<String> args) {
     if (!step("HTTPGRANT-OK", j + " run src/main/kof/kofshare/grantcheckhttp/httpgrant.kf")) {
         failed = failed + " httpgrant"
     }
+    steps = steps + 1
+    if (!step("ACCOUNTISOLATIONCHECK-OK", j + " run src/main/kof/kofshare/acctischeck/checkacct.kf")) {
+        failed = failed + " acctis"
+    }
+    steps = steps + 1
+    if (!step("REVOKECHECK-OK", j + " run src/main/kof/kofshare/revcheck/checkrevoke.kf")) {
+        failed = failed + " revcheck"
+    }
     // HTTPCYCLE: the httpcheck/restart goldens ride the EXTERNAL standalone
     // plane on 18322 (server.kf binds 18322; they never spawn it themselves —
     // the documented "standalone cycle" recipe): fresh state → boot plane →
@@ -191,6 +199,10 @@ void main(List<String> args) {
     steps = steps + 1
     if (!step("DESKTOP-PRIV-OK", j + " run src/main/kof/kofshare/desktoppriv/privcheck.kf")) {
         failed = failed + " desktoppriv"
+    }
+    steps = steps + 1
+    if (!step("DEPLOYMENTCHECK-OK", j + " run src/main/kof/kofshare/deploycheck/checkdeploy.kf")) {
+        failed = failed + " deploycheck"
     }
     steps = steps + 1
     if (!step("INTEGRATIONCHECK-OK", j + " run src/main/kof/kofshare/integrationcheck/checkintegration.kf")) {
