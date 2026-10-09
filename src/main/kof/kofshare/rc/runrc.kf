@@ -46,6 +46,16 @@ void main(List<String> args) {
     var failed = ""
     var steps = 0
 
+    // PREFLIGHT (R7, permanent law from discovery §7 — three early RC steps
+    // were once poisoned by a live external plane): no product port may be
+    // bound when the battery starts; suites own their ports, not the market.
+    steps = steps + 1
+    if (!step("PORT-PREFLIGHT",
+        "busy=$(ss -tln 2>/dev/null | grep -E ':(18322|19440|19441|19442|19443|19444|19445|19446|19450|19451|19452|19453|19454|19455|19456|19457|19458|19459|8799) ' || true); " +
+        "[ -z \"$busy\" ] && echo PORT-PREFLIGHT-OK || { echo PORT-PREFLIGHT-BUSY; echo \"$busy\"; exit 1; }")) {
+        failed = failed + " preflight"
+    }
+
     // 1. every source file compiles standalone, zero errors (100% rule)
     steps = steps + 1
     if (!step("SWEEP-CHECK",

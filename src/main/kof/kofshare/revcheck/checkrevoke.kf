@@ -278,6 +278,11 @@ main() {
     println("revocationSurvivesRestart=" + (ready && afterReload.indexOf("DEV") == 0))
     ok = ok && ready && afterReload.indexOf("DEV") == 0
 
+    // teardown ALWAYS (R7 law: a surviving external plane poisons the next
+    // suite through shared state files — no verdict path may skip it)
+    cliOut(listOf("stop"))
+    killPort(19457)
+    killPort(19458)
     if (ok) {
         println("REVOKECHECK-OK legs=12")
     } else {
