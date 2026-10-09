@@ -3,6 +3,7 @@ package kofshare.control
 import kofshare.control.registry
 import kofshare.directory
 import kofshare.control.share
+import kofshare.control.grant
 import kofshare.control.auth
 import kofshare.control.session
 import kofshare.control.presence
@@ -24,14 +25,28 @@ import kof.auth
 // /s/<token> is the authorization gate (shareTouch decides; only "OK"
 // serves offer metadata). The SECRET stays a Secret handle end to end.
 
+// callerSub is the authenticated recipient identity ("" if the request carried
+// no valid bearer). For a possession grant it is unused; for an identity grant
+// grantAuthorize refuses ANY non-matching caller with the opaque REG035 BEFORE
+// any offer/device/presence lookup, so a wrong-holder learns nothing about the
+// resource or that the recipient account exists (prompt §3 rules 3/4/8/9).
 String handleGetShare(String token, String? childQuery, Map<String, ShareInfo> shares,
+                     Map<String, GrantInfo> grants, String gpath, String callerSub,
                      Map<String, OfferInfo> offers, Map<String, DeviceInfo> devices,
                      Map<String, DeviceKey> devkeys, Map<String, PresenceInfo> presences,
                      String spath) {
     var now = time.now()
+    var ga = grantAuthorize(grants, token, callerSub, now)
+    if (ga != "OK") {
+        return ga
+    }
     var r = shareTouch(shares, token, now)
     if (r != "OK") {
         return r
+    }
+    var gt = grantTouch(grants, token, now)
+    if (gt != "OK") {
+        return gt
     }
     var s = shareResolve(shares, token)
     if (s == null) {
@@ -64,6 +79,9 @@ String handleGetShare(String token, String? childQuery, Map<String, ShareInfo> s
     }
     if (spath.length() > 0) {
         controlSaveList(spath, sharesJson(shares))
+    }
+    if (gpath.length() > 0) {
+        controlSaveList(gpath, grantsJson(grants))
     }
     if (o.type == "DIRECTORY") {
         var out3 = dirGrantBody(o, cq, d.address, perms)
@@ -120,6 +138,23 @@ ShareGrant dirGrantJson(OfferInfo o, String perms, String addr) {
 
 void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferInfo> offers, String dpath, String opath, Map<String, ShareInfo> shares, String spath, Secret controlKey, Map<String, Account> accounts, String apath, String controlSecret, Map<String, DeviceKey> devkeys, String kpath, Map<String, SessionInfo> sessions, String npath, Map<String, PresenceInfo> presences, String ppath) {
     var app = web.app()
+
+    // GATE 3 grants table — OWNED inside controlServe so the giant positional
+    // signature stays frozen (fragile to widen). Its file is the shares path
+    // with the segment swapped (.shares.json → .grants.json); absent path =
+    // no persistence (pure unit/in-memory callers, e.g. checks). v2 registries
+    // load unchanged: the bearer share file is untouched, a missing grants
+    // file is simply "no identity grants" (possession-only, exact v2 behavior).
+    var grants = new Map<String, GrantInfo>()
+    var gpath = ""
+    if (spath.length() > 0) {
+        gpath = spath.replace(".shares.", ".grants.")
+        var gload = grantLoadList(grants, gpath)
+        if (gload != "OK") {
+            println("GRANT-LOAD-WARN " + gload)
+        }
+        grantsPurgeExpired(grants, time.now())
+    }
 
     app.get("/devices") {
         return controlDevicesJson(devices)
@@ -359,6 +394,118 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
         return "SHARED " + id + " " + token
     }
 
+    // GATE 3 — recipient-bound share. The bearer share token is minted
+    // possession-style underneath (so the existing /s + /sessions machinery
+    // stays byte-compatible), but a signed GRANT binds that token to ONE
+    // recipient account + policy. Redemption of an identity grant by anyone
+    // else is the opaque REG035 (see handleGetShare / grantAuthorize). The
+    // sender MUST be authenticated (owner law, same as POST /shares).
+    app.post("/shares/identity") {
+        var g = controlAuthGate(accounts)
+        if (g != "OK") {
+            return g
+        }
+        var senderSub = authParseSub(auth.claims())
+        var req = json.decode<GrantRequest>(body())
+        var o: OfferInfo? = controlResolveOffer(offers, req.offerId)
+        if (o == null) {
+            return "REG033: unknown offer " + req.offerId
+        }
+        if (controlResolve(devices, o.deviceId) == null) {
+            return "REG032: unknown device " + o.deviceId
+        }
+        if (req.identity && req.recipient.length() == 0) {
+            return "GRANT014: identity grant needs a recipient"
+        }
+        if (req.recipient == senderSub) {
+            return "GRANT016: sender cannot self-authorize a restricted grant"
+        }
+        if (req.dirShare && o.type != "DIRECTORY") {
+            return "REG016: dirShare requested on a non-directory offer"
+        }
+        if (!req.dirShare && o.type == "DIRECTORY") {
+            return "REG016: directory offers require dirShare"
+        }
+        var now = time.now()
+        var sid = "sh" + security.randomHex(8)
+        var token = security.randomHex(32)
+        var gid = "gr" + security.randomHex(8)
+        var perms = "read-write"
+        if (req.readOnly) {
+            perms = "read"
+        }
+        var expires: Long = 0
+        if (req.ttlMs > 0) {
+            expires = now + req.ttlMs
+        }
+        var pol = "possession"
+        if (req.identity) {
+            pol = "identity"
+        }
+        // bearer base (identical shape to POST /shares — old clients/registries
+        // are unaffected; the grant is what restricts it).
+        var sc = ShareInfo(sid, token, o.deviceId, req.offerId, perms, now, expires,
+            req.maxUses, 0, "active", "", "", "")
+        var signedShare = ShareInfo(sc.id, sc.token, sc.deviceId, sc.offerId, sc.permissions,
+            sc.createdAt, sc.expiresAt, sc.maxUses, sc.used, sc.status, sc.revocation,
+            shareSign(controlKey, sc), "")
+        var sr = shareIssue(shares, signedShare)
+        if (sr != "OK") {
+            return sr
+        }
+        var gc = GrantInfo(gid, token, req.offerId, senderSub, req.recipient, perms, pol,
+            now, expires, req.maxUses, 0, "active", "", "")
+        var signedGrant = new GrantInfo(gc.id, gc.token, gc.offerId, gc.senderAccount,
+            gc.recipientAccount, gc.permissions, gc.policy, gc.createdAt, gc.expiresAt,
+            gc.maxUses, gc.used, gc.status, gc.revocation, grantSign(controlKey, gc))
+        var gr = grantIssue(grants, signedGrant)
+        if (gr != "OK") {
+            shares.remove(sid)
+            return gr
+        }
+        if (spath.length() > 0) {
+            controlSaveList(spath, sharesJson(shares))
+        }
+        if (gpath.length() > 0) {
+            controlSaveList(gpath, grantsJson(grants))
+        }
+        return "GRANTED " + gid + " " + token + " " + req.recipient
+    }
+
+    // Revoke a grant by id (owner bearer). Revoking the grant closes the
+    // identity authorization; the bearer base is revoked too so neither path
+    // serves further (§3 rule 10: new claims prevented).
+    app.post("/grants/:id/revoke") {
+        var g = controlAuthGate(accounts)
+        if (g != "OK") {
+            return g
+        }
+        var ggr: GrantInfo? = grants.get(param("id"))
+        if (ggr == null) {
+            return "REG039: unknown grant " + param("id")
+        }
+        var rsn: String? = query("reason")
+        var reason = ""
+        if (rsn != null) {
+            reason = rsn
+        }
+        var rr = grantRevoke(grants, param("id"), reason)
+        if (rr != "OK") {
+            return rr
+        }
+        var sh: ShareInfo? = shareResolve(shares, ggr.token)
+        if (sh != null) {
+            shareRevoke(shares, sh.id, "grant-revoked")
+        }
+        if (spath.length() > 0) {
+            controlSaveList(spath, sharesJson(shares))
+        }
+        if (gpath.length() > 0) {
+            controlSaveList(gpath, grantsJson(grants))
+        }
+        return "GRANT-REVOKED: " + param("id")
+    }
+
     app.get("/shares") {
         var g = controlAuthGate(accounts)
         if (g != "OK") {
@@ -368,8 +515,19 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
     }
 
     app.get("/s/:token") {
-        return handleGetShare(param("token"), query("child"), shares, offers, devices,
-            devkeys, presences, spath)
+        // Best-effort caller identity: a VALID bearer whose account is ACTIVE
+        // yields its sub; anything else (no bearer, bad sig, revoked account)
+        // yields "" so an identity grant opaque-refuses it (REG035) WITHOUT
+        // revealing whether the account exists or is revoked (§3 rule 8).
+        var callerSub = ""
+        if (auth.authenticated()) {
+            var cs = authParseSub(auth.claims())
+            if (authActive(accounts, cs) == "OK") {
+                callerSub = cs
+            }
+        }
+        return handleGetShare(param("token"), query("child"), shares, grants, gpath,
+            callerSub, offers, devices, devkeys, presences, spath)
     }
 
     app.post("/shares/:id/revoke") {
@@ -386,8 +544,21 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
         if (r != "OK") {
             return r
         }
+        // Propagate to a bound grant (rule 10): revoking the bearer share
+        // also revokes the identity grant that references the same token, so
+        // neither the possession path nor the identity path can serve again.
+        var rvShare: ShareInfo? = shares.get(param("id"))
+        if (rvShare != null) {
+            var bgrant = grantForToken(grants, rvShare.token)
+            if (bgrant != null) {
+                grantRevoke(grants, bgrant.id, "share-revoked")
+            }
+        }
         if (spath.length() > 0) {
             controlSaveList(spath, sharesJson(shares))
+        }
+        if (gpath.length() > 0) {
+            controlSaveList(gpath, grantsJson(grants))
         }
         return "SHARE-REVOKED: " + param("id")
     }
@@ -408,6 +579,17 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
             return g
         }
         var req = json.decode<SessionRequest>(body())
+        // GATE 3: an identity grant's session may only be opened by the
+        // recipient account (controlAuthGate above already proved the bearer
+        // is signed + the account ACTIVE; here the identity must also MATCH
+        // the grant — a different authenticated identity gets the opaque
+        // REG035, test #3). A session is not created on a revoked/expired
+        // grant (grantAuthorize refuses by name).
+        var csub = authParseSub(auth.claims())
+        var ga = grantAuthorize(grants, req.token, csub, time.now())
+        if (ga != "OK") {
+            return ga
+        }
         var sid = "se" + security.randomHex(8)
         // v2-Track F: stamp the LOGICAL resource id onto the session, read
         // transitively (token→share→offer). No session state changed — the

@@ -214,7 +214,7 @@ main() {
         "user-wrong.bin", "user-tamper.bin", "user-relay.bin", "relay-rw.up", "server-control.apikey",
         "server-control.bearer", "server-control.ed25519",
         "server-registry.devices.json", "server-registry.offers.json",
-        "server-registry.shares.json", "server-registry.accounts.json")
+        "server-registry.shares.json", "server-registry.grants.json", "server-registry.accounts.json")
     for (var f in scratch) {
         if (File(f).exists()) {
             File(f).delete()

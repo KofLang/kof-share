@@ -163,7 +163,7 @@ main() {
         "se-src.bin", "se-out.bin", "se-dev.ed25519", "server-control.apikey",
         "server-control.bearer", "server-control.ed25519",
         "server-registry.devices.json", "server-registry.offers.json",
-        "server-registry.shares.json", "server-registry.accounts.json",
+        "server-registry.shares.json", "server-registry.grants.json", "server-registry.accounts.json",
         "server-registry.devkeys.json", "server-registry.sessions.json")
     for (var f in scratch) {
         if (File(f).exists()) {
@@ -330,7 +330,7 @@ main() {
     for (var f in listOf("se-src.bin", "se-out.bin", "se-dev.ed25519",
             "server-control.bearer", "server-control.apikey", "server-control.ed25519",
             "server-registry.devices.json", "server-registry.offers.json",
-            "server-registry.shares.json", "server-registry.accounts.json",
+            "server-registry.shares.json", "server-registry.grants.json", "server-registry.accounts.json",
             "server-registry.devkeys.json", "server-registry.sessions.json")) {
         if (File(f).exists()) {
             File(f).delete()

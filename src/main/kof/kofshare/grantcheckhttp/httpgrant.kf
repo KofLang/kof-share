@@ -1,0 +1,312 @@
+package kofshare.grantcheckhttp
+
+// GATE 3 — identity grants over REAL HTTP + a REAL server process (JVM only,
+// like httpcheck: web handlers answer 500 under the interpreter). The pure
+// matrix is checkgrant.kf; THIS file proves the invariants through the exact
+// routes the product will use:
+//   #1 bob redeems alice's identity link        → metadata served
+//   #3 carol holds the exact URL, authenticated → opaque REG035
+//   #4 carol holds the URL anonymous            → opaque REG035
+//   #5 metadata non-disclosure                  → REG035 body leaks nothing
+//   #7 revoked grant                            → bob blocked, no new claims
+//   #8 one-time link                            → second redemption refused
+//   #16 restart                                 → binding survives reload
+// Port block 19450-19452 owned here. Scratch state is cleaned before and
+// after; nothing else's files are touched.
+
+import kofshare.control.auth
+import kofshare.control.grant
+import kofshare.control.registry
+import kofshare.control.session
+import kofshare.control.share
+import kof.crypto
+import kof.http
+import kof.json
+import kof.shell
+import kof.net
+import kof.process
+
+String jar() {
+    return "/home/mel/tools/kof-pin/kof-cli-f2629e32d.jar"
+}
+
+String cliOut(List<String> verbArgs) {
+    var cmd = "cd /home/mel/Documents/kof-share && java -jar " + jar()
+        + " run src/main/kof/kofshare/cli/cli.kf"
+    for (var a in verbArgs) {
+        cmd = cmd + " " + a
+    }
+    var res = shell.run("sh", listOf("-c", cmd + " 2>&1"))
+    var out = ""
+    var lines = res.stdout.split("\n")
+    var i = 0
+    while (i < lines.size) {
+        var ln = lines[i]
+        if (ln.indexOf("L-05") < 0 && ln.indexOf("warning:") < 0) {
+            out = out + ln + "\n"
+        }
+        i = i + 1
+    }
+    return out
+}
+
+main() {
+    var ok = true
+    var base = "http://127.0.0.1:19450"
+    var scratch = listOf("server-control.bearer", "server-control.apikey", "server-control.ed25519",
+        "server-registry.devices.json", "server-registry.offers.json", "server-registry.shares.json",
+        "server-registry.grants.json", "server-registry.accounts.json", "server-registry.devkeys.json",
+        "server-registry.sessions.json", "server-registry.presence.json",
+        "kofshare-server.log", "kofshare-server.pid", "kofshare-cli.config")
+    cliOut(listOf("stop"))
+    killPort(19450)
+    killPort(19451)
+    killPort(19452)
+    for (var f in scratch) {
+        if (File(f).exists()) {
+            File(f).delete()
+        }
+    }
+
+    File("kofshare-cli.config").writeText("jar=" + jar() + "\nworkdir=/home/mel/Documents/kof-share\n")
+    killPort(19450)
+    killPort(19451)
+    killPort(19452)
+    var ps = cliOut(listOf("server", "19450", "--start"))
+    var up = ps.indexOf("SERVER-READY port=19450") >= 0
+    if (!up) {
+        // stale-process guard: force quiescence, delete the half-state, retry
+        cliOut(listOf("stop"))
+        killPort(19450)
+        killPort(19451)
+        killPort(19452)
+        for (var f in scratch) {
+            if (File(f).exists()) {
+                File(f).delete()
+            }
+        }
+        ps = cliOut(listOf("server", "19450", "--start"))
+        up = ps.indexOf("SERVER-READY port=19450") >= 0
+    }
+    println("planeStart=" + up)
+    ok = ok && up
+    var ready = false
+    var tries = 0
+    while (!ready && tries < 120) {
+        tries = tries + 1
+        try {
+            ready = http.get(base + "/health") == "OK"
+        } catch (String e) {
+            ready = false
+        }
+    }
+    println("planeReady=" + ready)
+    ok = ok && ready
+
+    var admin = "Authorization: Bearer " + File("server-control.bearer").readText()
+
+    // three humans on the plane (admin bootstraps; every later POST /accounts
+    // needs the admin bearer — the enrollment law)
+    var aliceKey = cliApiKey(http.post(base + "/accounts",
+        json.encode(AccountRequest("alice", "Alice", 0)), admin))
+    var bobKey = cliApiKey(http.post(base + "/accounts",
+        json.encode(AccountRequest("bob", "Bob", 0)), admin))
+    var carolKey = cliApiKey(http.post(base + "/accounts",
+        json.encode(AccountRequest("carol", "Carol", 0)), admin))
+    var accountsMade = aliceKey.length() > 20 && bobKey.length() > 20 && carolKey.length() > 20
+    println("accounts=" + accountsMade)
+    ok = ok && accountsMade
+    var alice = "Authorization: Bearer " + aliceKey
+    var bob = "Authorization: Bearer " + bobKey
+    var carol = "Authorization: Bearer " + carolKey
+
+    // alice's machine presents + offers a file (keyless v1 registration lane)
+    var reg = http.post(base + "/devices", json.encode(DeviceInfo("dA", "alice-laptop", "10.0.0.5:8021")), alice)
+    var hb = http.post(base + "/devices/dA/heartbeat", "", alice)
+    var offer = http.post(base + "/offers", json.encode(
+        OfferRequest("off1", "dA", "/srv/report.bin", 2048, sha64("/srv/report.bin"),
+            "", "", "report.bin", 0, "FILE", "")), alice)
+    var ready3 = reg.indexOf("REGISTERED: dA") == 0 && hb.indexOf("HEARTBEAT-OK") == 0
+        && offer.indexOf("OFFERED: off1") == 0
+    println("offerStage=" + ready3)
+    ok = ok && ready3
+
+    // ── #1/#3/#4/#5 — identity link: alice → bob, URL possession is NOT a key ──
+    var grantOut = http.post(base + "/shares/identity", json.encode(
+        GrantRequest("off1", "bob", 0, 0, true, false, true)), alice)
+    var tok = tokOf(grantOut)
+    println("identityShare=" + (grantOut.indexOf("GRANTED gr") == 0 && tok.length() == 64))
+    ok = ok && grantOut.indexOf("GRANTED gr") == 0 && tok.length() == 64
+    var sUrl = base + "/s/" + tok
+    var bobView = http.get(sUrl, bob)
+    var bobSees = bobView.indexOf("\"offerId\":\"off1\"") >= 0 || bobView.indexOf("off1") >= 0
+    println("bobRedeems=" + bobSees)
+    ok = ok && bobSees
+    // Carol holds the EXACT URL. Authenticated as herself → indistinguishable
+    // from a dead link; anonymous → the same opaque bytes. Neither body may
+    // leak offer, device, account names.
+    var carolView = http.get(sUrl, carol)
+    var anonView = http.get(sUrl, "")
+    var opaque = "REG035: unknown share token"
+    var carolRefused = carolView == anonView && carolView.indexOf(opaque) == 0
+    var noLeak = carolView.indexOf("off1") < 0 && carolView.indexOf("report.bin") < 0
+        && carolView.indexOf("dA") < 0 && carolView.indexOf("bob") < 0
+        && carolView.indexOf("alice") < 0
+    println("carolOpaque=" + carolRefused)
+    println("carolNoLeak=" + noLeak)
+    ok = ok && carolRefused && noLeak
+
+    // sessions honor the binding too (redemption is not just the GET)
+    var carolSess = http.post(base + "/sessions",
+        json.encode(SessionRequest(tok, "rdv-carol", "10.0.0.9:9001")), carol)
+    var bobSess = http.post(base + "/sessions",
+        json.encode(SessionRequest(tok, "rdv-bob", "10.0.0.8:9000")), bob)
+    println("carolSessionBlocked=" + (carolSess == opaque))
+    println("bobSessionOpen=" + (bobSess.indexOf("SESSION-CREATED") == 0))
+    ok = ok && carolSess == opaque && bobSess != opaque && bobSess.indexOf("AUTH") < 0
+
+    // ── #8 — one-time identity link: second redemption refused ──
+    var onceOut = http.post(base + "/shares/identity", json.encode(
+        GrantRequest("off1", "bob", 0, 1, true, false, true)), alice)
+    var onceTok = tokOf(onceOut)
+    var first = http.get(base + "/s/" + onceTok, bob)
+    var second = http.get(base + "/s/" + onceTok, bob)
+    println("oneTimeFirst=" + (first.indexOf(opaque) < 0 && first.indexOf("REG") < 0))
+    println("oneTimeSecond=" + (second.indexOf("REG038") == 0))
+    ok = ok && first.indexOf(opaque) < 0 && first.indexOf("REG") < 0 && second.indexOf("REG038") == 0
+
+    // ── #7 — revocation propagates and blocks BOTH paths ──
+    var gid = gidOf(grantOut)
+    var rv = http.post(base + "/grants/" + gid + "/revoke?reason=owner-changed-mind", "", admin)
+    var afterRv = http.get(sUrl, bob)
+    println("grantRevoke=" + (rv.indexOf("GRANT-REVOKED: " + gid) == 0))
+    println("revokedBlocks=" + (afterRv.indexOf("REG036") == 0 || afterRv.indexOf("REG035") == 0))
+    ok = ok && rv.indexOf("GRANT-REVOKED: " + gid) == 0
+        && (afterRv.indexOf("REG036") == 0 || afterRv.indexOf("REG035") == 0)
+
+    // ── possession mode still works for the bare holder (#2 regression) ──
+    var possOut = http.post(base + "/shares",
+        json.encode(ShareRequest("off1", 0, 0, true, false)), alice)
+    var possTok = tokOf(possOut)
+    var possView = http.get(base + "/s/" + possTok, "")
+    println("possessionHolds=" + (possTok.length() == 64 && possView.indexOf(opaque) < 0))
+    ok = ok && possTok.length() == 64 && possView.indexOf(opaque) < 0
+
+    // ── #16 — restart: the binding survives the reload, the URL still fails ──
+    cliOut(listOf("stop"))
+    var re = cliOut(listOf("server", "19450", "--start"))
+    var reUp = false
+    tries = 0
+    while (!reUp && tries < 120) {
+        tries = tries + 1
+        try {
+            reUp = http.get(base + "/health") == "OK"
+        } catch (String e) {
+            reUp = false
+        }
+    }
+    println("restartUp=" + (re.indexOf("SERVER-READY") >= 0 && reUp))
+    ok = ok && reUp
+    var admin2 = "Authorization: Bearer " + File("server-control.bearer").readText()
+    var onceAfterRestart = http.get(base + "/s/" + onceTok, bob)
+    var carolAfterRestart = http.get(base + "/s/" + onceTok, carol)
+    println("restartKeepsUses=" + (onceAfterRestart.indexOf("REG038") == 0))
+    println("restartKeepsOpaque=" + (carolAfterRestart == opaque || carolAfterRestart == anonView))
+    ok = ok && onceAfterRestart.indexOf("REG038") == 0
+        && (carolAfterRestart == opaque || carolAfterRestart == anonView)
+    // grants file exists and never holds file bytes or key material (§ architecture law)
+    var gfile = File("server-registry.grants.json")
+    var gtext = ""
+    if (gfile.exists()) {
+        var gt: String? = gfile.readText()
+        if (gt != null) {
+            gtext = gt
+        }
+    }
+    var noPayload = gtext.indexOf("report.bin") < 0 && gtext.indexOf("/srv/") < 0
+    println("grantsPersisted=" + (gtext.indexOf("\"policy\":\"identity\"") >= 0
+        && gtext.indexOf("-----BEGIN") < 0))
+    ok = ok && gtext.indexOf("\"policy\":\"identity\"") >= 0 && noPayload
+
+    cliOut(listOf("stop"))
+    killPort(19450)
+    killPort(19451)
+    killPort(19452)
+    for (var f in scratch) {
+        if (File(f).exists()) {
+            File(f).delete()
+        }
+    }
+
+    if (ok) {
+        println("HTTPGRANT-OK legs=12")
+    } else {
+        println("HTTPGRANT-FAIL")
+        throw "kofshare: HTTPGRANT-FAIL"
+    }
+}
+
+void killPort(Int port) {
+    shell.run("sh", listOf("-c", "fuser -k " + port + "/tcp 2>/dev/null; true"))
+    waitBindable(port)
+}
+
+Bool waitBindable(Int port) {
+    var t = 0
+    while (t < 240) {
+        t = t + 1
+        try {
+            var c = net.connect("127.0.0.1", port)
+            c.close()
+        } catch (String e) {
+            return true
+        }
+    }
+    return false
+}
+
+String sha64(String s) {
+    var h = crypto.sha256(s)
+    while (h.length() < 64) {
+        h = h + "0"
+    }
+    return h.substring(0, 64)
+}
+
+String cliApiKey(String resp) {
+    var pre = "APIKEY "
+    if (resp.indexOf(pre) == 0) {
+        return resp.substring(pre.length(), resp.length()).trim()
+    }
+    return ""
+}
+
+String tokOf(String resp) {
+    var idx = resp.indexOf("/s/")
+    if (idx >= 0) {
+        var rest = resp.substring(idx + 3, resp.length())
+        var ws = rest.indexOf(" ")
+        var nl = rest.indexOf("\n")
+        var end = rest.length()
+        if (ws >= 0 && ws < end) {
+            end = ws
+        }
+        if (nl >= 0 && nl < end) {
+            end = nl
+        }
+        return rest.substring(0, end).trim()
+    }
+    var parts = resp.split(" ")
+    if (parts.size >= 3) {
+        return parts[2].trim()
+    }
+    return ""
+}
+
+String gidOf(String resp) {
+    var parts = resp.split(" ")
+    if (parts.size >= 2 && parts[0] == "GRANTED") {
+        return parts[1].trim()
+    }
+    return ""
+}

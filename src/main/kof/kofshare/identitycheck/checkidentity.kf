@@ -150,7 +150,7 @@ main() {
         "ident-src.bin", "ident-legacy.bin", "ident-out.bin", "ident-dead.bin", "ident-dev1.ed25519", "ident-dev2.ed25519",
         "check-identity.ed25519", "server-control.apikey", "server-control.bearer",
         "server-control.ed25519", "server-registry.devices.json",
-        "server-registry.offers.json", "server-registry.shares.json",
+        "server-registry.offers.json", "server-registry.shares.json", "server-registry.grants.json",
         "server-registry.accounts.json", "server-registry.devkeys.json")
     for (var f in scratch) {
         if (File(f).exists()) {
@@ -317,7 +317,7 @@ main() {
     for (var f in listOf("ident-src.bin", "ident-legacy.bin", "ident-out.bin", "ident-dead.bin", "ident-dev1.ed25519",
             "ident-dev2.ed25519", "server-control.bearer", "server-control.apikey",
             "server-control.ed25519", "server-registry.devices.json",
-            "server-registry.offers.json", "server-registry.shares.json",
+            "server-registry.offers.json", "server-registry.shares.json", "server-registry.grants.json",
             "server-registry.accounts.json", "server-registry.devkeys.json")) {
         if (File(f).exists()) {
             File(f).delete()

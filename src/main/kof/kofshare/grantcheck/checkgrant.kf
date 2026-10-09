@@ -1,0 +1,122 @@
+package kofshare.grantcheck
+
+// GATE 3 — recipient-bound grants, PURE logic golden (runs on --target jvm AND
+// --target script; no sockets). The HTTP/process end-to-end proof is the
+// sibling grantcheck/httpgrant.kf. Every line must read true; REG/GRANT lines
+// are the named refusals (R6 law — codes preserved).
+//
+// The invariant the whole prompt turns on (test matrix #3/#4): a DIFFERENT
+// authenticated identity, or no identity at all, redeeming an identity grant
+// gets the OPAQUE "REG035: unknown share token" — byte-identical to a genuinely
+// unknown token — so a stolen/forwarded link cannot even confirm the resource
+// or the recipient account EXISTS.
+
+import kofshare.control.grant
+import kof.crypto
+import kof.keyExchange
+import kof.secrets
+
+String hex64(String seed) {
+    var h = crypto.sha256(seed)
+    while (h.length() < 64) {
+        h = h + "0"
+    }
+    return h.substring(0, 64)
+}
+
+GrantInfo mkGrant(Map<String, GrantInfo> g, Secret sk, String id, String seed,
+                  String sender, String rec, String policy, Long created, Long expires,
+                  Int maxUses) {
+    var core = GrantInfo(id, hex64(seed), "o1", sender, rec, "read", policy,
+        created, expires, maxUses, 0, "active", "", "")
+    var signed = new GrantInfo(core.id, core.token, core.offerId, core.senderAccount,
+        core.recipientAccount, core.permissions, core.policy, core.createdAt,
+        core.expiresAt, core.maxUses, core.used, core.status, core.revocation,
+        grantSign(sk, core))
+    g.put(id, signed)
+    return signed
+}
+
+main() {
+    var ok = true
+    var now = 1000000
+    var sk = keyExchange.privateKey("Ed25519")
+    var pub = keyExchange.publicKey(sk)
+
+    // ── issuance validation (R6 named refusals) ──
+    var grants = new Map<String, GrantInfo>()
+    ok = ok && (grantIssue(grants, GrantInfo("", hex64("x"), "o1", "alice", "bob", "read", "identity", now, 0, 0, 0, "active", "", "")) == "GRANT010: empty grant id")
+    ok = ok && (grantIssue(grants, GrantInfo("g", "abc", "o1", "alice", "bob", "read", "identity", now, 0, 0, 0, "active", "", "")) == "GRANT011: grant token must be 64 hex chars")
+    ok = ok && (grantIssue(grants, GrantInfo("g", hex64("x"), "o1", "", "bob", "read", "identity", now, 0, 0, 0, "active", "", "")) == "GRANT012: empty sender account")
+    ok = ok && (grantIssue(grants, GrantInfo("g", hex64("x"), "", "alice", "bob", "read", "identity", now, 0, 0, 0, "active", "", "")) == "GRANT013: empty grant offer")
+    ok = ok && (grantIssue(grants, GrantInfo("g", hex64("x"), "o1", "alice", "", "read", "identity", now, 0, 0, 0, "active", "", "")) == "GRANT014: identity grant needs a recipient")
+    ok = ok && (grantIssue(grants, GrantInfo("g", hex64("x"), "o1", "alice", "bob", "read", "identity", now, 0, 0 - 1, 0, "active", "", "")) == "GRANT015: negative maxUses")
+
+    // signature covers the immutable core and verifies (no custom crypto)
+    var sig = mkGrant(grants, sk, "gi", "identity1", "alice", "bob", "identity", now, 0, 0)
+    ok = ok && grantVerify(secrets.of(pub), sig)
+    var tampered = new GrantInfo(sig.id, sig.token, sig.offerId, sig.senderAccount,
+        "carol", sig.permissions, sig.policy, sig.createdAt, sig.expiresAt,
+        sig.maxUses, sig.used, sig.status, sig.revocation, sig.sig)
+    ok = ok && !grantVerify(secrets.of(pub), tampered)
+
+    // ── THE CROWN: identity binding, opaque to outsiders ──
+    var tok = sig.token
+    ok = ok && (grantAuthorize(grants, tok, "bob", now) == "OK")            // intended recipient
+    ok = ok && (grantAuthorize(grants, tok, "carol", now) == "REG035: unknown share token")  // wrong identity #3
+    ok = ok && (grantAuthorize(grants, tok, "", now) == "REG035: unknown share token")        // no identity #4
+    ok = ok && (grantAuthorize(grants, hex64("neverminted"), "bob", now) == "OK")  // unknown token (no grant) = possession path
+
+    // ── possession grants are NOT restricted (explicit opt-in preserved) ──
+    var poss = mkGrant(grants, sk, "gp", "poss1", "alice", "", "possession", now, 0, 0)
+    ok = ok && (grantAuthorize(grants, poss.token, "", now) == "OK")         // any holder
+    ok = ok && (grantAuthorize(grants, poss.token, "carol", now) == "OK")    // holder identity irrelevant
+
+    // ── expiry on the grant itself ──
+    var exp = mkGrant(grants, sk, "ge", "exp1", "alice", "bob", "identity", now, now + 100, 0)
+    ok = ok && (grantAuthorize(grants, exp.token, "bob", now) == "OK")
+    ok = ok && (grantAuthorize(grants, exp.token, "bob", now + 200) == "REG037: share expired")
+
+    // ── use limits, atomic under sequential + re-read (maxUses=1) ──
+    var once = mkGrant(grants, sk, "go", "once1", "alice", "bob", "identity", now, 0, 1)
+    ok = ok && (grantTouch(grants, once.token, now) == "OK")                 // first use
+    ok = ok && (grantTouch(grants, once.token, now) == "REG038: share exhausted")  // second refused #8
+    var after = grants.get("go")
+    ok = ok && (after != null && after.used == 1)                            // counter atomic, not double
+
+    // ── revocation closes the identity path, still opaque to a stranger ──
+    ok = ok && (grantRevoke(grants, "gi", "owner-changed-mind") == "OK")
+    ok = ok && (grantAuthorize(grants, tok, "bob", now) == "REG036: share revoked")
+    ok = ok && (grantAuthorize(grants, tok, "carol", now) == "REG036: share revoked")  // revoked, not "unknown"
+    ok = ok && (grantRevoke(grants, "ghost", "x") == "REG039: unknown grant ghost")
+
+    // ── purge expired by clock (never silently serve stale) ──
+    mkGrant(grants, sk, "gx", "x1", "alice", "bob", "identity", now, now + 50, 0)
+    var purged = grantsPurgeExpired(grants, now + 1000)
+    ok = ok && (purged >= 1 && grants.get("gx") == null)
+
+    // ── persistence round-trip: save → fresh load → identical authorization ──
+    var gpath = "grantcheck-grants.json"
+    var loadMap = new Map<String, GrantInfo>()
+    var alive = mkGrant(loadMap, sk, "keep", "keep1", "alice", "dave", "identity", now, 0, 0)
+    File(gpath).writeText(grantsJson(loadMap))
+    var reload = new Map<String, GrantInfo>()
+    ok = ok && (grantLoadList(reload, gpath) == "OK")
+    ok = ok && (grantAuthorize(reload, alive.token, "dave", now) == "OK")
+    ok = ok && (grantAuthorize(reload, alive.token, "erin", now) == "REG035: unknown share token")
+    File(gpath).delete()
+
+    // ── corrupt file fails SAFE by name, never silent-empty ──
+    var cpath = "grantcheck-corrupt.json"
+    File(cpath).writeText("{not json")
+    var cm = new Map<String, GrantInfo>()
+    ok = ok && (grantLoadList(cm, cpath).indexOf("GRANT041: corrupt grants file") == 0)
+    File(cpath).delete()
+
+    if (ok) {
+        println("GRANTCHECK-OK")
+    } else {
+        println("GRANTCHECK-FAIL")
+        throw "kofshare: GRANTCHECK-FAIL"
+    }
+}

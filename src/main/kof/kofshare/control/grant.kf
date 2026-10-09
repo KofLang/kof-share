@@ -1,0 +1,224 @@
+package kofshare.control
+
+import kof.json
+import kof.crypto
+
+// GATE 3 — recipient-bound (identity-restricted) grants.
+//
+// A GrantInfo is an ADDITIVE authorization layer that BINDS an existing bearer
+// share token to a specific authenticated recipient account. It does NOT
+// change the signed ShareInfo canonical (that string is a wire change — see
+// share.kf), does NOT change POST /shares (possession-link stays exactly as
+// v2 shipped), and does NOT weaken any existing refusal. The possession model
+// and the identity model coexist:
+//
+//   policy "possession" : anyone holding the token may redeem (v2 behavior,
+//                         opt-in, the existing /s/<token> + shareTouch path).
+//   policy "identity"   : only the AUTHENTICATED recipientAccount may redeem;
+//                         possession of the URL alone is REFUSED and — the
+//                         whole point — the refusal is INDISTINGUISHABLE from
+//                         an unknown token (REG035) so an outsider cannot
+//                         enumerate accounts or learn that a protected
+//                         resource exists (prompt §3 rules 3/4/8/9, test #3/#4).
+//
+// The token stays the same bearer secret; the grant attaches POLICY + the
+// authorized identity + per-grant expiry/uses/revocation. Integrity: the
+// immutable core is signed with the control Ed25519 key (crypto.sign — the
+// SAME established face as shares; no custom crypto). Use/expiry counters live
+// on the grant, advanced atomically by entry replacement (stale copy cannot
+// half-advance), mirroring share.kf's state-transition discipline.
+//
+// Named, stable refusals (R6 — never removed for prettier text):
+//   GRANT010 empty grant id          GRANT011 token must be 64 hex
+//   GRANT012 empty sender account     GRANT013 empty offer
+//   GRANT014 identity grant needs a recipient
+//   GRANT015 negative maxUses
+//   (redemption reuses the share family for indistinguishability:
+//    REG035 unknown/mismatched · REG036 revoked · REG037 expired ·
+//    REG038 exhausted).
+
+record GrantInfo(String id, String token, String offerId, String senderAccount,
+                 String recipientAccount, String permissions, String policy,
+                 Long createdAt, Long expiresAt, Int maxUses, Int used,
+                 String status, String revocation, String sig)
+
+// Sender-side creation input (the desktop/CLI sends this; the edge mints
+// id/token/time and signs — this file stays pure of IO and of key material).
+record GrantRequest(String offerId, String recipient, Long ttlMs, Int maxUses,
+                    Bool readOnly, Bool dirShare, Bool identity)
+
+String grantCanonical(GrantInfo g) {
+    return "v1|" + g.id + "|" + g.token + "|" + g.offerId + "|" + g.senderAccount
+        + "|" + g.recipientAccount + "|" + g.permissions + "|" + g.policy
+        + "|" + g.createdAt + "|" + g.expiresAt + "|" + g.maxUses
+}
+
+Byte[] grantBytes(String text) {
+    var out = new Byte[text.length]
+    var i = 0
+    while (i < text.length) {
+        out[i] = text.charAt(i)
+        i = i + 1
+    }
+    return out
+}
+
+String grantSign(Secret sk, GrantInfo g) {
+    return crypto.sign(sk, grantBytes(grantCanonical(g)))
+}
+
+Bool grantVerify(Secret pubOrPriv, GrantInfo g) {
+    return crypto.verify(pubOrPriv, grantBytes(grantCanonical(g)), g.sig)
+}
+
+String grantIssue(Map<String, GrantInfo> grants, GrantInfo g) {
+    if (g.id.length() == 0) {
+        return "GRANT010: empty grant id"
+    }
+    if (g.token.length() != 64) {
+        return "GRANT011: grant token must be 64 hex chars"
+    }
+    if (g.senderAccount.length() == 0) {
+        return "GRANT012: empty sender account"
+    }
+    if (g.offerId.length() == 0) {
+        return "GRANT013: empty grant offer"
+    }
+    if (g.policy == "identity" && g.recipientAccount.length() == 0) {
+        return "GRANT014: identity grant needs a recipient"
+    }
+    if (g.maxUses < 0) {
+        return "GRANT015: negative maxUses"
+    }
+    var perms = g.permissions
+    if (perms.length() == 0) {
+        perms = "read"
+    }
+    var rec = g.recipientAccount
+    if (g.policy != "identity") {
+        rec = ""
+    }
+    grants.put(g.id, new GrantInfo(g.id, g.token, g.offerId, g.senderAccount, rec,
+        perms, g.policy, g.createdAt, g.expiresAt, g.maxUses, 0, "active", "", g.sig))
+    return "OK"
+}
+
+GrantInfo? grantForToken(Map<String, GrantInfo> grants, String token) {
+    var ids = grants.keys()
+    ids.sort()
+    for (var id in ids) {
+        var g: GrantInfo? = grants.get(id)
+        if (g != null && g.token == token) {
+            return g
+        }
+    }
+    return null
+}
+
+// AUTHORIZATION decision only (no use-count advance here — the bearer use
+// counter stays authoritative on the share via shareTouch, so /s and /sessions
+// cannot double-count). Returns OK when `callerSub` may exercise this token's
+// grant, else a refusal. An ABSENT grant ("" policy) is a plain possession
+// link → OK (v2). An identity grant refuses ANY non-matching or absent caller
+// with the OPAQUE REG035 (indistinguishable from unknown), never revealing
+// that the resource or the recipient account exists.
+String grantAuthorize(Map<String, GrantInfo> grants, String token, String callerSub, Long now) {
+    var g = grantForToken(grants, token)
+    if (g == null) {
+        return "OK"
+    }
+    if (g.status != "active") {
+        return "REG036: share " + g.status
+    }
+    if (g.expiresAt > 0 && now >= g.expiresAt) {
+        return "REG037: share expired"
+    }
+    if (g.policy == "identity") {
+        if (callerSub.length() == 0 || callerSub != g.recipientAccount) {
+            return "REG035: unknown share token"
+        }
+    }
+    return "OK"
+}
+
+// Advance the grant's own use counter atomically (entry replacement) when a
+// transfer is actually authorized. Enforces maxUses on the grant too.
+String grantTouch(Map<String, GrantInfo> grants, String token, Long now) {
+    var g = grantForToken(grants, token)
+    if (g == null) {
+        return "OK"
+    }
+    if (g.status != "active") {
+        return "REG036: share " + g.status
+    }
+    if (g.expiresAt > 0 && now >= g.expiresAt) {
+        return "REG037: share expired"
+    }
+    if (g.maxUses > 0 && g.used >= g.maxUses) {
+        return "REG038: share exhausted"
+    }
+    grants.put(g.id, new GrantInfo(g.id, g.token, g.offerId, g.senderAccount,
+        g.recipientAccount, g.permissions, g.policy, g.createdAt, g.expiresAt,
+        g.maxUses, g.used + 1, g.status, g.revocation, g.sig))
+    return "OK"
+}
+
+String grantRevoke(Map<String, GrantInfo> grants, String id, String reason) {
+    var g: GrantInfo? = grants.get(id)
+    if (g == null) {
+        return "REG039: unknown grant " + id
+    }
+    grants.put(id, new GrantInfo(g.id, g.token, g.offerId, g.senderAccount,
+        g.recipientAccount, g.permissions, g.policy, g.createdAt, g.expiresAt,
+        g.maxUses, g.used, "revoked", reason, g.sig))
+    return "OK"
+}
+
+Int grantsPurgeExpired(Map<String, GrantInfo> grants, Long now) {
+    var n = 0
+    var ids = grants.keys()
+    ids.sort()
+    for (var id in ids) {
+        var g: GrantInfo? = grants.get(id)
+        if (g != null && g.expiresAt > 0 && now >= g.expiresAt) {
+            grants.remove(id)
+            n = n + 1
+        }
+    }
+    return n
+}
+
+// ── persistence (own file server-registry.grants.json; the bearer share file
+// stays exactly as v2 wrote it, so old registries load unchanged). ──
+String grantsJson(Map<String, GrantInfo> grants) {
+    var out = new List<GrantInfo>()
+    var ids = grants.keys()
+    ids.sort()
+    for (var id in ids) {
+        var g: GrantInfo? = grants.get(id)
+        if (g != null) {
+            out.add(g)
+        }
+    }
+    return json.encode(out)
+}
+
+String grantLoadList(Map<String, GrantInfo> grants, String path) {
+    var f = File(path)
+    if (!f.exists()) {
+        return "OK"
+    }
+    var txt = f.readText()
+    if (txt == null) {
+        return "GRANT040: unreadable grants file " + path
+    }
+    try {
+        var list: List<GrantInfo> = json.decode<List<GrantInfo>>(txt)
+        for (var g in list) {
+            grants.put(g.id, g)
+        }
+    } catch (String e) {
+        return "GRANT041: corrupt grants file " + path + ": " + e
+    }
+    return "OK"
+}

@@ -192,7 +192,7 @@ main() {
         "kofshare-server.pid", "kofshare-face.pid", "kofshare-app.pid", "kofshare-app.log",
         "server-control.apikey", "server-control.bearer", "server-control.ed25519",
         "server-registry.devices.json", "server-registry.offers.json",
-        "server-registry.shares.json", "server-registry.accounts.json",
+        "server-registry.shares.json", "server-registry.grants.json", "server-registry.accounts.json",
         "server-registry.devkeys.json", "server-registry.sessions.json",
         "server-registry.presence.json", "kofshare-device.ed25519", "kofshare-resources.json")
     for (var f in scratch) {
