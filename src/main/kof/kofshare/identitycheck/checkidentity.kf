@@ -72,6 +72,21 @@ sweepPorts() {
     }
 }
 
+Bool waitPlane(Int port) {
+    var t = 0
+    while (t < 240) {
+        t = t + 1
+        try {
+            var c = net.connect("127.0.0.1", port)
+            c.close()
+            return true
+        } catch (String e) {
+            time.sleep(250)
+        }
+    }
+    return false
+}
+
 Bool spawnCli(String log, String marker, List<String> verbArgs) {
     var cmd = "cd /home/mel/Documents/kof-share && java -jar " + jar()
         + " run src/main/kof/kofshare/cli/cli.kf"
@@ -173,6 +188,14 @@ main() {
     var planePort = portOf()
     var base = "http://127.0.0.1:" + planePort
     var planeUp = spawnCli("ident-plane.log", "SERVER-READY", listOf("server", "" + planePort))
+    // HARNESS FIX 09/10 (race caught by battery 28c, recorded per law): the
+    // foreground `server <port>` verb prints SERVER-READY BEFORE the runtime
+    // binds (cli.kf:1273) — the marker alone can race the first request under
+    // load. Readiness is therefore the OBSERVABLE tcp accept, #771-shaped
+    // probe loop (net.connect, never an unguarded http.get).
+    if (planeUp) {
+        planeUp = waitPlane(planePort)
+    }
     println("planeUp=" + planeUp)
     if (!planeUp) {
         println("IDENTITYCHECK-FAIL")
@@ -304,6 +327,9 @@ main() {
         }
     }
     var plane2 = spawnCli("ident-plane2.log", "SERVER-READY", listOf("server", "" + planePort))
+    if (plane2) {
+        plane2 = waitPlane(planePort)
+    }
     var keysAfter = ""
     if (plane2) {
         keysAfter = http.get(base + "/device-keys/" + id1)
