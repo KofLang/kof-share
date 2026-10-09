@@ -34,13 +34,49 @@ SUFICIENTE · **A** = AUSENTE · **DP** = DECISÃO PENDENTE (mantainer).
 | 24 | Packaging install/upgrade/uninstall story | A (F7) | scripts + `.desktop` entry + launcher land with F7; not claimed until run |
 | 25 | Windows/macOS support | A | §11; Linux x86_64 only (measured env facts above) |
 
+## Gate 1 — SAFE SUBSET result (this branch, post-audit)
+
+Delivered decision-free hardening + read-only events on the already-shipped
+F1 boundary. New golden `desktopapi/apicheck.kf` → **DESKTOP-API-OK legs=22**
+(RED-before-GREEN demonstrated: disabling the host/origin gate flips the
+`origin-refused` + `raw-forged-host-refused` legs to FAIL; restore → PASS).
+
+| Added | Class | Proof (leg) |
+|---|---|---|
+| Host policing (DNS-rebinding defense) | IMPLEMENTADO E PROVADO | unit `unit-host-shape` + real-socket `raw-forged-host-refused`/`raw-loopback-allowed` (forged Host via raw net.connect; Java http forbids Host override so raw socket is the only honest proof — and it measures that the web runtime delivers header("host")) |
+| Origin policing (CSRF/forged-browser) | IMPLEMENTADO E PROVADO | unit `unit-origin-shape` + integration `origin-refused`/`origin-allowed` |
+| `/api/v1/events` (observable subset) | IMPLEMENTADO E PROVADO | `events-array`/`events-have-boot-state`/`events-envelope`/`events-cursor-empty`/`events-deny-no-token` |
+| Page JS reads token from location.search | IMPLEMENTADO E PROVADO | fixes the F1 latent `KOFDTOKEN` literal (boot `page-marker` still green) |
+| Token not echoed in bodies/logs | IMPLEMENTADO E PROVADO | `token-not-echoed` + `token-0600` |
+| Boundary logic as pure importable package | IMPLEMENTADO E PROVADO | `kofshare/boundary/boundary.kf` (unit-tested without a server) |
+
+**Two real bugs the unit legs caught** (honest, not theoretical): naive
+`originAllowed` accepted the prefix-confusion host `127.0.0.1.evil.example`,
+and `isLoopbackHost` mishandled bracketed IPv6 `[::1]:port`. Both fixed and
+re-green.
+
+Events are the OBSERVABLE subset only (DAEMON_STATE, PLANE_PRESENCE).
+Transfer/share events are deliberately ABSENT until the privileged mutating
+routes exist — emitting them now would be inventing transitions the real
+state has not confirmed (§4 event law).
+
 ## Pending-decision register (DP) — nothing irreversible taken unasked
 
 - **bind-address core face (§8-A)**: the daemon's honest answer for now is
-  token-auth on a 0.0.0.0 bind (measured pin behavior). If the mantainer
-  prefers, an alternative pre-core shape exists (Unix socket via `ext` FFI)
-  — NOT chosen here because it needs an `ext` decision + a second IPC stack;
-  recorded as DP with both options.
+  token-auth + Host/Origin policing on a 0.0.0.0 bind (measured pin behavior;
+  the safe subset shipped above). The **irreversible** choice — and the gate
+  on the PRIVILEGED mutating surface (`POST /shares`, `POST /transfers`,
+  `DELETE`, cancel), which is NOT implemented — remains open:
+  - **Option A** keep HTTP on 0.0.0.0 + token + host/origin policing (status
+    quo, shipped). Mutating surface would sit on this boundary.
+  - **Option B** request upstream `web.app().listen(host, port)` face →
+    compiler-pin bump + full `RC-CHECK-OK` re-run (law 2, §7 of the gigaprompt).
+  - **Option C** Unix-domain socket via `ext` FFI → second IPC stack + native
+    dependency, breaks the browser/webview face.
+  Building the mutating endpoints turns the 0.0.0.0 exposure into real blast
+  radius (a LAN attacker holding the token could mint shares / trigger
+  downloads). That authorization is the mantainer's call — recorded, not made
+  silently.
 - **kof.ui vs served page as the v1 shell face**: node is ABSENT on this
   machine ⇒ the JS target can't build here today; the webview route exists
   at the pin but its toolchain is unavailable. F1 therefore ships the

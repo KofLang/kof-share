@@ -1,0 +1,280 @@
+package kofshare.desktopapi
+
+// DESKTOP-API-OK — Gate 1 SAFE SUBSET golden.
+// Proves the boundary + event additions without touching the privileged
+// mutating surface (which stays gated by §DP pending decision).
+//
+// Test types (gigaprompt §6: differentiate, never call a mock E2E):
+//   UNIT (pure boundary functions, imported): DNS-rebinding host shape,
+//        Origin acceptance. No process, no socket, deterministic.
+//   INTEGRATION (real processes over loopback HTTP): daemon spawns, plane
+//        spawns; requests through http.get prove the web runtime delivers
+//        X-Kof-Token/Origin/Host to handlers and the gate is enforced.
+//   REAL SOCKET (raw net.connect + crafted request): forged Host header on
+//        loopback — Java HttpClient FORBIDS Host override so http.get cannot
+//        prove the DNS-rebinding leg; the raw socket CAN, and the runtime's
+//        delivery of header("host") is measured, not assumed.
+//
+// NOT covered (honestly listed):
+//   - privileged mutations (shares/transfers) — §DP gate blocks them
+//   - replay resistance of the local token (no nonce/rotation yet)
+//   - event stream durability across daemon restart (documented as recovery
+//     by re-query /state; ring buffer resets)
+
+import kof.http
+import kof.time
+import kof.shell
+import kofshare.core
+import kofshare.boundary
+
+String j() {
+    return selfJar()
+}
+
+String deskUrl() {
+    return "http://127.0.0.1:8801"
+}
+
+String planeUrl() {
+    return "http://127.0.0.1:19922"
+}
+
+String cliEntry() {
+    return "src/main/kof/kofshare/cli/cli.kf"
+}
+
+String deskEntry() {
+    return "src/main/kof/kofshare/desktop/desktopd.kf"
+}
+
+String sh1(String cmd) {
+    var res = shell.run("sh", listOf("-c", cmd))
+    return res.stdout
+}
+
+String readOr(String path) {
+    if (!File(path).exists()) {
+        return ""
+    }
+    var t = File(path).readText()
+    if (t == null) {
+        return ""
+    }
+    return t
+}
+
+Bool step(String name, Bool cond, List<String> fails) {
+    if (cond) {
+        println("  ok  " + name)
+        return true
+    }
+    println("  FAIL " + name)
+    fails.add(name)
+    return false
+}
+
+void cleanup() {
+    stopHelper("kofshare-desktop.pid")
+    stopHelper("kofshare-plane-api.pid")
+    freePort(8801)
+    freePort(19922)
+}
+
+main(args: List<String>) {
+    println("DESKTOP-API gate1-safe-subset")
+    var fails = new List<String>()
+    cleanup()
+    File("kofshare-desktop.conf").delete()
+    File("kofshare-desktop.token").delete()
+    File("kofshare-desktop.pid").delete()
+    File("kofshare-desktop.events").delete()
+
+    // ============================================================
+    //  UNIT — pure boundary functions (no process, deterministic)
+    // ============================================================
+    var ut1 = isLoopbackHost("127.0.0.1:8801")
+        && isLoopbackHost("localhost:8801")
+        && isLoopbackHost("[::1]:8801")
+    var ut2 = !isLoopbackHost("evil.example:8801")
+        && !isLoopbackHost("192.168.1.5:8801")
+        && !isLoopbackHost("::ffff:1.2.3.4:8801")
+    step("unit-host-shape", ut1 && ut2, fails)
+
+    var ut3 = originAllowed("")
+        && originAllowed("http://127.0.0.1:8801")
+        && originAllowed("http://localhost:8801")
+        && originAllowed("http://[::1]:8801")
+    var ut4 = !originAllowed("http://evil.example")
+        && !originAllowed("null")
+        && !originAllowed("http://127.0.0.1.evil.example")
+    step("unit-origin-shape", ut3 && ut4, fails)
+
+    // ============================================================
+    //  REAL PROCESSES — plane + daemon over loopback HTTP
+    // ============================================================
+    var ps = spawnDetachedEntry("kofshare-plane-api.log",
+        listOf("server", "19922", "--start"), "kofshare-plane-api.pid", cliEntry())
+    step("plane-spawn", ps > 0, fails)
+    step("plane-health", waitHealth(planeUrl()), fails)
+
+    File("kofshare-desktop.conf").writeText("port=8801\nplane=http://127.0.0.1:19922\n")
+    var rs = sh1("java -jar " + j() + " run " + deskEntry() + " --start 2>&1")
+    step("daemon-start", rs.indexOf("DESKTOP-START ok=true") >= 0, fails)
+    step("daemon-health", waitHealth(deskUrl()), fails)
+
+    var tok = readOr("kofshare-desktop.token")
+    step("token-present", tok.length() >= 8, fails)
+
+    // ---- AUTH MATRIX ----
+    var hdr = "X-Kof-Token: " + tok
+
+    // missing token (no header)
+    var m1 = http.get(deskUrl() + "/api/v1/health")
+    step("missing-token-refused", m1.indexOf("DESKTOP-LOCAL-AUTH") >= 0, fails)
+
+    // invalid token
+    var m2 = http.get(deskUrl() + "/api/v1/health", "X-Kof-Token: nope")
+    step("invalid-token-refused", m2.indexOf("DESKTOP-LOCAL-AUTH") >= 0, fails)
+
+    // valid token
+    var m3 = http.get(deskUrl() + "/api/v1/health", hdr)
+    step("valid-token-allowed", m3.indexOf("HEALTH-OK") >= 0, fails)
+
+    // foreign Origin (real HTTP through Java HttpClient sends the Origin
+    // header we set explicitly — the web runtime lowercases and delivers)
+    var m4 = http.get(deskUrl() + "/api/v1/state", "Origin: http://evil.example\n" + hdr)
+    step("origin-refused", m4.indexOf("DESKTOP-LOCAL-ORIGIN") >= 0, fails)
+
+    // loopback Origin accepted
+    var m5 = http.get(deskUrl() + "/api/v1/state",
+        "Origin: http://127.0.0.1:8801\n" + hdr)
+    step("origin-allowed", m5.indexOf("\"phase\"") >= 0, fails)
+
+    // token NOT echoed in any response body (log-hygiene)
+    step("token-not-echoed", m3.indexOf(tok) < 0 && m5.indexOf(tok) < 0, fails)
+
+    // ---- EVENT RING BUFFER ----
+    var ev = http.get(deskUrl() + "/api/v1/events?since=0", hdr)
+    step("events-deny-no-token",
+        http.get(deskUrl() + "/api/v1/events").indexOf("DESKTOP-LOCAL-AUTH") >= 0, fails)
+    step("events-array", ev.indexOf("[") == 0, fails)
+    step("events-have-boot-state", ev.indexOf("DAEMON_STATE") >= 0
+        || ev.indexOf("PLANE_PRESENCE") >= 0, fails)
+    // envelope shape (spec §3.1): seq/type/ts/payload keys
+    step("events-envelope", ev.indexOf("\"seq\"") >= 0 && ev.indexOf("\"type\"") >= 0
+        && ev.indexOf("\"ts\"") >= 0 && ev.indexOf("\"payload\"") >= 0, fails)
+    // cursor since=<high> returns empty (no fabricated future events)
+    var all1 = ev
+    var lastSeq = 1
+    var pos = 0
+    while (true) {
+        pos = all1.indexOf("\"seq\":", pos)
+        if (pos < 0) { break }
+        var end = pos + 6
+        while (end < all1.length() && all1.charAt(end) >= 48 && all1.charAt(end) <= 57) {
+            end = end + 1
+        }
+        lastSeq = math.parseInt(all1.substring(pos + 6, end))
+        pos = end
+    }
+    var evNext = http.get(deskUrl() + "/api/v1/events?since=" + lastSeq, hdr)
+    step("events-cursor-empty", evNext == "[]", fails)
+
+    // token file 0600
+    var perm = sh1("stat -c %a kofshare-desktop.token")
+    var pln = perm.indexOf("\n")
+    if (pln >= 0) {
+        perm = perm.substring(0, pln)
+    }
+    step("token-0600", "" + perm == "600", fails)
+
+    // ============================================================
+    //  REAL RAW SOCKET — forged Host (the crown-jewel proof)
+    // ============================================================
+    // http.get cannot override Host (Java HttpClient restricts it); raw
+    // net.connect CAN. This proves the web runtime DOES deliver header("host")
+    // to handlers AND the daemon refuses attacker-domain hosts.
+    var evilReq = "GET /api/v1/state HTTP/1.1\r\n"
+        + "Host: kofshare-attacker.example:8801\r\n"
+        + "X-Kof-Token: " + tok + "\r\n"
+        + "Connection: close\r\n\r\n"
+    var evilResp = rawHttp(8801, evilReq)
+    step("raw-forged-host-refused", evilResp.indexOf("DESKTOP-LOCAL-ORIGIN") >= 0, fails)
+
+    var lbReq = "GET /api/v1/health HTTP/1.1\r\n"
+        + "Host: 127.0.0.1:8801\r\n"
+        + "X-Kof-Token: " + tok + "\r\n"
+        + "Connection: close\r\n\r\n"
+    var lbResp = rawHttp(8801, lbReq)
+    step("raw-loopback-allowed", lbResp.indexOf("HEALTH-OK") >= 0, fails)
+
+    // ============================================================
+    //  CLEAN SHUTDOWN (lifecycle + no orphans)
+    // ============================================================
+    var stp = sh1("java -jar " + j() + " run " + deskEntry() + " --stop 2>&1")
+    step("stop-verb", stp.indexOf("DESKTOP-STOP ok=true") >= 0, fails)
+    step("port-released", freePort(8801), fails)
+
+    cleanup()
+    if (fails.size == 0) {
+        println("DESKTOP-API-OK legs=" + 22)
+        return
+    }
+    println("DESKTOP-API-FAIL n=" + fails.size + " first=" + fails.get(0))
+}
+
+// raw HTTP request over a Kof net Conn; returns ASCII response prefix.
+// Bounded read (up to 16 receive calls, break on 0 = EOF); never hangs.
+String rawHttp(Int port, String req) {
+    var c = net.connect("127.0.0.1", port)
+    c.send(asciiBytes(req))
+    var acc = new Byte[0]
+    var i = 0
+    while (i < 16) {
+        var chunk = c.receive(4096)
+        if (chunk.length == 0) {
+            break
+        }
+        acc = appendBytes(acc, chunk)
+        i = i + 1
+    }
+    c.close()
+    return asciiOf(acc)
+}
+
+Byte[] asciiBytes(String s) {
+    var out = new Byte[s.length()]
+    var i = 0
+    while (i < s.length()) {
+        out[i] = s.charAt(i)
+        i = i + 1
+    }
+    return out
+}
+
+String asciiOf(Byte[] bs) {
+    var out = ""
+    var i = 0
+    while (i < bs.length) {
+        out = out + (bs[i] as Char)
+        i = i + 1
+    }
+    return out
+}
+
+// minimal Byte[] append (kept local so the golden does not import the wire
+// layer; a tiny total copy is enough for a bounded test).
+Byte[] appendBytes(Byte[] a, Byte[] b) {
+    var out = new Byte[a.length + b.length]
+    var i = 0
+    while (i < a.length) {
+        out[i] = a[i]
+        i = i + 1
+    }
+    var j = 0
+    while (j < b.length) {
+        out[a.length + j] = b[j]
+        j = j + 1
+    }
+    return out
+}

@@ -24,6 +24,7 @@ import kof.shell
 import kof.security
 import kof.web
 import kofshare.core
+import kofshare.boundary
 
 // coalesce nullable header (client.kf shape; COMP002-safe pattern).
 String headerText(String? h) {
@@ -116,6 +117,40 @@ String authRefusal() {
     return "DESKTOP-LOCAL-AUTH"
 }
 
+String originRefusal() {
+    return "DESKTOP-LOCAL-ORIGIN"
+}
+
+// The shared boundary gate for every /api/v1/* route: host + origin + token.
+// "" means allowed; otherwise the named refusal is the body. Pure logic lives
+// in kofshare.desktop.boundary (unit-tested); this wires it to the real
+// request context. Order is outermost-first: host, origin, then the secret.
+String boundaryOk() {
+    if (!isLoopbackHost(strOr(header("host")))) {
+        return originRefusal()
+    }
+    if (!originAllowed(strOr(header("origin")))) {
+        return originRefusal()
+    }
+    if (!tokenOk()) {
+        return authRefusal()
+    }
+    return ""
+}
+
+// query() is called in the route closure (proven F1: /page does query("tok"))
+// and its nullable result is threaded here. Coalesce + parse live at top
+// level (no web-context call in this fn).
+Int sinceVal(String? q) {
+    if (q == null) {
+        return 0
+    }
+    if (q.length() == 0) {
+        return 0
+    }
+    return math.parseInt(q)
+}
+
 // LIVE plane truth probed per call (no cached lie, §8): the TCP probe shape
 // core.healthNow proved (raw ConnectException stays inside net's named wrap).
 String planeState() {
@@ -123,6 +158,122 @@ String planeState() {
         return "ok"
     }
     return "unreachable"
+}
+
+// ---- EVENT RING BUFFER (file-backed, client.kf appJobJson precedent) ----
+// Events are ONLY the transitions the daemon can OBSERVE truthfully (§4.4
+// gigaprompt: "eventos não podem inventar transições"): daemon lifecycle,
+// plane presence. Transfer/share events will be emitted when the privileged
+// mutating routes exist (Gate 1-priv, §DP). A fixed-size ring (JSONL lines,
+// last 64) so state after restart is honest (re-query /state).
+String dEventsFile() {
+    return "kofshare-desktop.events"
+}
+
+// nullable-safe read (readText returns String? — COMP002 coalesce pattern).
+String readOr(String path) {
+    if (!File(path).exists()) {
+        return ""
+    }
+    var t = File(path).readText()
+    if (t == null) {
+        return ""
+    }
+    return t
+}
+
+Int readEventsSeq() {
+    var last = readOr(dEventsFile())
+    if (last.length() == 0) {
+        return 0
+    }
+    var lines = last.split("\n")
+    var i = lines.size - 1
+    while (i >= 0) {
+        var ln = lines[i]
+        if (ln.length() > 0) {
+            var bar = ln.indexOf("|")
+            if (bar > 0) {
+                return math.parseInt(ln.substring(0, bar))
+            }
+        }
+        i = i - 1
+    }
+    return 0
+}
+
+// seq|type|ts|payload-json  (JSONL, one per line; last 64 kept)
+void recordEvent(String type, String payload) {
+    var seq = readEventsSeq() + 1
+    var line = "" + seq + "|" + type + "|" + time.now() + "|" + payload + "\n"
+    var prev = readOr(dEventsFile())
+    var lines = prev.split("\n")
+    var keep = ""
+    var start = 0
+    if (lines.size > 63) {
+        start = lines.size - 63
+    }
+    var i = start
+    while (i < lines.size) {
+        if (lines[i].length() > 0) {
+            keep = keep + lines[i] + "\n"
+        }
+        i = i + 1
+    }
+    File(dEventsFile()).writeText(keep + line)
+}
+
+// events after seq N, formatted as JSON array of {seq,type,ts,payload}
+String eventsJsonSince(Int since) {
+    var raw = readOr(dEventsFile())
+    var out = "["
+    var first = true
+    if (raw.length() > 0) {
+        var lines = raw.split("\n")
+        var i = 0
+        while (i < lines.size) {
+            var ln = lines[i]
+            if (ln.length() > 0) {
+                var p1 = ln.indexOf("|")
+                var p2 = ln.indexOf("|", p1 + 1)
+                var p3 = ln.indexOf("|", p2 + 1)
+                if (p1 > 0 && p2 > p1 && p3 > p2) {
+                    var s = math.parseInt(ln.substring(0, p1))
+                    var ty = ln.substring(p1 + 1, p2)
+                    var ts = ln.substring(p2 + 1, p3)
+                    var pl = ln.substring(p3 + 1, ln.length())
+                    if (s > since) {
+                        if (!first) {
+                            out = out + ","
+                        }
+                        out = out + "{\"seq\":" + s + ",\"type\":\"" + ty
+                            + "\",\"ts\":" + ts + ",\"payload\":" + pl + "}"
+                        first = false
+                    }
+                }
+            }
+            i = i + 1
+        }
+    }
+    return out + "]"
+}
+
+// Background presence poller — records ONLY when the OBSERVED value flips
+// (a transition, not a snapshot). The daemon owns the thread; shutdown kills
+// the JVM (stop law) so no orphan.
+void startPresenceEventLoop() {
+    var last = planeState()
+    recordEvent("PLANE_PRESENCE", "{\"state\":\"" + last + "\"}")
+    spawn {
+        while (true) {
+            time.sleep(2000)
+            var cur = planeState()
+            if (cur != last) {
+                recordEvent("PLANE_PRESENCE", "{\"state\":\"" + cur + "\"}")
+                last = cur
+            }
+        }
+    }
 }
 
 // Metadata-only view model (client.kf /api/info law): phase, plane, ports,
@@ -161,7 +312,7 @@ String desktopPage() {
         "daemon over loopback, never stored centrally.</p>")
     lines.add("<pre id=\"raw\"></pre>")
     lines.add("<script>(function(){")
-    lines.add("var tok='KOFDTOKEN';")
+    lines.add("var tok=new URLSearchParams(location.search).get('tok')||'';")
     lines.add("function tick(){")
     lines.add("  fetch('/api/v1/state',{headers:{'X-Kof-Token':tok}})")
     lines.add("  .then(function(r){return r.text()}).then(function(t){")
@@ -179,7 +330,7 @@ String desktopPage() {
     lines.add("})();</script></body></html>")
     var html = ""
     for (var l in lines) {
-        html = html + l + "\\n"
+        html = html + l + "\n"
     }
     return html
 }
@@ -195,16 +346,25 @@ Int daemonServe() {
     }
     var app = web.app()
     app.get("/api/v1/health") {
-        if (!tokenOk()) {
-            return authRefusal()
+        var g = boundaryOk()
+        if (g.length() > 0) {
+            return g
         }
         return "HEALTH-OK"
     }
     app.get("/api/v1/state") {
-        if (!tokenOk()) {
-            return authRefusal()
+        var g = boundaryOk()
+        if (g.length() > 0) {
+            return g
         }
         return stateJson()
+    }
+    app.get("/api/v1/events") {
+        var g = boundaryOk()
+        if (g.length() > 0) {
+            return g
+        }
+        return eventsJsonSince(sinceVal(query("since")))
     }
     app.get("/page") {
         if (query("tok") != desktopToken() || desktopToken().length() == 0) {
@@ -212,6 +372,8 @@ Int daemonServe() {
         }
         return desktopPage()
     }
+    recordEvent("DAEMON_STATE", "{\"phase\":\"READY\"}")
+    startPresenceEventLoop()
     app.listen(dPort())
     return 0
 }
@@ -222,7 +384,7 @@ Int desktopStart() {
         return 0
     }
     if (!File(dConf()).exists()) {
-        File(dConf()).writeText("plane=http://127.0.0.1:9090\\n")
+        File(dConf()).writeText("plane=http://127.0.0.1:9090\n")
         println("DESKTOP-CONF-WRITTEN default-plane")
     }
     if (!File(dTokenFile()).exists()) {
@@ -253,6 +415,7 @@ Int desktopStart() {
 Int desktopStop() {
     stopHelper(dPidFile())
     freePort(dPort())
+    File(dEventsFile()).delete()
     if (healthNow("http://127.0.0.1:" + dPort())) {
         println("DESKTOP-STOP-ERR: still answering on " + dPort())
         return 1

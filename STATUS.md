@@ -6,12 +6,13 @@ English below
 state                v2 RELEASE (corte 06/10; RC-CHECK-OK steps=23 na bateria final)
 domain               file/directory sharing — link, cliente, autorização, conexão direta
 last                 v2 RELEASE cortado 06/10 (pin verificado + docs de corte)
-doing                aguardando corte da mantenedora para marcar v2
-next                 FASE 2 (local API /api/v1/* com eventos) — aguarda decisão de bind-address upstream vs token loopback (docs/desktop/phase0-matrix.md §DP)
+doing                Gate-0 AUDIT + Gate-1 SAFE SUBSET ENTREGUES (host/origin policing + eventos observáveis); superfície PRIVILEGIADA (shares/transfers) BLOQUEADA no gate §DP
+next                 VOTO da mantenedora sobre bind-address (Opção A/B/C em docs/desktop/phase0-matrix.md §DP) para liberar o Gate-1 PRIVILEGIADO; enquanto isso só work decision-free
 proof                RC-CHECK-OK steps=23 na arvore do corte (rc-cut.log, 06/10, jar pin f2629e32d)
 result               share/receive/stop em 5 linhas; pastas; browser; relay honesto
 tests                14 pernas --check JVM+Script; 40/40 arquivos check-clean standalone
-goldens              USER IDENTITY SESSION CONNECT BROWSER RESOURCE SERVE RESUME
+goldens              + DESKTOP-BOOT-OK steps=21, DESKTOP-API-OK legs=22
+USER IDENTITY SESSION CONNECT BROWSER RESOURCE SERVE RESUME
                      PERSIST RELAY SHARE HTTP RESTART FOLDER UX INTEGRATION — todos OK
 compiler_changes     nenhum produto depende de tip não-lançado; D-KOF-SIGN já no jar
 upstream             COMP002 (#770) + HTTP-ERR-ESCAPE (#771) — UPSTREAM FIXED/VERIFIED 06/10 (§609/§610/§612 + §608); packets in docs/upstream/

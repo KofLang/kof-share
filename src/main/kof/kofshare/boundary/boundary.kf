@@ -1,0 +1,66 @@
+package kofshare.boundary
+
+// Gate-1 SAFE SUBSET — pure local-API boundary logic (docs/desktop/gate0-audit.md
+// §8). NO IO, NO secrets, NO web-context dependency: every function is total
+// and unit-testable WITHOUT spawning a server (desktopcheck/apicheck.kf). The
+// daemon (desktopd.kf) wires these onto real requests and reads header("host")
+// / header("origin") — the integration legs prove the web runtime actually
+// delivers those headers (JvmWebCoreRuntime:153 lowercases keys).
+//
+// Why this layer exists (gigaprompt §2 dimensions, §5.6):
+// - The pin's web.listen binds 0.0.0.0 (discovery §7 R1) and TCP peer() is not
+//   exposed (R2), so the socket layer cannot police the peer. The Host header
+//   is the transport-claimed origin: DNS-rebinding reaches the port with an
+//   attacker domain in Host → refused by name.
+// - Origin header distinguishes a same-origin loopback page (allowed, still
+//   token-gated) from a foreign site's script (refused) — a CSRF/forged-browser
+//   defense that does NOT depend on the token, i.e. layered.
+// These hold under whichever bind option the maintainer votes (§DP): pure
+// hardening, no irreversible architecture choice, no privileged mutation.
+
+// nullable coalescer for query()/header() (both return String? — #102 item 4).
+String strOr(String? v) {
+    if (v == null) {
+        return ""
+    }
+    return v
+}
+
+// Accept ONLY loopback hostnames on our port. Bracketed IPv6 is handled
+// FIRST ([::1]:8080 -> ::1) because the port colon is inside the literal;
+// everything else strips at the first colon (host:port) then matches.
+Bool isLoopbackHost(String host) {
+    var h = host
+    if (h.indexOf("[") == 0) {
+        var rb = h.indexOf("]")
+        if (rb >= 0) {
+            return h.substring(1, rb) == "::1"
+        }
+    }
+    var colon = h.indexOf(":")
+    if (colon >= 0) {
+        h = h.substring(0, colon)
+    }
+    return h == "127.0.0.1" || h == "localhost" || h == "::1"
+}
+
+// A same-origin loopback page (or a native client that sends no Origin) is
+// allowed; any other Origin is refused. The token check is separate+added.
+// The origin is scheme://host[:port]; we take the host and run it through
+// isLoopbackHost so a prefix-confusion host like "127.0.0.1.evil.example"
+// is refused (measured: naive startsWith accepted it — the unit caught it).
+Bool originAllowed(String origin) {
+    if (origin.length() == 0) {
+        return true
+    }
+    var cut = origin.indexOf("//")
+    if (cut < 0) {
+        return false
+    }
+    var hp = origin.substring(cut + 2, origin.length())
+    var sl = hp.indexOf("/")
+    if (sl >= 0) {
+        hp = hp.substring(0, sl)
+    }
+    return isLoopbackHost(hp)
+}

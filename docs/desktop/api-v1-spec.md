@@ -78,6 +78,25 @@ Every event emitted on `/api/v1/events` conforms to:
 
 ---
 
+## 3.4 Implementation status (Gate 1 SAFE SUBSET)
+
+**Implemented + proven** (`desktopapi/apicheck.kf` → DESKTOP-API-OK legs=22):
+`/api/v1/health`, `/api/v1/state`, `/api/v1/events?since=<seq>` all guarded by
+Host + Origin + token (`boundaryOk`). Events are the OBSERVABLE subset only —
+`DAEMON_STATE` (boot) and `PLANE_PRESENCE` (real transitions recorded by the
+daemon's presence poller). The file-backed ring buffer (last 64,
+`client.kf appJobJson` precedent) resets on daemon restart; recovery after a
+disconnected consumer is by re-querying `/api/v1/state` and re-subscribing
+`/api/v1/events?since=<lastSeq>` (documented; no fake replay). `TRANSFER_*` /
+`SHARE_*` are catalogued above but NOT emitted yet — emitting them without the
+real mutating operations would invent transitions (§4 event law).
+
+**NOT implemented (§DP gate):** `POST/DELETE /api/v1/shares*`,
+`POST /api/v1/transfers*`. These are the privileged mutating surface; building
+them on a 0.0.0.0 bind without the maintainer's bind-address vote is the
+irreversible choice the gate protects. See `docs/desktop/phase0-matrix.md §DP`
+and `docs/desktop/gate0-audit.md §8`.
+
 ## 4. Pending Architectural Decisions (§DP Gate)
 
 1. **Gate Decision 1: Upstream Bind-Address Face vs. Loopback Token Defense**

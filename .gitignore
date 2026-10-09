@@ -33,3 +33,12 @@ kofshare-app.log
 ic-*
 ux-*
 fq-*
+
+kofshare-desktop.conf
+kofshare-desktop.token
+kofshare-desktop.pid
+kofshare-desktop.events
+kofshare-desktop*.log
+kofshare-plane-*.log
+kofshare-plane-*.pid
+kofshare-desktop-boot.log
