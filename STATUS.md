@@ -6,12 +6,12 @@ English below
 state                v2 RELEASE (corte 06/10; RC-CHECK-OK steps=23 na bateria final)
 domain               file/directory sharing — link, cliente, autorização, conexão direta
 last                 v2 RELEASE cortado 06/10; evolução pós-v2 09/10: GRANTS DE IDENTIDADE (link≠autorização) + API PRIVILEGIADA DO DESKTOP ENTREGUES
-doing                pos-v2 gigaprompt: Gates 0/1/2 entregues (desktop daemon com superficie privilegiada; share --to/receive --bearer; grants assinados no plano central); Gate 3 (deploy remoto) em sequencia
-next                 Gate 3 server de produção (config/env/diretorio) + Gate 6 matriz negativa completa + bateria 2x limpa no candidate
-proof                RC-CHECK-OK steps=28 (novo battery: +GRANTCHECK JVM+Script +HTTPGRANT +RECIPIENTAUTH +DESKTOP-PRIV) na arvore do candidate; corte 23/23 intacto
-result               tudo do v2 + compartilhamento restrito a destinatario (prova com 3 identidades e face real) + desktop que cria/recebe/revoga sozinho
-tests                14 pernas --check JVM+Script; 48/48 arquivos check-clean standalone
-goldens              + DESKTOP-BOOT-OK steps=21, DESKTOP-API-OK legs=22, GRANTCHECK-OK, HTTPGRANT-OK legs=14, RECIPIENTAUTHCHECK-OK legs=10, DESKTOP-PRIV-OK legs=14
+doing                pos-v2 gigaprompt: Gates 0-4 + Gate 6 ENTREGUES — identidade central + grants de destinatario (link!=autorização) + data plane P2P real + desktop daemon privilegiado + server de producao (kofshare.dir/publicurl/fail-closed/body-caps) + isolamento de contas (cerca de dono TOFU) + semantica de revogacao completa
+next                 fechar bateria 32 (em execucao) + freeze final do release candidate
+proof                RC-CHECK-OK steps=32 (+PORT-PREFLIGHT +ACCOUNTISOLATIONCHECK +REVOKECHECK +DEPLOYMENTCHECK sobre o corte 28/28)
+result               tudo do v2 + compartilhamento restrito a destinatario (prova com 3 identidades) + desktop com jobs/eventos/state + deploy com isolamento de dir e backup-restore + isolamento multi-usuario + revogacao nao-retroativa
+tests                14 pernas --check JVM+Script; 51/51 arquivos check-clean standalone
+goldens              + DESKTOP-BOOT-OK steps=21, DESKTOP-API-OK legs=22, GRANTCHECK-OK, HTTPGRANT-OK legs=14, RECIPIENTAUTHCHECK-OK legs=10, DESKTOP-PRIV-OK legs=14, DEPLOYMENTCHECK-OK legs=10, REVOKECHECK-OK legs=12, ACCOUNTISOLATIONCHECK-OK legs=11
 USER IDENTITY SESSION CONNECT BROWSER RESOURCE SERVE RESUME
                      PERSIST RELAY SHARE HTTP RESTART FOLDER UX INTEGRATION — todos OK
 compiler_changes     nenhum produto depende de tip não-lançado; D-KOF-SIGN já no jar
