@@ -5,19 +5,21 @@ English below
 ```text
 state                v2 RELEASE (corte 06/10; RC-CHECK-OK steps=23 na bateria final)
 domain               file/directory sharing — link, cliente, autorização, conexão direta
-last                 v2 RELEASE cortado 06/10 (pin verificado + docs de corte)
-doing                Gate-0 AUDIT + Gate-1 SAFE SUBSET ENTREGUES (host/origin policing + eventos observáveis); superfície PRIVILEGIADA (shares/transfers) BLOQUEADA no gate §DP
-next                 VOTO da mantenedora sobre bind-address (Opção A/B/C em docs/desktop/phase0-matrix.md §DP) para liberar o Gate-1 PRIVILEGIADO; enquanto isso só work decision-free
-proof                RC-CHECK-OK steps=23 na arvore do corte (rc-cut.log, 06/10, jar pin f2629e32d)
-result               share/receive/stop em 5 linhas; pastas; browser; relay honesto
-tests                14 pernas --check JVM+Script; 40/40 arquivos check-clean standalone
-goldens              + DESKTOP-BOOT-OK steps=21, DESKTOP-API-OK legs=22
+last                 v2 RELEASE cortado 06/10; evolução pós-v2 09/10: GRANTS DE IDENTIDADE (link≠autorização) + API PRIVILEGIADA DO DESKTOP ENTREGUES
+doing                pos-v2 gigaprompt: Gates 0/1/2 entregues (desktop daemon com superficie privilegiada; share --to/receive --bearer; grants assinados no plano central); Gate 3 (deploy remoto) em sequencia
+next                 Gate 3 server de produção (config/env/diretorio) + Gate 6 matriz negativa completa + bateria 2x limpa no candidate
+proof                RC-CHECK-OK steps=28 (novo battery: +GRANTCHECK JVM+Script +HTTPGRANT +RECIPIENTAUTH +DESKTOP-PRIV) na arvore do candidate; corte 23/23 intacto
+result               tudo do v2 + compartilhamento restrito a destinatario (prova com 3 identidades e face real) + desktop que cria/recebe/revoga sozinho
+tests                14 pernas --check JVM+Script; 48/48 arquivos check-clean standalone
+goldens              + DESKTOP-BOOT-OK steps=21, DESKTOP-API-OK legs=22, GRANTCHECK-OK, HTTPGRANT-OK legs=14, RECIPIENTAUTHCHECK-OK legs=10, DESKTOP-PRIV-OK legs=14
 USER IDENTITY SESSION CONNECT BROWSER RESOURCE SERVE RESUME
                      PERSIST RELAY SHARE HTTP RESTART FOLDER UX INTEGRATION — todos OK
 compiler_changes     nenhum produto depende de tip não-lançado; D-KOF-SIGN já no jar
 upstream             COMP002 (#770) + HTTP-ERR-ESCAPE (#771) — UPSTREAM FIXED/VERIFIED 06/10 (§609/§610/§612 + §608); packets in docs/upstream/
 known_gaps           envelope selado em árvore (adiado, documentado); STUN/ICE
-                     (reservado, não fingido); web.listen 0.0.0.0 (contrato runtime)
+                     (reservado, não fingido); web.listen 0.0.0.0 (contrato runtime;
+                     §DP DECIDIDO OPÇÃO A 09/10 — boundary token+host+origin como
+                     lei da superficie privilegiada, B pedido upstream permanece)
 release_candidate    FECHADO — cortado como v2 RELEASE
 compiler_pin         kof4j f2629e32d / jar sha256 0b1893b4e4de365c… (byte-identico ao medido)
 candidate_20a3207e1  NAO REPINADO: 3 baterias, 3 falhas de corrida em steps distintos (folder/relay/ux), todas verdes isoladas; f2629e32d verde completo na arvore final

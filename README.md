@@ -55,7 +55,8 @@ the session row is stamped by the actual dial (proof: `INTEGRATIONCHECK-OK`).
 | verb | audience | what |
 |---|---|---|
 | `share <path>` | user | one command: identity, offer, link, active offer (file **or directory**) |
-| `receive <link> [dest]` | user | resolves once, auto-connects, verifies digest per file, resumes per file |
+| `share <path> --to <account>` | user | RESTRICTED link: only that authenticated account can open it — possession of the URL grants nothing |
+| `receive <link> [dest] [--bearer <key>]` | user | resolves once, auto-connects, verifies digest per file, resumes per file; `--bearer file:<path>` keeps the key out of the process table |
 | `stop` | user | kills the helper processes this device started (face/app/server pids) |
 | `app <plane> <port> <token> <key> <dir>` | browser lane | local client: page + `/api/info` metadata + job queue |
 | `server [port] [--start]` | operator | the control plane (`--start` = detached + readiness wait) |
@@ -89,7 +90,16 @@ human `Hint:` line on top (`UXCHECK-OK` proves no stack trace reaches a user).
 ## Security
 
 Ed25519 signed enrollments/offers/shares (public half verifies); bearer/JWT
-account gate on the plane; X25519 + HKDF encrypt-then-MAC chunk envelope for
+account gate on the plane; IDENTITY-BOUND GRANTS (`share --to`): the minted
+link is a LOCATOR, not a capability — redemption requires the plane-verified
+recipient identity (`GRANTCHECK/HTTPGRANT/RECIPIENTAUTHCHECK` goldens; wrong
+identity gets the opaque `REG035`, byte-identical to a dead link, and the
+attempt consumes NO budget); revocation is owner-enforced (`AUTH005` for
+non-owners) and propagates grant↔share; the desktop daemon keeps its account
+bearer `0600` device-local, hands it to workers only as `file:` references,
+and its mutating API rides the token+Host+Origin boundary (`DESKTOP-PRIV`
+legs include the bearer-leak scan — zero occurrences across every observed
+byte); X25519 + HKDF encrypt-then-MAC chunk envelope for
 `--secure` sessions (tamper refuses before bytes reach the file); the relay
 pumps ciphertext and cannot parse; share/device revocation is transitive to
 grants; directory manifests are recomputed by the plane (`REG015/REG016`) and
