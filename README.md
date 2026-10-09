@@ -99,7 +99,13 @@ non-owners) and propagates grant↔share; the desktop daemon keeps its account
 bearer `0600` device-local, hands it to workers only as `file:` references,
 and its mutating API rides the token+Host+Origin boundary (`DESKTOP-PRIV`
 legs include the bearer-leak scan — zero occurrences across every observed
-byte); X25519 + HKDF encrypt-then-MAC chunk envelope for
+byte); the signed device lane carries an OWNER fence — a bearer can offer/mint/
+revoke only through devices bound to its own account (`AUTH004`/`AUTH005`,
+`ACCOUNTISOLATIONCHECK`; the keyless v1 lane is preserved untouched); the
+production server isolates ALL state under `kofshare.dir`, fails closed on
+corrupt grant tables, caps bodies/tables by name, and survives backup-restore
+as a directory copy (`DEPLOYMENTCHECK`; TLS contract in `docs/deploy.md`);
+X25519 + HKDF encrypt-then-MAC chunk envelope for
 `--secure` sessions (tamper refuses before bytes reach the file); the relay
 pumps ciphertext and cannot parse; share/device revocation is transitive to
 grants; directory manifests are recomputed by the plane (`REG015/REG016`) and
