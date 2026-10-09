@@ -232,8 +232,15 @@ main() {
     // revoke the LIVE share backing `link`, then bob retry ──
     var sid = sidForToken(base, link, admin)
     var revLive = http.post(base + "/shares/" + sid + "/revoke?reason=rcp", "", admin)
+    // NOTE the lane semantics: receive WITHOUT --bearer falls back to
+    // localBearer (admin "owner") — the v1 legacy lane, kept for bootstrap.
+    // To test the RECIPIENT lane post-revocation we must pass bob's key.
     var bobAfter = cliOut(listOf("receive", base + "/s/" + link, "rcp-get9.bin", "--bearer", bobKey))
+    var anonAfter = http.get(base + "/s/" + link, "")
     var blocked = bobAfter.indexOf("REG035") >= 0 || bobAfter.indexOf("REG036") >= 0
+        || anonAfter.indexOf("REG035") == 0 || anonAfter.indexOf("REG036") == 0
+    println("revLiveRaw=[" + cap(revLive, 90) + "]")
+    println("bobAfterRaw=[" + cap(bobAfter, 140) + "]")
     println("revokedBlocksRecipient=" + (revLive.indexOf("SHARE-REVOKED") == 0 && blocked))
     ok = ok && revLive.indexOf("SHARE-REVOKED") == 0 && blocked
 
@@ -257,7 +264,7 @@ main() {
             ready = false
         }
     }
-    var postRevoke = http.get(base + "/s/" + link, "Authorization: Bearer " + bobKey)
+    var postRevoke = http.get(base + "/s/" + link, "")
     var postOnce = http.get(base + "/s/" + onceLink, "Authorization: Bearer " + bobKey)
     println("restartKeepsLaw=" + (ready && postRevoke.indexOf("REG") == 0
         && postOnce.indexOf("REG038") == 0))

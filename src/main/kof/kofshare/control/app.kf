@@ -568,7 +568,7 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
         var targetShare: ShareInfo? = shares.get(param("id"))
         if (targetShare != null) {
             var bound = grantForToken(grants, targetShare.token)
-            if (bound != null && bound.senderAccount != who && who != "owner") {
+            if (bound != null && bound.senderAccount != who && who != "admin") {
                 return "AUTH005: not the owner of this share"
             }
         }
