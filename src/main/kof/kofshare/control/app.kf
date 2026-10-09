@@ -151,7 +151,11 @@ String controlDeviceOwnerOf(Map<String, DeviceKey> devkeys, String deviceId) {
 }
 
 String controlOwnerGate(Map<String, DeviceKey> devkeys, String deviceId, String who) {
-    return ""
+    var owner = controlDeviceOwnerOf(devkeys, deviceId)
+    if (owner.length() == 0 || owner == who || who == "admin") {
+        return ""
+    }
+    return "AUTH004: not the owner of device " + deviceId
 }
 
 String controlBodyCap() {
