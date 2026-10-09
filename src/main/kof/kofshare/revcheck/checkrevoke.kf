@@ -226,6 +226,16 @@ main() {
     cliOut(listOf("stop"))
     killPort(19457)
     killPort(19458)
+    var rcvScratch = listOf("rcv-src.bin", "rcv-bob.bin", "rcv-after.bin", "rcv-deny.bin",
+        "rcv-restart.bin", "rcv-face.log", "rcv-plane.log")
+    var ri = 0
+    while (ri < rcvScratch.length) {
+        var f = rcvScratch[ri]
+        if (File(f).exists()) {
+            File(f).delete()
+        }
+        ri = ri + 1
+    }
     for (var f in scratch) {
         if (File(f).exists()) {
             File(f).delete()
