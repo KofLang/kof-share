@@ -25,6 +25,10 @@ import kof.security
 import kof.web
 import kofshare.core
 import kofshare.boundary
+import kofshare.identity
+import kof.fs
+import kof.math
+import kof.json
 
 // coalesce nullable header (client.kf shape; COMP002-safe pattern).
 String headerText(String? h) {
@@ -293,6 +297,234 @@ String stateJson() {
         + "\",\"api\":\"v1\",\"product\":\"kofshare-desktop-f1\"}"
 }
 
+
+// ═════════════════════════════════════════════════════════════════════════
+// GATE 1-PRIVILEGED (unlocked by the §DP OPTION A decision, 09/10/2026):
+// the mutating local surface. Every route here rides the SAME boundary gate
+// as the read subset (token + Host + Origin), and the account credential is
+// stored 0600 device-local, passed to workers only via the bearer `file:`
+// lane so it never lands in argv/process-table/logs. The plane remains the
+// authorizer for every remote effect (whoami/owner-law/revocation).
+// ═════════════════════════════════════════════════════════════════════════
+
+record JobRow(String id, String kind, String state, String details, Long created)
+
+String dCredFile() {
+    return "kofshare-desktop.credential"
+}
+
+String dJobsFile() {
+    return "kofshare-desktop.jobs"
+}
+
+List<JobRow> jobsRead() {
+    var out = new List<JobRow>()
+    var t = readOr(dJobsFile())
+    if (t.length() == 0) {
+        return out
+    }
+    var parsed = json.decode<List<JobRow>>(t)
+    return parsed
+}
+
+void jobsWrite(List<JobRow> rows) {
+    File(dJobsFile()).writeText(json.encode(rows))
+}
+
+// state-only transition: keeps the row's details (a transfer's dest is its
+// progress anchor — the worker's marker text would erase the readable path).
+void jobStateKeep(String jid, String state) {
+    jobState(jid, state, "")
+}
+
+void jobState(String jid, String state, String details) {
+    var rows = jobsRead()
+    var i = 0
+    while (i < rows.size) {
+        var r = rows.get(i)
+        if (r.id == jid) {
+            var keep = details
+            if (keep.length() == 0 && (state == "RUNNING" || state == "DONE")) {
+                keep = r.details
+            }
+            rows.set(i, new JobRow(r.id, r.kind, state, keep, r.created))
+        }
+        i = i + 1
+    }
+    jobsWrite(rows)
+}
+
+String newJobId() {
+    return "jb" + security.randomHex(4)
+}
+
+// share-id for a token, parsed from the plane's table text (quoted seg that
+// starts with "sh", immediately-before the token value).
+String sidForToken(String table, String token) {
+    var idx = table.indexOf(token)
+    if (idx < 0) {
+        return ""
+    }
+    var back = table.substring(0, idx)
+    var i = back.length() - 1
+    while (i >= 0) {
+        if (back.charAt(i) == '"') {
+            var j = i - 1
+            while (j >= 0 && back.charAt(j) != '"') {
+                j = j - 1
+            }
+            if (j >= 0) {
+                var seg = back.substring(j + 1, i)
+                if (seg.indexOf("sh") == 0 && seg.length() >= 10) {
+                    return seg
+                }
+            }
+        }
+        i = i - 1
+    }
+    return ""
+}
+
+String planeHostPort() {
+    var pl = dPlane()
+    var cut = pl.indexOf("://")
+    if (cut >= 0) {
+        return pl.substring(cut + 3, pl.length())
+    }
+    return pl
+}
+
+String shellField(String text, String marker) {
+    var lines = text.split("\n")
+    var i = 0
+    while (i < lines.size) {
+        if (lines[i].indexOf(marker) >= 0) {
+            var rest = lines[i].substring(lines[i].indexOf(marker) + marker.length(), lines[i].length())
+            return rest.split(" ")[0].split("\n")[0]
+        }
+        i = i + 1
+    }
+    return ""
+}
+
+Bool safeWord(String v) {
+    if (v.length() == 0 || v.length() > 512) {
+        return false
+    }
+    if (v.indexOf("..") >= 0) {
+        return false
+    }
+    var pool = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-/:"
+    var i = 0
+    while (i < v.length()) {
+        if (pool.indexOf("" + v.charAt(i)) < 0) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// detached worker: the SAME cli.kf product lane, bearer by file reference.
+void launchJob(String jid, String kind, List<String> verbArgs, String okMarker) {
+    jobState(jid, "RUNNING", "")
+    recordEvent(kind + "_QUEUED", "{\"job\":\"" + jid + "\"}")
+    var pidfile = "kofshare-desktop-job-" + jid + ".pid"
+    var logfile = "kofshare-desktop-job-" + jid + ".log"
+    var sp = spawnDetachedEntry(logfile, verbArgs, pidfile, "src/main/kof/kofshare/cli/cli.kf")
+    if (sp < 0) {
+        jobState(jid, "FAILED", "DESKTOP-WORKER-UNSPAWNABLE")
+        recordEvent(kind + "_FAILED", "{\"job\":\"" + jid + "\",\"code\":\"DESKTOP-WORKER-UNSPAWNABLE\"}")
+        return
+    }
+    spawn {
+        var finalState = ""
+        var finalDetails = ""
+        var t = 0
+        while (t < 600 && finalState.length() == 0) {
+            t = t + 1
+            var log = readOr(logfile)
+            if (log.indexOf(okMarker) >= 0) {
+                finalState = "DONE"
+                finalDetails = shellField(log, okMarker)
+                break
+            }
+            var code = refusalIn(log)
+            if (code.length() > 0) {
+                finalState = "FAILED"
+                finalDetails = code
+                break
+            }
+            if (!File("/proc/" + sp).exists()) {
+                finalState = "FAILED"
+                finalDetails = "DESKTOP-WORKER-DIED"
+                break
+            }
+            time.sleep(500)
+        }
+        if (finalState.length() == 0) {
+            stopHelper(pidfile)
+            finalState = "FAILED"
+            finalDetails = "DESKTOP-JOB-TIMEOUT"
+        }
+        jobState(jid, finalState, finalDetails)
+        recordEvent(kind + "_" + finalState, "{\"job\":\"" + jid + "\",\"details\":\"" + finalDetails + "\"}")
+    }
+}
+
+// the first named refusal inside a worker log (codes, never stack noise).
+String refusalIn(String log) {
+    var marks = new List<String>()
+    marks.add("REG0")
+    marks.add("GRANT0")
+    marks.add("AUTH0")
+    marks.add("DEV0")
+    marks.add("SES")
+    marks.add("DOWN-ERR")
+    marks.add("RECEIVE-ERR")
+    marks.add("CONNECTIVITY_FAILED")
+    var i = 0
+    while (i < marks.size) {
+        var m = marks.get(i)
+        var idx = log.indexOf(m)
+        if (idx >= 0) {
+            var rest = log.substring(idx, log.length())
+            var nl = rest.indexOf("\n")
+            if (nl > 0) {
+                rest = rest.substring(0, nl)
+            }
+            var q = rest.indexOf("\"")
+            if (q > 0) {
+                rest = rest.substring(0, q)
+            }
+            return rest
+        }
+        i = i + 1
+    }
+    return ""
+}
+
+String jobsJsonFor(String kind) {
+    var rows = jobsRead()
+    var out = "["
+    var first = true
+    var i = 0
+    while (i < rows.size) {
+        var r = rows.get(i)
+        if (kind.length() == 0 || r.kind == kind) {
+            if (!first) {
+                out = out + ","
+            }
+            out = out + "{\"id\":\"" + r.id + "\",\"kind\":\"" + r.kind
+                + "\",\"state\":\"" + r.state + "\",\"details\":\"" + r.details
+                + "\",\"created\":" + r.created + "}"
+            first = false
+        }
+        i = i + 1
+    }
+    return out + "]"
+}
+
 String desktopPage() {
     var lines = new List<String>()
     lines.add("<!doctype html>")
@@ -340,6 +572,12 @@ String desktopPage() {
 // as the X-Kof-Token header for the API. URL history is device-local;
 // nothing about this reaches the plane.
 
+record LoginReqD(String bearer)
+
+record ShareReqD(String path, String to, String ttl, Bool once, Bool readOnly)
+
+record TransferReqD(String link, String dest)
+
 Int daemonServe() {
     if (File(dTokenFile()).exists() == false) {
         writeDesktopToken()
@@ -366,6 +604,268 @@ Int daemonServe() {
         }
         return eventsJsonSince(sinceVal(query("since")))
     }
+
+    // ── PRIVILEGED MUTATING SURFACE (§DP Option A; every line rides boundaryOk) ──
+
+    app.post("/api/v1/login") {
+        var g = boundaryOk()
+        if (g.length() > 0) {
+            return g
+        }
+        var req = json.decode<LoginReqD>(body())
+        if (!safeWord(req.bearer)) {
+            return "DESKTOP-LOGIN-REFUSED: malformed bearer"
+        }
+        var who = http.get(dPlane() + "/whoami", "Authorization: Bearer " + req.bearer)
+        if (who.indexOf("WHOAMI ") != 0) {
+            return "DESKTOP-LOGIN-REFUSED: " + who
+        }
+        var sub = who.substring(7, who.length())
+        File(dCredFile()).writeText(req.bearer)
+        shell.run("chmod", listOf("600", dCredFile()))
+        recordEvent("IDENTITY_LOGIN", "{\"sub\":\"" + sub + "\"}")
+        return "{\"sub\":\"" + sub + "\"}"
+    }
+
+    app.post("/api/v1/logout") {
+        var g = boundaryOk()
+        if (g.length() > 0) {
+            return g
+        }
+        if (File(dCredFile()).exists()) {
+            File(dCredFile()).delete()
+        }
+        recordEvent("IDENTITY_LOGOUT", "{}")
+        return "DESKTOP-LOGOUT-OK"
+    }
+
+    app.get("/api/v1/accounts") {
+        var g = boundaryOk()
+        if (g.length() > 0) {
+            return g
+        }
+        var cred = readOr(dCredFile())
+        if (cred.length() == 0) {
+            return "DESKTOP-NO-CREDENTIAL"
+        }
+        var who = http.get(dPlane() + "/whoami", "Authorization: Bearer " + cred)
+        if (who.indexOf("WHOAMI ") != 0) {
+            return who
+        }
+        return "{\"sub\":\"" + who.substring(7, who.length()) + "\"}"
+    }
+
+    app.get("/api/v1/device") {
+        var g = boundaryOk()
+        if (g.length() > 0) {
+            return g
+        }
+        var cred = readOr(dCredFile())
+        if (cred.length() == 0) {
+            return "DESKTOP-NO-CREDENTIAL"
+        }
+        var sk = identityBoot("kofshare-device.ed25519")
+        var pub = identityPub(sk)
+        var did = identityDeviceId(pub)
+        var enroll = http.get(dPlane() + "/device-keys/" + did,
+            "Authorization: Bearer " + cred)
+        var enrolled = enroll.indexOf("PUB: ") == 0
+        return "{\"deviceId\":\"" + did + "\",\"pubkey\":\"" + pub
+            + "\",\"enrolled\":" + enrolled + "}"
+    }
+
+    app.post("/api/v1/shares") {
+        var g = boundaryOk()
+        if (g.length() > 0) {
+            return g
+        }
+        var cred = readOr(dCredFile())
+        if (cred.length() == 0) {
+            return "DESKTOP-NO-CREDENTIAL"
+        }
+        var req = json.decode<ShareReqD>(body())
+        if (!safeWord(req.path) || !File(req.path).exists()) {
+            return "PATH-NOT-FOUND"
+        }
+        if (req.to.length() > 0 && !safeWord(req.to)) {
+            return "DESKTOP-BAD-REQUEST: malformed recipient"
+        }
+        if (req.ttl.length() > 0 && !safeWord(req.ttl)) {
+            return "DESKTOP-BAD-REQUEST: malformed ttl"
+        }
+        var jid = newJobId()
+        var rows = jobsRead()
+        rows.add(new JobRow(jid, "share", "QUEUED", "", time.now()))
+        jobsWrite(rows)
+        var args = new List<String>()
+        args.add("share")
+        args.add(req.path)
+        args.add("--server")
+        args.add(planeHostPort())
+        args.add("--raw")
+        args.add("--bearer")
+        args.add("file:" + dCredFile())
+        if (req.to.length() > 0) {
+            args.add("--to")
+            args.add(req.to)
+        }
+        if (req.once) {
+            args.add("--once")
+        }
+        if (req.readOnly) {
+            args.add("--read-only")
+        }
+        if (req.ttl.length() > 0) {
+            args.add("--ttl")
+            args.add(req.ttl)
+        }
+        launchJob(jid, "SHARE", args, "SHARE-LINK ")
+        return "{\"job\":\"" + jid + "\",\"state\":\"QUEUED\"}"
+    }
+
+    app.get("/api/v1/shares") {
+        var g = boundaryOk()
+        if (g.length() > 0) {
+            return g
+        }
+        return jobsJsonFor("share")
+    }
+
+    app.post("/api/v1/shares/:id/revoke") {
+        var g = boundaryOk()
+        if (g.length() > 0) {
+            return g
+        }
+        var cred = readOr(dCredFile())
+        if (cred.length() == 0) {
+            return "DESKTOP-NO-CREDENTIAL"
+        }
+        var rows = jobsRead()
+        var idx = -1
+        var i = 0
+        while (i < rows.size) {
+            var r = rows.get(i)
+            if (r.id == param("id") && r.kind == "share") {
+                idx = i
+            }
+            i = i + 1
+        }
+        if (idx < 0) {
+            return "TRANSFER-NOT-FOUND: " + param("id")
+        }
+        var hit = rows.get(idx)
+        var det = hit.details
+        var lcut = det.indexOf("/s/")
+        if (det.length() == 0 || lcut < 0) {
+            return "DESKTOP-REVOKE-PENDING: share not minted yet (" + hit.state + ")"
+        }
+        // details carries the full minted LINK; the plane's own table (read
+        // with the owner credential) resolves token -> share id. The OWNER
+        // LAW is imposed by the PLANE (AUTH005 for non-owners), never here.
+        var token = det.substring(lcut + 3, det.length()).split(" ")[0]
+        var table = http.get(dPlane() + "/shares", "Authorization: Bearer " + cred)
+        var rid = sidForToken(table, token)
+        if (rid.length() == 0) {
+            return "DESKTOP-REVOKE-ERR: token not in plane table"
+        }
+        var resp = http.post(dPlane() + "/shares/" + rid + "/revoke?reason=desktop", "",
+            "Authorization: Bearer " + cred)
+        if (resp.indexOf("SHARE-REVOKED") != 0 && resp.indexOf("GRANT-REVOKED") != 0) {
+            return resp
+        }
+        jobState(hit.id, "REVOKED", hit.details)
+        recordEvent("SHARE_REVOKED", "{\"job\":\"" + hit.id + "\"}")
+        return "{\"status\":\"REVOKED\",\"id\":\"" + rid + "\"}"
+    }
+
+    app.post("/api/v1/transfers") {
+        var g = boundaryOk()
+        if (g.length() > 0) {
+            return g
+        }
+        var cred = readOr(dCredFile())
+        if (cred.length() == 0) {
+            return "DESKTOP-NO-CREDENTIAL"
+        }
+        var req = json.decode<TransferReqD>(body())
+        if (!safeWord(req.link) || req.link.indexOf("/s/") < 0) {
+            return "DESKTOP-BAD-REQUEST: not a kofshare link"
+        }
+        if (!safeWord(req.dest) || req.dest.indexOf("/") == 0 || req.dest.indexOf("..") >= 0) {
+            return "DEST-INVALID"
+        }
+        var jid = newJobId()
+        var rows = jobsRead()
+        rows.add(new JobRow(jid, "transfer", "QUEUED", req.dest, time.now()))
+        jobsWrite(rows)
+        var args = new List<String>()
+        args.add("receive")
+        args.add(req.link)
+        args.add(req.dest)
+        args.add("--bearer")
+        args.add("file:" + dCredFile())
+        launchJob(jid, "TRANSFER", args, "DOWN-AUTO-OK")
+        return "{\"job\":\"" + jid + "\",\"state\":\"QUEUED\",\"dest\":\"" + req.dest + "\"}"
+    }
+
+    app.get("/api/v1/transfers") {
+        var g = boundaryOk()
+        if (g.length() > 0) {
+            return g
+        }
+        return jobsJsonFor("transfer")
+    }
+
+    app.get("/api/v1/transfers/:id") {
+        var g = boundaryOk()
+        if (g.length() > 0) {
+            return g
+        }
+        var rows = jobsRead()
+        var i = 0
+        while (i < rows.size) {
+            var r = rows.get(i)
+            if (r.id == param("id") && r.kind == "transfer") {
+                var done = 0
+                if (File(r.details).exists()) {
+                    done = File(r.details).size() as Int
+                }
+                return "{\"id\":\"" + r.id + "\",\"state\":\"" + r.state
+                    + "\",\"dest\":\"" + r.details + "\",\"bytesDone\":" + done + "}"
+            }
+            i = i + 1
+        }
+        return "TRANSFER-NOT-FOUND: " + param("id")
+    }
+
+    app.post("/api/v1/transfers/:id/cancel") {
+        var g = boundaryOk()
+        if (g.length() > 0) {
+            return g
+        }
+        var rows = jobsRead()
+        var idx = -1
+        var i = 0
+        while (i < rows.size) {
+            var r = rows.get(i)
+            if (r.id == param("id") && r.kind == "transfer") {
+                idx = i
+            }
+            i = i + 1
+        }
+        if (idx < 0) {
+            return "TRANSFER-NOT-FOUND: " + param("id")
+        }
+        var hit = rows.get(idx)
+        if (hit.state != "QUEUED" && hit.state != "RUNNING") {
+            return "TRANSFER-NOT-CANCELLABLE: " + hit.state
+        }
+        stopHelper("kofshare-desktop-job-" + hit.id + ".pid")
+        jobState(hit.id, "CANCELLED", hit.details)
+        recordEvent("TRANSFER_CANCELLED", "{\"job\":\"" + hit.id + "\"}")
+        return "{\"status\":\"CANCELLED\",\"id\":\"" + hit.id + "\"}"
+    }
+
     app.get("/page") {
         if (query("tok") != desktopToken() || desktopToken().length() == 0) {
             return authRefusal()

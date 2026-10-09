@@ -85,6 +85,18 @@ void main(List<String> args) {
     if (!step("REGCHECK-OK", j + " run src/main/kof/kofshare/control/check.kf")) {
         failed = failed + " regcheck"
     }
+    steps = steps + 1
+    if (!step("GRANTCHECK-OK", j + " run src/main/kof/kofshare/grantcheck/checkgrant.kf")) {
+        failed = failed + " grantcheck"
+    }
+    steps = steps + 1
+    if (!step("SCRIPT-GRANTCHECK", j + " run --target script src/main/kof/kofshare/grantcheck/checkgrant.kf | grep -q GRANTCHECK-OK && echo SCRIPT-GRANTCHECK")) {
+        failed = failed + " script-grantcheck"
+    }
+    steps = steps + 1
+    if (!step("HTTPGRANT-OK", j + " run src/main/kof/kofshare/grantcheckhttp/httpgrant.kf")) {
+        failed = failed + " httpgrant"
+    }
     // HTTPCYCLE: the httpcheck/restart goldens ride the EXTERNAL standalone
     // plane on 18322 (server.kf binds 18322; they never spawn it themselves —
     // the documented "standalone cycle" recipe): fresh state → boot plane →
@@ -171,6 +183,14 @@ void main(List<String> args) {
     steps = steps + 1
     if (!step("UXCHECK-OK", j + " run src/main/kof/kofshare/uxcheck/checkux.kf")) {
         failed = failed + " ux"
+    }
+    steps = steps + 1
+    if (!step("RECIPIENTAUTHCHECK-OK", j + " run src/main/kof/kofshare/rcpcheck/rcpcheck.kf")) {
+        failed = failed + " rcpcheck"
+    }
+    steps = steps + 1
+    if (!step("DESKTOP-PRIV-OK", j + " run src/main/kof/kofshare/desktoppriv/privcheck.kf")) {
+        failed = failed + " desktoppriv"
     }
     steps = steps + 1
     if (!step("INTEGRATIONCHECK-OK", j + " run src/main/kof/kofshare/integrationcheck/checkintegration.kf")) {

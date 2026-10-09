@@ -77,6 +77,22 @@ state has not confirmed (§4 event law).
   radius (a LAN attacker holding the token could mint shares / trigger
   downloads). That authorization is the mantainer's call — recorded, not made
   silently.
+  **DECIDED 09/10/2026 (gigaprompt §5 orders the gate closed): OPTION A.**
+  Contracts compared, not invented: B needs a face `web.listen(host, port)`
+  that does NOT exist at the pin (`KofWeb.java:154` types `listen(Int)` only)
+  ⇒ it is a Kof4j change + pin promotion + full re-battery, which the pin law
+  reserves for a maintainer-verified candidate (20a3207e1 precedent: three
+  failed full batteries). C (Unix socket via `ext` FFI) does bind at the pin
+  (`CompilerFfiBinding`: JVM target binds externs) but is a second IPC stack
+  that breaks the daemon-served webview face — the only shell the product
+  ships today (node absent). A is therefore the least-privilege option
+  COMPATIBLE WITH THE EXISTING RUNTIME: blast radius closed by the shipped
+  boundary instead — 0600 device-local token (never in API URLs), Host
+  policing (DNS-rebinding), Origin allow-list (CSRF/malicious-page), named
+  refusals, all RED-before-GREEN proven at `DESKTOP-API-OK`. The mutating
+  surface is hereby UNLOCKED under these conditions. B remains the named
+  upstream request (row 10, discovery §8-A) and will supersede A the day a
+  pin candidate carries `listen(host, port)` and passes RC twice clean.
 - **kof.ui vs served page as the v1 shell face**: node is ABSENT on this
   machine ⇒ the JS target can't build here today; the webview route exists
   at the pin but its toolchain is unavailable. F1 therefore ships the

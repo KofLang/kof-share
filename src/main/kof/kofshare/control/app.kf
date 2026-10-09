@@ -420,6 +420,14 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
         if (req.recipient == senderSub) {
             return "GRANT016: sender cannot self-authorize a restricted grant"
         }
+        // The RECIPIENT must be a real, active account (gigaprompt §2 flow 2:
+        // "destinatários identificados no sistema"). A typo must refuse at
+        // MINT time, not silently create an unusable link. This existence
+        // answer goes only to the AUTHENTICATED SENDER who just named the
+        // recipient — outsiders never reach this line.
+        if (authActive(accounts, req.recipient) != "OK") {
+            return "GRANT017: recipient account not active: " + req.recipient
+        }
         if (req.dirShare && o.type != "DIRECTORY") {
             return "REG016: dirShare requested on a non-directory offer"
         }
@@ -514,6 +522,16 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
         return sharesJson(shares)
     }
 
+    // GATE 3 (multi-user evolution): the caller's verified identity, for the
+    // desktop's whoami. The gate above already checked signature + ACTIVE.
+    app.get("/whoami") {
+        var g = controlAuthGate(accounts)
+        if (g != "OK") {
+            return g
+        }
+        return "WHOAMI " + authParseSub(auth.claims())
+    }
+
     app.get("/s/:token") {
         // Best-effort caller identity: a VALID bearer whose account is ACTIVE
         // yields its sub; anything else (no bearer, bad sig, revoked account)
@@ -539,6 +557,20 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
         var reason = ""
         if (rs != null) {
             reason = rs
+        }
+        // GATE 3 owner law: a share bound to a GRANT is revoked only by the
+        // account that minted it (or the control-key admin lane below). A
+        // different authenticated identity gets AUTH005 — by name, without
+        // revealing anything about the share. v1/v2 possession shares carry
+        // NO owner record; the migration law (§10) says we do NOT invent one
+        // silently — the single-host bootstrap admin keeps that lane.
+        var who = authParseSub(auth.claims())
+        var targetShare: ShareInfo? = shares.get(param("id"))
+        if (targetShare != null) {
+            var bound = grantForToken(grants, targetShare.token)
+            if (bound != null && bound.senderAccount != who && who != "owner") {
+                return "AUTH005: not the owner of this share"
+            }
         }
         var r = shareRevoke(shares, param("id"), reason)
         if (r != "OK") {

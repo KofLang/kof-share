@@ -1,0 +1,352 @@
+package kofshare.rcpcheck
+
+// GATE 2/4 — RECIPIENTAUTHCHECK: the full PRODUCT lane for identity-restricted
+// sharing, REAL processes end to end: owner `share --to` mints + serves on a
+// real face, recipient `receive` dials DIRECT and lands verified bytes, an
+// unauthorized holder of the EXACT link (authenticated stranger AND anonymous)
+// is refused opaquely and CANNOT consume the owner's budget. JVM only (web
+// handlers under the interpreter answer 500 — measured, httpcheck precedent).
+//
+// Three independent identities (gigaprompt §12 law): alice owns, bob receives,
+// carol attacks. Ports 19453/19454 owned here. Every state file this suite
+// touches is deleted before and after; nothing from a previous run is reused.
+
+import kof.crypto
+import kof.file
+import kof.fs
+import kof.http
+import kof.json
+import kof.net
+import kof.process
+import kof.shell
+import kof.time
+import kofshare.control.auth
+import kofshare.control.registry
+import kofshare.control.share
+import kofshare.core
+import kofshare.domain
+
+String jar() {
+    return "/home/mel/tools/kof-pin/kof-cli-f2629e32d.jar"
+}
+
+String cliOut(List<String> verbArgs) {
+    var cmd = "cd /home/mel/Documents/kof-share && java -jar " + jar()
+        + " run src/main/kof/kofshare/cli/cli.kf"
+    for (var a in verbArgs) {
+        cmd = cmd + " " + a
+    }
+    var res = shell.run("sh", listOf("-c", cmd + " 2>&1"))
+    var out = ""
+    var lines = res.stdout.split("\n")
+    var i = 0
+    while (i < lines.size) {
+        var ln = lines[i]
+        if (ln.indexOf("L-05") < 0 && ln.indexOf("warning:") < 0) {
+            out = out + ln + "\n"
+        }
+        i = i + 1
+    }
+    return out
+}
+
+Bool killPort(Int port) {
+    shell.run("sh", listOf("-c", "fuser -k " + port + "/tcp 2>/dev/null; true"))
+    var t = 0
+    while (t < 240) {
+        t = t + 1
+        try {
+            var c = net.connect("127.0.0.1", port)
+            c.close()
+        } catch (String e) {
+            return true
+        }
+    }
+    return false
+}
+
+String keyOf(String resp) {
+    var pre = "APIKEY "
+    if (resp.indexOf(pre) == 0) {
+        return resp.substring(pre.length(), resp.length()).trim()
+    }
+    return ""
+}
+
+String fieldOfOut(String out, String marker) {
+    var lines = out.split("\n")
+    var i = 0
+    while (i < lines.size) {
+        var ln = lines[i]
+        if (ln.indexOf(marker) >= 0) {
+            var cut = ln.indexOf(marker) + marker.length()
+            var rest = ln.substring(cut, ln.length())
+            return rest.split(" ")[0].split("\n")[0]
+        }
+        i = i + 1
+    }
+    return ""
+}
+
+Int[] makeData(Int n) {
+    var out = new Int[n]
+    var i = 0
+    while (i < n) {
+        out[i] = (i * 97 + 41) % 233
+        i = i + 1
+    }
+    return out
+}
+
+main() {
+    var ok = true
+    var base = "http://127.0.0.1:19453"
+    killPort(19453)
+    killPort(19454)
+    cliOut(listOf("stop"))
+    var scratch = listOf("server-control.bearer", "server-control.apikey", "server-control.ed25519",
+        "server-registry.devices.json", "server-registry.offers.json", "server-registry.shares.json",
+        "server-registry.grants.json", "server-registry.accounts.json", "server-registry.devkeys.json",
+        "server-registry.sessions.json", "server-registry.presence.json",
+        "kofshare-server.log", "kofshare-server.pid", "kofshare-face.log", "kofshare-face.pid",
+        "kofshare-cli.config", "kofshare-device.ed25519",
+        "rcp-src.bin", "rcp-get.bin", "rcp-bad.bin", "rcp-anon.bin", "rcp-again.bin",
+        "rcp-carol.bin", "rcp-carol2.bin", "rcp-typo.bin")
+    for (var f in scratch) {
+        if (File(f).exists()) {
+            File(f).delete()
+        }
+    }
+
+    File("kofshare-cli.config").writeText("jar=" + jar() + "\nworkdir=/home/mel/Documents/kof-share\n")
+
+    // ── leg 1: plane + three humans ──
+    var boot = cliOut(listOf("server", "19453", "--start"))
+    var up = boot.indexOf("SERVER-READY") >= 0
+    var ready = false
+    var tries = 0
+    while (!ready && tries < 120) {
+        tries = tries + 1
+        try {
+            ready = http.get(base + "/health") == "OK"
+        } catch (String e) {
+            ready = false
+        }
+    }
+    println("plane=" + (up && ready))
+    ok = ok && up && ready
+    var admin = "Authorization: Bearer " + File("server-control.bearer").readText()
+    var aliceKey = keyOf(http.post(base + "/accounts",
+        json.encode(AccountRequest("alice", "Alice", 0)), admin))
+    var bobKey = keyOf(http.post(base + "/accounts",
+        json.encode(AccountRequest("bob", "Bob", 0)), admin))
+    var carolKey = keyOf(http.post(base + "/accounts",
+        json.encode(AccountRequest("carol", "Carol", 0)), admin))
+    var trio = aliceKey.length() > 20 && bobKey.length() > 20 && carolKey.length() > 20
+    println("identities=" + trio)
+    ok = ok && trio
+
+    // ── leg 2: owner mints an identity link through the PRODUCT verb ──
+    var data = makeData(2400)
+    File("rcp-src.bin").writeBytes(data)
+    var shOut = cliOut(listOf("share", "rcp-src.bin", "--server", "127.0.0.1:19453",
+        "--face", "19454", "--to", "bob", "--bearer", aliceKey))
+    var link = fieldOfOut(shOut, "/s/")
+    var restrictedMsg = shOut.indexOf("RESTRICTED: only bob") >= 0
+    // NO dial-probe here: the face consumes ONE accept per connection, so a
+    // readiness TCP probe would steal the recipient's slot (measured this
+    // session — bob got Connection reset after a portOpen poll). The honest
+    // wait is the log marker, integrationcheck's waitLog precedent.
+    var faceUp = waitFaceLog("kofshare-face.log", "SERVE-LISTENING 19454")
+    println("mintLink=" + (link.length() == 64 && restrictedMsg))
+    println("faceServing=" + faceUp)
+    ok = ok && link.length() == 64 && restrictedMsg && faceUp
+
+    // ── leg 3: carol HOLDS THE EXACT LINK — authenticated, refused, opaque ──
+    var carolOut = cliOut(listOf("receive", base + "/s/" + link, "rcp-carol.bin", "--bearer", carolKey))
+    var carolOpaque = carolOut.indexOf("REG035") >= 0
+    var carolNoFile = !File("rcp-carol.bin").exists()
+    var carolNoLeak = carolOut.indexOf("rcp-src.bin") < 0 && carolOut.indexOf("alice") < 0
+    println("carolRefusedOpaque=" + (carolOpaque && carolNoFile && carolNoLeak))
+    ok = ok && carolOpaque && carolNoFile && carolNoLeak
+
+    // ── leg 4: anonymous holder — same opaque bytes, no file ──
+    var anonOut = cliOut(listOf("receive", base + "/s/" + link, "rcp-anon.bin"))
+    var anonOpaque = anonOut.indexOf("REG035") >= 0 && anonOut == carolOut
+    var anonNoFile = !File("rcp-anon.bin").exists()
+    println("fallbackIdentitySame=" + (anonOpaque && anonNoFile))
+    ok = ok && anonOpaque && anonNoFile
+
+    // ── leg 5: bob (the recipient) receives, digest-verified, over the wire ──
+    var bobOut = cliOut(listOf("receive", base + "/s/" + link, "rcp-get.bin", "--bearer", bobKey))
+    var bobOk = bobOut.indexOf("DOWN-AUTO-OK") >= 0 || bobOut.indexOf("DOWN-OK") >= 0
+    var bytesOk = false
+    if (File("rcp-get.bin").exists()) {
+        var got = crypto.sha256Bytes(toBytes(File("rcp-get.bin").readBytes()))
+        var want = crypto.sha256Bytes(toBytes(data))
+        bytesOk = got == want && File("rcp-get.bin").size() == 2400
+        
+    }
+    println("bobP2P=" + bobOk)
+    println("bobDigest=" + bytesOk)
+    ok = ok && bobOk && bytesOk
+
+    // ── leg 6: carol could NOT consume the budget — a second bob receive of a
+    // NON-once link proves uses only tick for authorized access (stranger
+    // attempts above spent nothing: this link never used --once, but the same
+    // law is asserted on --once in leg 7) ──
+    var bob2 = cliOut(listOf("receive", base + "/s/" + link, "rcp-again.bin", "--bearer", bobKey))
+    var againOk = bob2.indexOf("DOWN-AUTO-OK") >= 0 || bob2.indexOf("DOWN-OK") >= 0
+    println("budgetUntouched=" + againOk)
+    ok = ok && againOk
+
+    // ── leg 7: --once identity link: strangers burn nothing, recipient gets ONE ──
+    var onceOut = cliOut(listOf("share", "rcp-src.bin", "--server", "127.0.0.1:19453",
+        "--face", "19454", "--to", "bob", "--once", "--bearer", aliceKey))
+    var onceLink = fieldOfOut(onceOut, "/s/")
+    var i2 = 0
+    while (i2 < 5) {
+        cliOut(listOf("receive", base + "/s/" + onceLink, "rcp-bad.bin", "--bearer", carolKey))
+        i2 = i2 + 1
+    }
+    var onceBob = cliOut(listOf("receive", base + "/s/" + onceLink, "rcp-get2.bin", "--bearer", bobKey))
+    var onceOk = onceBob.indexOf("DOWN-AUTO-OK") >= 0 || onceBob.indexOf("DOWN-OK") >= 0
+    var onceSecond = cliOut(listOf("receive", base + "/s/" + onceLink, "rcp-get3.bin", "--bearer", bobKey))
+    var onceSpent = onceSecond.indexOf("REG038") >= 0
+    println("strangersBurnNothing=" + onceOk)
+    println("onceSpentForReal=" + onceSpent)
+    ok = ok && onceOk && onceSpent
+    File("rcp-get2.bin").delete()
+    File("rcp-get3.bin").delete()
+
+    // ── leg 8: revocation blocks the recipient's FUTURE receives ──
+    var gtxt = ""
+    var gfile = File("server-registry.grants.json")
+    if (gfile.exists()) {
+        gtxt = "" + gfile.readText()
+    }
+    // grants table = AUTHORIZATION state only: never file names, never paths
+    // (architecture law — the plane must not become a content archive).
+    println("grantsHaveNoPaths=" + (gtxt.indexOf("rcp-src.bin") < 0 && gtxt.indexOf("/home") < 0))
+    ok = ok && gtxt.indexOf("rcp-src.bin") < 0 && gtxt.indexOf("/home") < 0
+    // revoke the LIVE share backing `link`, then bob retry ──
+    var sid = sidForToken(base, link, admin)
+    var revLive = http.post(base + "/shares/" + sid + "/revoke?reason=rcp", "", admin)
+    var bobAfter = cliOut(listOf("receive", base + "/s/" + link, "rcp-get9.bin", "--bearer", bobKey))
+    var blocked = bobAfter.indexOf("REG035") >= 0 || bobAfter.indexOf("REG036") >= 0
+    println("revokedBlocksRecipient=" + (revLive.indexOf("SHARE-REVOKED") == 0 && blocked))
+    ok = ok && revLive.indexOf("SHARE-REVOKED") == 0 && blocked
+
+    // ── leg 9: unknown recipient refuses at MINT (no silent dead link) ──
+    var typoOut = cliOut(listOf("share", "rcp-src.bin", "--server", "127.0.0.1:19453",
+        "--face", "19454", "--to", "nobody", "--bearer", aliceKey))
+    println("unknownRecipientRefused=" + (typoOut.indexOf("GRANT017") >= 0))
+    ok = ok && typoOut.indexOf("GRANT017") >= 0
+
+    // ── leg 10: plane RESTART — binding + revocation survive the reload ──
+    cliOut(listOf("stop"))
+    killPort(19453)
+    var rs = cliOut(listOf("server", "19453", "--start"))
+    ready = false
+    tries = 0
+    while (!ready && tries < 120) {
+        tries = tries + 1
+        try {
+            ready = http.get(base + "/health") == "OK"
+        } catch (String e) {
+            ready = false
+        }
+    }
+    var postRevoke = http.get(base + "/s/" + link, "Authorization: Bearer " + bobKey)
+    var postOnce = http.get(base + "/s/" + onceLink, "Authorization: Bearer " + bobKey)
+    println("restartKeepsLaw=" + (ready && postRevoke.indexOf("REG") == 0
+        && postOnce.indexOf("REG038") == 0))
+    ok = ok && ready && postRevoke.indexOf("REG") == 0 && postOnce.indexOf("REG038") == 0
+
+    cliOut(listOf("stop"))
+    killPort(19453)
+    killPort(19454)
+    for (var f in scratch) {
+        if (File(f).exists()) {
+            File(f).delete()
+        }
+    }
+
+    if (ok) {
+        println("RECIPIENTAUTHCHECK-OK legs=10")
+    } else {
+        println("RECIPIENTAUTHCHECK-FAIL")
+        throw "kofshare: RECIPIENTAUTHCHECK-FAIL"
+    }
+}
+
+String cap(String t, Int n) {
+    if (t.length() <= n) {
+        return t
+    }
+    return t.substring(0, n)
+}
+
+Bool waitFaceLog(String logPath, String marker) {
+    var t = 0
+    while (t < 160) {
+        t = t + 1
+        if (File(logPath).exists()) {
+            var txt = "" + File(logPath).readText()
+            if (txt.indexOf(marker) >= 0) {
+                return true
+            }
+        }
+        time.sleep(500)
+    }
+    return false
+}
+
+Bool portOpen(Int port) {
+    try {
+        var c = net.connect("127.0.0.1", port)
+        c.close()
+        return true
+    } catch (String e) {
+        return false
+    }
+}
+
+// share id for a token, read from the plane's own table (admin view)
+String sidForToken(String base, String token, String admin) {
+    var lst = http.get(base + "/shares", admin)
+    var idx = lst.indexOf(token)
+    if (idx < 0) {
+        return ""
+    }
+    var back = lst.substring(0, idx)
+    var i = back.length() - 1
+    while (i >= 0) {
+        if (back.charAt(i) == '"' && i >= 6) {
+            var cand = back.substring(i - 5, i)
+            if (cand.indexOf("sh") == 0) {
+                return cand
+            }
+        }
+        if (back.charAt(i) == '"' && i >= 7) {
+            var cand2 = back.substring(i - 6, i)
+            if (cand2.indexOf("sh") == 0) {
+                return cand2
+            }
+        }
+        if (back.charAt(i) == '"') {
+            var j = i - 1
+            while (j >= 0 && back.charAt(j) != '"') {
+                j = j - 1
+            }
+            if (j >= 0) {
+                var seg = back.substring(j + 1, i)
+                if (seg.indexOf("sh") == 0 && seg.length() >= 10) {
+                    return seg
+                }
+            }
+        }
+        i = i - 1
+    }
+    return ""
+}

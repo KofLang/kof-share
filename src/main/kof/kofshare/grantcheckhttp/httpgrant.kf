@@ -58,6 +58,7 @@ main() {
         "server-registry.grants.json", "server-registry.accounts.json", "server-registry.devkeys.json",
         "server-registry.sessions.json", "server-registry.presence.json",
         "kofshare-server.log", "kofshare-server.pid", "kofshare-cli.config")
+
     cliOut(listOf("stop"))
     killPort(19450)
     killPort(19451)
@@ -228,6 +229,18 @@ main() {
         && gtext.indexOf("-----BEGIN") < 0))
     ok = ok && gtext.indexOf("\"policy\":\"identity\"") >= 0 && noPayload
 
+
+    // ── #13/#14 — multi-user evolution: whoami + owner-only revoke ──
+    var whoBob = http.get(base + "/whoami", bob)
+    println("whoami=" + (whoBob == "WHOAMI bob"))
+    ok = ok && whoBob == "WHOAMI bob"
+    var idTok = sidForToken(http.get(base + "/shares", admin), tok)
+    var carolTryRevoke = http.post(base + "/shares/" + idTok + "/revoke?reason=attack", "", carol)
+    var aliceRevokes = http.post(base + "/shares/" + idTok + "/revoke?reason=done", "", alice)
+    println("strangerRevokeRefused=" + (carolTryRevoke.indexOf("AUTH005") == 0))
+    println("ownerRevokes=" + (aliceRevokes.indexOf("SHARE-REVOKED") == 0))
+    ok = ok && carolTryRevoke.indexOf("AUTH005") == 0
+    ok = ok && aliceRevokes.indexOf("SHARE-REVOKED") == 0
     cliOut(listOf("stop"))
     killPort(19450)
     killPort(19451)
@@ -238,8 +251,9 @@ main() {
         }
     }
 
+
     if (ok) {
-        println("HTTPGRANT-OK legs=12")
+        println("HTTPGRANT-OK legs=14")
     } else {
         println("HTTPGRANT-FAIL")
         throw "kofshare: HTTPGRANT-FAIL"
@@ -263,6 +277,32 @@ Bool waitBindable(Int port) {
         }
     }
     return false
+}
+
+// share-id for a token, parsed from the plane's own shares table (admin view)
+String sidForToken(String sharesJson, String token) {
+    var idx = sharesJson.indexOf(token)
+    if (idx < 0) {
+        return ""
+    }
+    var back = sharesJson.substring(0, idx)
+    var i = back.length() - 1
+    while (i >= 0) {
+        if (back.charAt(i) == '"') {
+            var j = i - 1
+            while (j >= 0 && back.charAt(j) != '"') {
+                j = j - 1
+            }
+            if (j >= 0) {
+                var seg = back.substring(j + 1, i)
+                if (seg.indexOf("sh") == 0 && seg.length() >= 10) {
+                    return seg
+                }
+            }
+        }
+        i = i - 1
+    }
+    return ""
 }
 
 String sha64(String s) {

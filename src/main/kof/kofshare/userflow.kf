@@ -176,7 +176,15 @@ String downFetch(String controlBase, String token, String dest, String key,
 // by name (REG*, DEV*, DEV-OFFLINE since Track D — never start with "{").
 // Checking only "REG" would let a lie fall through into a bogus decode.
 ShareGrant grantDecode(String controlBase, String token) {
-    var body = http.get(controlBase + "/s/" + token)
+    return grantDecode(controlBase, token, "")
+}
+
+// GATE 2 thread: an identity grant only answers /s to its AUTHORIZED bearer
+// (opaque REG035 for everyone else), so every lane that holds an account
+// bearer must present it at resolve time. Empty auth == the v1 possession
+// call, byte-identical on the wire (Track M).
+ShareGrant grantDecode(String controlBase, String token, String auth) {
+    var body = http.get(controlBase + "/s/" + token, auth)
     if (body.indexOf("{") != 0) {
         throw "DOWN-ERR: grant refused: " + body
     }
@@ -213,7 +221,7 @@ Transfer takeAndVerify(Conn c, ShareGrant g, String dest, String key) {
 // Returns "DOWN-AUTO-OK transport=<x> attempts=<n> offset=… digest verified".
 String downAuto(String controlBase, String token, String dest, String key,
                 String sessionAuth, String recipientDevice, String relayHost, Int relayPort) {
-    var g = grantDecode(controlBase, token)
+    var g = grantDecode(controlBase, token, sessionAuth)
     return downAutoWithGrant(controlBase, token, g, dest, key, sessionAuth, recipientDevice, relayHost, relayPort)
 }
 
@@ -533,7 +541,7 @@ String parentOf(String logicalPath) {
 // child. relay/sealed over the directory face ride the same per-child dial.
 String downDirAuto(String controlBase, String token, String destRoot, String key,
                    String sessionAuth, String recipientDevice, String relayHost, Int relayPort) {
-    var pg = grantDecode(controlBase, token)
+    var pg = grantDecode(controlBase, token, sessionAuth)
     return downDirAutoWithGrant(controlBase, token, pg, destRoot, key, sessionAuth, recipientDevice, relayHost, relayPort)
 }
 

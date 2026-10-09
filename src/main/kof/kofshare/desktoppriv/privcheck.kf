@@ -1,0 +1,377 @@
+package kofshare.desktoppriv
+
+// GATE 1-PRIVILEGED / GATE 5 — the MUTATING local API over the §DP Option-A
+// boundary, proven with REAL processes: desktop daemon on 8799, control plane
+// on 19455, three account identities, real P2P receive through the daemon's
+// job lane. Invariants:
+//   - privileged routes ride token + Host + Origin (named refusals)
+//   - the account bearer NEVER appears in argv-visible places, responses,
+//     events, or job tables (secret-hygiene scan leg)
+//   - identity authorization is imposed by the PLANE: a stranger's link
+//     attempt lands FAILED/REG035 with zero bytes on disk
+//   - revoke goes through the plane's owner law
+// DESKTOP-PRIV-OK legs=14. Ports 19455 owned here; 8799 is the daemon's own
+// conf contract (desktopcheck owns its lifecycle, this suite boots it fresh).
+
+import kof.crypto
+import kof.http
+import kof.json
+import kof.shell
+import kof.time
+import kof.net
+import kofshare.core
+import kofshare.domain
+import kofshare.control.auth
+import kofshare.control.registry
+import kofshare.control.share
+
+String jar() {
+    return "/home/mel/tools/kof-pin/kof-cli-f2629e32d.jar"
+}
+
+String cliOut(List<String> verbArgs) {
+    var cmd = "cd /home/mel/Documents/kof-share && java -jar " + jar()
+        + " run src/main/kof/kofshare/cli/cli.kf"
+    for (var a in verbArgs) {
+        cmd = cmd + " " + a
+    }
+    var res = shell.run("sh", listOf("-c", cmd + " 2>&1"))
+    var out = ""
+    var lines = res.stdout.split("\n")
+    var i = 0
+    while (i < lines.size) {
+        var ln = lines[i]
+        if (ln.indexOf("L-05") < 0 && ln.indexOf("warning:") < 0) {
+            out = out + ln + "\n"
+        }
+        i = i + 1
+    }
+    return out
+}
+
+String deskOut(List<String> verbs) {
+    var cmd = "cd /home/mel/Documents/kof-share && java -jar " + jar()
+        + " run src/main/kof/kofshare/desktop/desktopd.kf"
+    for (var a in verbs) {
+        cmd = cmd + " " + a
+    }
+    var res = shell.run("sh", listOf("-c", cmd + " 2>&1"))
+    var out = ""
+    var lines = res.stdout.split("\n")
+    var i = 0
+    while (i < lines.size) {
+        var ln = lines[i]
+        if (ln.indexOf("L-05") < 0 && ln.indexOf("warning:") < 0) {
+            out = out + ln + "\n"
+        }
+        i = i + 1
+    }
+    return out
+}
+
+String deskUrl() {
+    return "http://127.0.0.1:8799"
+}
+
+String keyOf(String resp) {
+    var pre = "APIKEY "
+    if (resp.indexOf(pre) == 0) {
+        return resp.substring(pre.length(), resp.length()).trim()
+    }
+    return ""
+}
+
+// poll a job row until terminal or budget exhausted
+String waitJob(String hdr, String jid, String path) {
+    var t = 0
+    while (t < 240) {
+        t = t + 1
+        var lst = http.get(deskUrl() + path, hdr)
+        if (lst.indexOf("\"RUNNING\"") < 0 && lst.indexOf("\"QUEUED\"") < 0
+            && lst.indexOf(jid) >= 0) {
+            return lst
+        }
+        time.sleep(1000)
+    }
+    return "JOB-TIMEOUT"
+}
+
+main() {
+    var ok = true
+    var base = "http://127.0.0.1:19455"
+    var seen = ""
+    cliOut(listOf("stop"))
+    var quiet = freePort(8799)
+    killPortNow(19455)
+    var scratch = listOf("kofshare-desktop.conf", "kofshare-desktop.token", "kofshare-desktop.pid",
+        "kofshare-desktop.events", "kofshare-desktop.credential", "kofshare-desktop.jobs",
+        "kofshare-device.ed25519", "server-control.bearer", "server-control.apikey",
+        "server-control.ed25519", "server-registry.devices.json", "server-registry.offers.json",
+        "server-registry.shares.json", "server-registry.grants.json", "server-registry.accounts.json",
+        "server-registry.devkeys.json", "server-registry.sessions.json", "server-registry.presence.json",
+        "kofshare-server.log", "kofshare-server.pid", "kofshare-face.log", "kofshare-face.pid",
+        "kofshare-cli.config", "dp-src.bin", "dp-get.bin", "dp-carol.bin", "dp-cancel.bin")
+    for (var f in scratch) {
+        if (File(f).exists()) {
+            if (File(f).isDirectory()) {
+                shell.run("rm", listOf("-rf", f))
+            } else {
+                File(f).delete()
+            }
+        }
+    }
+    var jobFiles = shell.run("sh", listOf("-c", "ls kofshare-desktop-job-* 2>/dev/null || true"))
+    var jl = jobFiles.stdout.split("\n")
+    for (var lf in jl) {
+        if (lf.length() > 0) {
+            File(lf.trim()).delete()
+        }
+    }
+    File("kofshare-cli.config").writeText("jar=" + jar() + "\nworkdir=/home/mel/Documents/kof-share\n")
+
+    // ── 1: plane + accounts ──
+    var boot = cliOut(listOf("server", "19455", "--start"))
+    var ready = false
+    var tries = 0
+    while (!ready && tries < 120) {
+        tries = tries + 1
+        try {
+            ready = http.get(base + "/health") == "OK"
+        } catch (String e) {
+            ready = false
+        }
+    }
+    println("plane=" + (boot.indexOf("SERVER-READY") >= 0 && ready))
+    ok = ok && boot.indexOf("SERVER-READY") >= 0 && ready
+    var admin = "Authorization: Bearer " + File("server-control.bearer").readText()
+    var aliceKey = keyOf(http.post(base + "/accounts",
+        json.encode(AccountRequest("alice", "Alice", 0)), admin))
+    var bobKey = keyOf(http.post(base + "/accounts",
+        json.encode(AccountRequest("bob", "Bob", 0)), admin))
+    var carolKey = keyOf(http.post(base + "/accounts",
+        json.encode(AccountRequest("carol", "Carol", 0)), admin))
+    println("identities=" + (aliceKey.length() > 20 && bobKey.length() > 20 && carolKey.length() > 20))
+    ok = ok && aliceKey.length() > 20 && bobKey.length() > 20 && carolKey.length() > 20
+
+    // ── 2: desktop daemon (fresh; desktopd verbs run on its OWN entry —
+    // boot.kf precedent — pointed at THIS suite's plane) ──
+    File("kofshare-desktop.conf").writeText("plane=http://127.0.0.1:19455\n")
+    var ds = deskOut(listOf("--start"))
+    seen = seen + ds
+    var daemonUp = ds.indexOf("DESKTOP-START ok=true") >= 0
+    println("daemon=" + daemonUp)
+    ok = ok && daemonUp
+    var tok = ""
+    var tt = File("kofshare-desktop.token").readText()
+    if (tt != null) {
+        tok = tt
+    }
+    var cut = tok.indexOf("\n")
+    if (cut >= 0) {
+        tok = tok.substring(0, cut)
+    }
+    var hdr = "X-Kof-Token: " + tok
+
+    // ── 3: privileged routes enforce the boundary BEFORE anything else ──
+    var noTok = http.post(deskUrl() + "/api/v1/login", "{\"bearer\":\"x\"}", "")
+    seen = seen + noTok
+    var evilOrigin = http.post(deskUrl() + "/api/v1/login", "{\"bearer\":\"x\"}",
+        "Origin: http://evil.example\n" + hdr)
+    println("loginNoToken=" + (noTok.indexOf("DESKTOP-LOCAL-AUTH") >= 0))
+    println("loginEvilOrigin=" + (evilOrigin.indexOf("DESKTOP-LOCAL-ORIGIN") >= 0))
+    ok = ok && noTok.indexOf("DESKTOP-LOCAL-AUTH") >= 0
+    ok = ok && evilOrigin.indexOf("DESKTOP-LOCAL-ORIGIN") >= 0
+
+    // ── 4: login (alice) + whoami ──
+    var login = http.post(deskUrl() + "/api/v1/login", json.encode(LoginReqP(aliceKey)), hdr)
+    seen = seen + login
+    println("loginAlice=" + (login.indexOf("\"sub\":\"alice\"") >= 0))
+    ok = ok && login.indexOf("\"sub\":\"alice\"") >= 0
+    var who = http.get(deskUrl() + "/api/v1/accounts", hdr)
+    ok = ok && who.indexOf("alice") >= 0
+
+    // ── 5: share --to bob THROUGH THE DAEMON (job lane, real face) ──
+    var data = makeData(1800)
+    File("dp-src.bin").writeBytes(data)
+    var sh = http.post(deskUrl() + "/api/v1/shares",
+        json.encode(ShareReqP("dp-src.bin", "bob", "24h", false, true)), hdr)
+    seen = seen + sh
+    var jid = fieldOfJson(sh, "\"job\":\"")
+    println("shareQueued=" + (jid.indexOf("jb") == 0 && sh.indexOf("QUEUED") >= 0))
+    ok = ok && jid.indexOf("jb") == 0
+    var shareDone = waitJob(hdr, jid, "/api/v1/shares")
+    seen = seen + shareDone
+    var link = ""
+    var lcut = shareDone.indexOf("http://127.0.0.1:19455/s/")
+    if (lcut >= 0) {
+        var tail = shareDone.substring(lcut, shareDone.length())
+        var q = tail.indexOf("\"")
+        if (q > 0) {
+            link = tail.substring(0, q)
+        }
+    }
+    println("shareMinted=" + (shareDone.indexOf("DONE") >= 0 && link.length() > 50))
+    ok = ok && shareDone.indexOf("DONE") >= 0 && link.length() > 50
+
+    // ── 6: local device identity is real and enrolled ──
+    var dev = http.get(deskUrl() + "/api/v1/device", hdr)
+    seen = seen + dev
+    println("deviceEnrolled=" + (dev.indexOf("deviceId") >= 0 && dev.indexOf("true") >= 0))
+    ok = ok && dev.indexOf("deviceId") >= 0 && dev.indexOf("true") >= 0
+
+    // ── 7: receive as alice (NOT the recipient) — plane refuses, zero bytes ──
+    http.post(deskUrl() + "/api/v1/login", json.encode(LoginReqP(aliceKey)), hdr)
+    var badTr = http.post(deskUrl() + "/api/v1/transfers",
+        json.encode(TransferReqP(link, "dp-carol.bin")), hdr)
+    var badJid = fieldOfJson(badTr, "\"job\":\"")
+    var badDone = waitJob(hdr, badJid, "/api/v1/transfers")
+    seen = seen + badTr + badDone
+    println("wrongIdentityFails=" + (badDone.indexOf("FAILED") >= 0 && badDone.indexOf("REG035") >= 0
+        && !File("dp-carol.bin").exists()))
+    ok = ok && badDone.indexOf("FAILED") >= 0 && badDone.indexOf("REG035") >= 0
+        && !File("dp-carol.bin").exists()
+
+    // ── 8: receive as bob — real P2P through the daemon, digest verified ──
+    http.post(deskUrl() + "/api/v1/login", json.encode(LoginReqP(bobKey)), hdr)
+    var tr = http.post(deskUrl() + "/api/v1/transfers",
+        json.encode(TransferReqP(link, "dp-get.bin")), hdr)
+    var trJid = fieldOfJson(tr, "\"job\":\"")
+    var trDone = waitJob(hdr, trJid, "/api/v1/transfers")
+    seen = seen + tr + trDone
+    var bytesOk = false
+    if (File("dp-get.bin").exists()) {
+        var got = crypto.sha256Bytes(toBytes(File("dp-get.bin").readBytes()))
+        bytesOk = got == crypto.sha256Bytes(toBytes(data))
+    }
+    println("bobViaDaemon=" + (trDone.indexOf("DONE") >= 0 && bytesOk))
+    ok = ok && trDone.indexOf("DONE") >= 0 && bytesOk
+
+    // ── 9: transfer detail row is honest about size ──
+    var det = http.get(deskUrl() + "/api/v1/transfers/" + trJid, hdr)
+    seen = seen + det
+    println("detailBytes=" + (det.indexOf("\"bytesDone\":1800") >= 0))
+    ok = ok && det.indexOf("\"bytesDone\":1800") >= 0
+
+    // ── 10: cancel path (start + immediate cancel, observable states) ──
+    var tr2 = http.post(deskUrl() + "/api/v1/transfers",
+        json.encode(TransferReqP(link, "dp-cancel.bin")), hdr)
+    var tr2Jid = fieldOfJson(tr2, "\"job\":\"")
+    var cancel = http.post(deskUrl() + "/api/v1/transfers/" + tr2Jid + "/cancel", "", hdr)
+    seen = seen + tr2 + cancel
+    var cancelState = ""
+    var ct = 0
+    while (ct < 60) {
+        ct = ct + 1
+        var st = http.get(deskUrl() + "/api/v1/transfers/" + tr2Jid, hdr)
+        if (st.indexOf("CANCELLED") >= 0 || st.indexOf("DONE") >= 0 || st.indexOf("FAILED") >= 0) {
+            cancelState = st
+            ct = 60
+        }
+        time.sleep(500)
+    }
+    seen = seen + cancelState
+    println("cancelObserved=" + (cancel.indexOf("CANCELLED") >= 0
+        && (cancelState.indexOf("CANCELLED") >= 0 || cancelState.indexOf("DONE") >= 0)))
+    ok = ok && cancel.indexOf("CANCELLED") >= 0
+        && (cancelState.indexOf("CANCELLED") >= 0 || cancelState.indexOf("DONE") >= 0)
+
+    // ── 11: REVOKE through the daemon rides the plane owner law.
+    // Bob may NOT revoke alice's share (AUTH005); alice (logged in) may.
+    var revAsBob = http.post(deskUrl() + "/api/v1/shares/" + jid + "/revoke", "", hdr)
+    seen = seen + revAsBob
+    println("bobCannotRevoke=" + (revAsBob.indexOf("AUTH005") >= 0))
+    ok = ok && revAsBob.indexOf("AUTH005") >= 0
+    http.post(deskUrl() + "/api/v1/login", json.encode(LoginReqP(aliceKey)), hdr)
+    var revAsAlice = http.post(deskUrl() + "/api/v1/shares/" + jid + "/revoke", "", hdr)
+    seen = seen + revAsAlice
+    var afterRv = http.get(link, "Authorization: Bearer " + bobKey)
+    println("aliceRevokesAndPlaneCloses=" + (revAsAlice.indexOf("REVOKED") >= 0
+        && afterRv.indexOf("REG") == 0))
+    ok = ok && revAsAlice.indexOf("REVOKED") >= 0 && afterRv.indexOf("REG") == 0
+
+    // ── 12: events exist, are named, and carry NO secret material ──
+    var evs = http.get(deskUrl() + "/api/v1/events?since=0", hdr)
+    seen = seen + evs
+    var evOk = evs.indexOf("IDENTITY_LOGIN") >= 0 && evs.indexOf("SHARE_DONE") >= 0
+        && evs.indexOf("TRANSFER_DONE") >= 0 && evs.indexOf("TRANSFER_CANCELLED") >= 0
+    println("eventCatalog=" + evOk)
+    ok = ok && evOk
+
+    // ── 13: secret hygiene — bearer bytes appear NOWHERE observed ──
+    var leak = seen.indexOf(aliceKey) >= 0 || seen.indexOf(bobKey) >= 0 || seen.indexOf(carolKey) >= 0
+    println("noBearerLeak=" + !leak)
+    ok = ok && !leak
+
+    // ── 14: logout kills the credential lane ──
+    var lo = http.post(deskUrl() + "/api/v1/logout", "", hdr)
+    var postLo = http.post(deskUrl() + "/api/v1/transfers",
+        json.encode(TransferReqP(link, "dp-x.bin")), hdr)
+    println("logoutBlocksMutations=" + (lo.indexOf("LOGOUT-OK") >= 0
+        && postLo.indexOf("DESKTOP-NO-CREDENTIAL") >= 0))
+    ok = ok && lo.indexOf("LOGOUT-OK") >= 0 && postLo.indexOf("DESKTOP-NO-CREDENTIAL") >= 0
+
+    deskOut(listOf("--stop"))
+    cliOut(listOf("stop"))
+    killPortNow(19455)
+    for (var f in scratch) {
+        if (File(f).exists()) {
+            if (File(f).isDirectory()) {
+                shell.run("rm", listOf("-rf", f))
+            } else {
+                File(f).delete()
+            }
+        }
+    }
+    var jf = shell.run("sh", listOf("-c", "ls kofshare-desktop-job-* 2>/dev/null || true"))
+    for (var lf in jf.stdout.split("\n")) {
+        if (lf.length() > 0) {
+            File(lf.trim()).delete()
+        }
+    }
+
+    if (ok) {
+        println("DESKTOP-PRIV-OK legs=14")
+    } else {
+        println("DESKTOP-PRIV-FAIL")
+        throw "kofshare: DESKTOP-PRIV-FAIL"
+    }
+}
+
+record LoginReqP(String bearer)
+
+record ShareReqP(String path, String to, String ttl, Bool once, Bool readOnly)
+
+record TransferReqP(String link, String dest)
+
+Int[] makeData(Int n) {
+    var out = new Int[n]
+    var i = 0
+    while (i < n) {
+        out[i] = (i * 97 + 41) % 233
+        i = i + 1
+    }
+    return out
+}
+
+String fieldOfJson(String text, String marker) {
+    var idx = text.indexOf(marker)
+    if (idx < 0) {
+        return ""
+    }
+    var rest = text.substring(idx + marker.length(), text.length())
+    return rest.split("\"")[0]
+}
+
+void killPortNow(Int port) {
+    shell.run("sh", listOf("-c", "fuser -k " + port + "/tcp 2>/dev/null; true"))
+    var t = 0
+    while (t < 240) {
+        t = t + 1
+        try {
+            var c = net.connect("127.0.0.1", port)
+            c.close()
+        } catch (String e) {
+            return
+        }
+    }
+}
