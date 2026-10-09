@@ -10,7 +10,7 @@ doing                pos-v2 gigaprompt: Gates 0-4 + Gate 6 ENTREGUES — identid
 next                 fechar bateria 32 (em execucao) + freeze final do release candidate
 proof                RC-CHECK-OK steps=32 (+PORT-PREFLIGHT +ACCOUNTISOLATIONCHECK +REVOKECHECK +DEPLOYMENTCHECK sobre o corte 28/28)
 result               tudo do v2 + compartilhamento restrito a destinatario (prova com 3 identidades) + desktop com jobs/eventos/state + deploy com isolamento de dir e backup-restore + isolamento multi-usuario + revogacao nao-retroativa
-tests                14 pernas --check JVM+Script; 51/51 arquivos check-clean standalone
+tests                14 pernas --check JVM+Script; 53/53 arquivos check-clean standalone
 goldens              + DESKTOP-BOOT-OK steps=21, DESKTOP-API-OK legs=22, GRANTCHECK-OK, HTTPGRANT-OK legs=14, RECIPIENTAUTHCHECK-OK legs=10, DESKTOP-PRIV-OK legs=14, DEPLOYMENTCHECK-OK legs=10, REVOKECHECK-OK legs=12, ACCOUNTISOLATIONCHECK-OK legs=11
 USER IDENTITY SESSION CONNECT BROWSER RESOURCE SERVE RESUME
                      PERSIST RELAY SHARE HTTP RESTART FOLDER UX INTEGRATION — todos OK
