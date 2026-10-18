@@ -37,7 +37,7 @@ Int portOf() {
 }
 
 String jar() {
-    return "/home/mel/Kof4j/kof-cli/target/kof-cli-0.5.0-beta.jar"
+    return "/home/mel/tools/kof-pin/kof-cli-f2629e32d.jar"
 }
 
 Int[] makeData(Int n) {

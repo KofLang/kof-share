@@ -9,7 +9,7 @@ import kof.file
 import kof.shell
 
 String jar() {
-    return "/home/mel/Kof4j/kof-cli/target/kof-cli-0.5.0-beta.jar"
+    return "/home/mel/tools/kof-pin/kof-cli-f2629e32d.jar"
 }
 
 String workdir() {
@@ -51,7 +51,7 @@ void main(List<String> args) {
     // bound when the battery starts; suites own their ports, not the market.
     steps = steps + 1
     if (!step("PORT-PREFLIGHT",
-        "busy=$(ss -tln 2>/dev/null | grep -E ':(18322|19440|19441|19442|19443|19444|19445|19446|19450|19451|19452|19453|19454|19455|19456|19457|19458|19459|8799) ' || true); " +
+        "busy=$(ss -tln 2>/dev/null | grep -E ':(18322|19440|19441|19442|19443|19444|19445|19446|19450|19451|19452|19453|19454|19455|19456|19457|19458|19459|8799|8801|19911|19922) ' || true); " +
         "[ -z \"$busy\" ] && echo PORT-PREFLIGHT-OK || { echo PORT-PREFLIGHT-BUSY; echo \"$busy\"; exit 1; }")) {
         failed = failed + " preflight"
     }
@@ -213,6 +213,14 @@ void main(List<String> args) {
     steps = steps + 1
     if (!step("DEPLOYMENTCHECK-OK", j + " run src/main/kof/kofshare/deploycheck/checkdeploy.kf")) {
         failed = failed + " deploycheck"
+    }
+    steps = steps + 1
+    if (!step("DESKTOP-BOOT-OK", j + " run src/main/kof/kofshare/desktopcheck/boot.kf")) {
+        failed = failed + " desktopboot"
+    }
+    steps = steps + 1
+    if (!step("DESKTOP-API-OK", j + " run src/main/kof/kofshare/desktopapi/apicheck.kf")) {
+        failed = failed + " desktopapi"
     }
     steps = steps + 1
     if (!step("INTEGRATIONCHECK-OK", j + " run src/main/kof/kofshare/integrationcheck/checkintegration.kf")) {
