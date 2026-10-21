@@ -21,7 +21,13 @@ $S share ./photos              # pastas funcionam igual: "Files: N"
 
 Copie o link `http://host:port/s/<token>` impresso e envie como qualquer
 link de compartilhamento. Opções: `--ttl 2h|30m|days`, `--once` (uso único),
-`--password` (porta no plano), `--raw` (linhas de máquina para scripts).
+`--to <conta>` (restrito: SÓ aquela conta autenticada pode abrir —
+a posse da URL não concede nada), `--raw` (linhas de máquina para scripts).
+
+```bash
+$S share ./report.pdf --to bob   # link vinculado à identidade de bob
+$S receive http://host:port/s/<token> --bearer file:~/.kofshare-bob.bearer
+```
 
 ## Primeiro recebimento (lado do destinatário)
 

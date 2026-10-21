@@ -21,7 +21,13 @@ $S share ./photos              # directories work the same: "Files: N"
 
 Copy the printed `http://host:port/s/<token>` link and send it like any
 other share link. Options: `--ttl 2h|30m|days`, `--once` (single-use),
-`--password` (plane-side gate), `--raw` (machine lines for scripts).
+`--to <account>` (restricted: ONLY that authenticated account can open it —
+possession of the URL grants nothing), `--raw` (machine lines for scripts).
+
+```bash
+$S share ./report.pdf --to bob   # identity-bound link for bob
+$S receive http://host:port/s/<token> --bearer file:~/.kofshare-bob.bearer
+```
 
 ## First receive (recipient side)
 
