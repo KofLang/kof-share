@@ -6,6 +6,7 @@ import kofshare.control.auth
 import kof.http
 import kof.json
 import kof.crypto
+import kof.time
 
 // Slice 2 runner (implementation-plan §2): the control-plane HTTP surface over
 // the pure registry, REAL sockets on loopback. Target JVM (web listen blocks;
@@ -177,6 +178,22 @@ main() {
     var vrevokedKeyDies = deadCall == "AUTH003: revoked"
     ok = ok && vrevokedKeyDies
     println("revokedKeyDies=" + vrevokedKeyDies)
+    // expired JWT (gigaprompt attack #8, expired sub-case): mint with
+    // ttlSec=1, outlive it, then use — the runtime signature check must
+    // refuse even though the account row is still active.
+    var expMint = http.post(base + "/accounts", json.encode(AccountRequest("exp", "expired-probe", 1)), auth)
+    var expKey = ""
+    if (expMint.indexOf("APIKEY ") == 0) {
+        expKey = expMint.substring(7)
+    }
+    var expFresh = expKey.length() > 20
+        && http.get(base + "/shares", "Authorization: Bearer " + expKey).indexOf("REG") != 0
+    time.sleep(2500)
+    var expDead = http.get(base + "/shares", "Authorization: Bearer " + expKey)
+    var vjwtExpiry = expFresh && expDead.indexOf("unauthorized") >= 0
+    ok = ok && vjwtExpiry
+    println("jwtExpiry=" + vjwtExpiry)
+    http.post(base + "/accounts/exp/revoke", "", auth)
 
     var rev = http.delete(base + "/offers/o1", auth)
     var vrevoke = rev == "REVOKED: o1"

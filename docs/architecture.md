@@ -1,8 +1,9 @@
 # KofShare — architecture (100% Kof)
 
-status: v2 RELEASE (cut 06/10) — every plane below is implemented and
-golden-proven on the pinned compiler (`f2629e32d`, jar sha256 `0b1893b4…`);
-per-track proofs in `STATUS.md`, release battery `RC-CHECK-OK steps=23`.
+status: pos-v2 productization FROZEN (09/10) — control plane + identity-bound
+grants + privileged desktop daemon + production deployment, all golden-proven
+on the pinned compiler (`f2629e32d`, jar sha256 `0b1893b4…`); per-track proofs
+in `STATUS.md`, release battery `RC-CHECK-OK steps=34`.
 last: decision `D-KOFSHARE-100KOF` (Kof repo, 01/10/2026): KofShare is a 100%
 Kof application; JVM interop is NOT a product route. Priority law:
 correção → compatibilidade → segurança → testes → simplicidade → feature.
@@ -70,9 +71,16 @@ connect.kf    classifyConnect/pickAndDial: honest DIRECT→RELAY selection
               (probe by net.connect, then stamp the real result)
 ```
 
-Share = token with expiry, maxUses (`--once` = single-use), readOnly, dir
-flag. One link per tree; `?child=N` selects the N-th FILE of the
+Share = token LOCATOR with expiry, maxUses (`--once` = single-use), readOnly,
+dir flag + an identity-bound GRANT row (owner, resource, recipients, policy).
+One link per tree; `?child=N` selects the N-th FILE of the
 server-sorted manifest (`/s/:token` + grant selector, `GET /api/shares`).
+`share --to <account>` mints a restricted link: redemption requires the
+plane-verified recipient identity (wrong identity gets opaque `REG035`,
+byte-identical to a dead link, consuming zero budget —
+`RECIPIENTAUTHCHECK-OK`). The table below lists every refusal code twice:
+once for the machine (diagnostic contract), once with the human `Hint:` the
+user verbs layer on top.
 
 ## 3. Identity, trust & auth
 
@@ -126,34 +134,52 @@ links copy-pasteable and single-use when asked; restarts don't orphan faces
 (`freePort` + pidfile stop). Operator verbs keep v1 flags 100% compatible
 (`--once` consumes via `downAutoWithGrant`, never double-shares).
 
-## 8. Module layout (landed)
+## 8. Module layout (landed, pos-v2)
 
 ```
 src/main/kof/kofshare/
   domain.kf protocol.kf session.kf transfer.kf relay.kf   v1 core
-  identity.kf account.kf resource.kf directory.kf connect.kf
-  control/{registry,app,share}.kf        plane: routes + recomputes + grants
+  identity.kf resource.kf directory.kf connect.kf
+  control/{registry,app,share,auth,grant,session,presence}.kf
+                                          plane: routes + recomputes + grants
+                                          + accounts + identity-bound grants
+                                          + session machine + presence
   userflow.kf                            up/down/dir/auto lanes
   app/client.kf                          browser-lane localhost client
+  desktop/desktopd.kf                    desktop daemon (lifecycle + privileged
+                                          local API over token+Host+Origin)
+  boundary/boundary.kf                   pure host/origin gate (unit-tested)
   cli/cli.kf                             verbs + 14 CHECK legs
   goldens: control/check, httpcheck, relaycheck, e2e, usercheck,
     identitycheck, sessioncheck, connectcheck, browsercheck,
     resourcecheck, foldercheck, servecheck, resumehash, persistcheck,
-    sharehash, restart, uxcheck, integrationcheck, rc/runrc.kf
+    sharehash, restart, uxcheck, integrationcheck,
+    grantcheck, grantcheckhttp, rcpcheck (recipient auth),
+    acctischeck (account isolation), revcheck (revocation),
+    deploycheck (production deployment), desktopcheck (boot lifecycle),
+    desktopapi (Gate-1 safe subset), desktoppriv (privileged lane),
+    rc/runrc.kf
 ```
 
 ## 9. Test plan (RED-first) — status
 
 | Layer | Proof | Status |
 |---|---|---|
-| Compile | `--check` 14 legs JVM+Script; 39/39 files check-clean | ✅ |
+| Compile | `--check` 14 legs JVM+Script; 53/53 files check-clean | ✅ |
 | Domain/pure | goldens per module (`--check` legs 1–14) | ✅ |
 | Control plane | HTTP E2E (`HTTPCHECK`, `PERSIST-OK`, `RESTART-OK`) | ✅ |
 | Data plane | JVM+Script E2E (`USERCHECK`…`RELAY-OK`, `SECURE`) | ✅ |
 | Directories | `FOLDERCHECK-OK` (13 legs) | ✅ |
+| Recipient auth | `GRANTCHECK-OK` + `HTTPGRANT-OK` (14) + `RECIPIENTAUTHCHECK-OK` (10, three identities) | ✅ |
+| Account isolation | `ACCOUNTISOLATIONCHECK-OK` (11: TOFU owner fence, AUTH004/AUTH005, admin lane, keyless v1 preserved) | ✅ |
+| Revocation | `REVOKECHECK-OK` (12: account/device/share, non-retroactive, restart-surviving) | ✅ |
+| Deployment | `DEPLOYMENTCHECK-OK` (10: dir isolation, publicurl, backup-restore, fail-closed, body caps) | ✅ |
+| Desktop boot | `DESKTOP-BOOT-OK` (21: lifecycle, 0600 token, state, page, stop/recovery) | ✅ |
+| Desktop API (safe) | `DESKTOP-API-OK` (22: host/origin/token boundary, events, raw-socket forged-Host proof) | ✅ |
+| Desktop privileged | `DESKTOP-PRIV-OK` (14: login/shares/transfers/cancel/device, bearer `file:` lane, zero-leak scan) | ✅ |
 | UX | `UXCHECK-OK` (15 legs) | ✅ |
 | Full product | `INTEGRATIONCHECK-OK` (22 legs, real processes) | ✅ |
-| Release | `RC-CHECK-OK` full battery (`rc/runrc.kf`) | RC gate |
+| Release | `RC-CHECK-OK steps=34` full battery (`rc/runrc.kf`), 2x consecutive clean required | RC gate |
 
 ## 10. Known gaps (honest)
 
@@ -162,6 +188,16 @@ The categories and decision procedures live in
 
 * COMP002 + HTTP-ConnectException upstream packets: `docs/upstream/`.
 * Sealed-envelope directory trees: deferred, documented.
-* `web.app().listen()` binds 0.0.0.0 (runtime contract) — plane page is
-  LAN-reachable by construction.
-* GUI/billing/Android/central storage: out of scope by design.
+* `web.app().listen()` binds 0.0.0.0 (runtime contract) — the desktop daemon
+  answers with the §DP DECIDED OPTION A boundary (0600 device-local token +
+  Host policing against DNS rebinding + Origin allow-list against CSRF, all
+  RED-before-GREEN proven in `DESKTOP-API-OK` including a raw-socket
+  forged-Host leg); `listen(host,port)` remains the named upstream request.
+* STUN/ICE: reserved, never faked (dead-port+relay is the documented NAT analog).
+* GUI desktop nativo / billing / Android / central storage: out of scope by
+  design (the shipped desktop is daemon + served page + launcher script;
+  `docs/desktop/phase0-matrix.md` row 19 records the honest shell status).
+* `DESKTOPCHECK` (gigaprompt §12) is covered by three markers, one per proven
+  layer: `DESKTOP-BOOT-OK` (lifecycle) + `DESKTOP-API-OK` (safe boundary) +
+  `DESKTOP-PRIV-OK` (privileged lane) — no coverage is claimed under a name
+  the battery does not print.
