@@ -134,7 +134,7 @@ paths). Proof per property: `SECURITY` section of `STATUS.md` and each golden.
 
 ```bash
 java -jar $J run src/main/kof/kofshare/cli/cli.kf --check          # 14 legs
-java -jar $J run src/main/kof/kofshare/rc/runrc.kf                 # release battery → RC-CHECK-OK steps=23
+java -jar $J run src/main/kof/kofshare/rc/runrc.kf                 # release battery → RC-CHECK-OK steps=34
 ```
 
 The post-v2 architecture is a recorded DECISION (D7–D10, 06/10): central
@@ -146,7 +146,11 @@ changed no contract.
 Per-suite markers: `UXCHECK-OK`, `INTEGRATIONCHECK-OK`, `FOLDERCHECK-OK`,
 `RESOURCECHECK-OK`, `BROWSERCHECK-OK`, `CONNECTCHECK-OK`, `SESSIONCHECK-OK`,
 `IDENTITYCHECK-OK`, `USERCHECK-OK`, `SERVECHECK-OK`, `RESUMECHECK-OK`,
-`SHARECHECK-OK`, `PERSIST-OK`, `RELAY-OK`, `HTTPCHECK-OK`, `RESTART-OK`.
+`SHARECHECK-OK`, `PERSIST-OK`, `RELAY-OK`, `HTTPCHECK-OK`, `RESTART-OK`
++ post-v2: `GRANTCHECK-OK`, `HTTPGRANT-OK`, `RECIPIENTAUTHCHECK-OK`,
+`ACCOUNTISOLATIONCHECK-OK`, `REVOKECHECK-OK`, `DEPLOYMENTCHECK-OK`,
+`DESKTOP-BOOT-OK`, `DESKTOP-API-OK`, `DESKTOP-PRIV-OK` (DESKTOPCHECK =
+boot+safe-boundary+privileged-lane, no single marker).
 
 The compiler history of this product (bugs caught by the goldens, with
 reproductions) is in the Kof4j ledger (`§583/§588/§590/§593/§603` + the

@@ -122,6 +122,6 @@ por design chamadas que exijam credencial, mas a confidencialidade do transporte
 ```sh
 # golden de deploy (processos reais, portas próprias 19456):
 java -jar <pin> run src/main/kof/kofshare/deploycheck/checkdeploy.kf   # DEPLOYMENTCHECK-OK legs=10
-# bateria completa (31 steps):
-java -jar <pin> run src/main/kof/kofshare/rc/runrc.kf                  # RC-CHECK-OK steps=31
+# bateria completa (34 steps):
+java -jar <pin> run src/main/kof/kofshare/rc/runrc.kf                  # RC-CHECK-OK steps=34
 ```
