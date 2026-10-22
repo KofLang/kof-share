@@ -1,8 +1,13 @@
 # KofShare — Local API v1 Contract & Event Stream Specification
 
-**Status:** PREPARATORY SPECIFICATION for FASE 2 (Gate §2 & §DP Pending Decision)  
-**Scope:** Local daemon control interface (`/api/v1/*`), zero remote protocol changes, zero central file storage.  
-**Audience:** Future Desktop Shell, CLI automation, and local orchestration.
+**Status:** IMPLEMENTED (Gate 1 SAFE SUBSET + privileged lane over §DP DECIDED
+OPTION A, 09/10) — proven by `DESKTOP-API-OK legs=22` + `DESKTOP-PRIV-OK
+legs=14` with real processes on loopback. Binding stays `0.0.0.0` at pin
+`f2629e32d` (runtime contract); the boundary is token (0600) + Host policing
++ Origin allow-list, RED-before-GREEN proven including a raw-socket
+forged-Host leg. `listen(host,port)` remains the named upstream request.
+**Scope:** Local daemon control interface (`/api/v1/*`), zero remote protocol changes, zero central file storage.
+**Audience:** Desktop shell page, CLI automation, and local orchestration.
 
 ---
 
@@ -29,17 +34,20 @@ All payloads are JSON. Error bodies use the standard format:
 
 | Method | Route | Auth | Purpose | Input Payload | Output Payload | Errors / Named Refusals | Persistent Effects |
 |---|---|---|---|---|---|---|---|
-| `GET` | `/api/v1/health` | `X-Kof-Token` | Liveness & local readiness probe | None | `{"status": "HEALTH-OK", "uptime": <ms>}` | `DESKTOP-LOCAL-AUTH` | None |
-| `GET` | `/api/v1/state` | `X-Kof-Token` | Daemon lifecycle, ports, plane status | None | `{"phase": "READY", "plane": "ok"\|"unreachable", "planeAddr": "<url>", "localPort": <int>, "pid": "<pid>"}` | `DESKTOP-LOCAL-AUTH` | None |
-| `GET` | `/api/v1/device` | `X-Kof-Token` | Local device cryptographic identity | None | `{"deviceId": "<id>", "pubkey": "<hex>", "enrolled": <bool>}` | `DESKTOP-LOCAL-AUTH`, `DEV-NOT-INITIALIZED` | None |
-| `GET` | `/api/v1/shares` | `X-Kof-Token` | List active outbound shares created locally | None | `{"shares": [{"id": "<id>", "path": "<path>", "token": "<tok>", "kind": "file"\|"dir", "created": <ts>, "status": "active"\|"revoked"\|"expired"}]}` | `DESKTOP-LOCAL-AUTH` | Reads local resource/share state |
-| `POST` | `/api/v1/shares` | `X-Kof-Token` | Create a new share (file or folder) | `{"path": "<local_path>", "ttl": "<ttl>", "once": <bool>, "readOnly": <bool>}` | `{"id": "<id>", "token": "<tok>", "link": "<full_link>", "manifestCount": <int>}` | `DESKTOP-LOCAL-AUTH`, `PATH-NOT-FOUND`, `REG013`, `REG015`, `UP-ERR` | Writes resource binding & registers offer/share on plane |
-| `DELETE`| `/api/v1/shares/:id`| `X-Kof-Token` | Revoke an active share | None | `{"status": "REVOKED", "id": "<id>"}` | `DESKTOP-LOCAL-AUTH`, `REG034`, `SHARE-NOT-FOUND` | Marks share revoked on plane & local table |
-| `POST` | `/api/v1/transfers` | `X-Kof-Token` | Initiate receive/download of a link | `{"link": "<token_or_url>", "destDir": "<local_dest>"}` | `{"transferId": "<id>", "state": "STARTING", "resourceId": "<id>"}` | `DESKTOP-LOCAL-AUTH`, `REG038`, `CONNECTIVITY_FAILED`, `DEST-INVALID` | Enqueues transfer worker; creates `.part` file |
-| `GET` | `/api/v1/transfers` | `X-Kof-Token` | List active & recent transfers | None | `{"transfers": [{"id": "<id>", "state": "<state>", "bytesDone": <int>, "bytesTotal": <int>, "transport": "DIRECT"\|"RELAY"}]}` | `DESKTOP-LOCAL-AUTH` | Reads transfer table |
-| `GET` | `/api/v1/transfers/:id`| `X-Kof-Token`| Get detailed progress & state | None | `{"id": "<id>", "state": "<state>", "bytesDone": <int>, "bytesTotal": <int>, "speedBps": <int>, "digest": "<hex>", "transport": "<t>"}` | `DESKTOP-LOCAL-AUTH`, `TRANSFER-NOT-FOUND` | None |
-| `POST` | `/api/v1/transfers/:id/cancel`| `X-Kof-Token`| Cancel or pause a transfer | None | `{"status": "CANCELLED", "id": "<id>"}` | `DESKTOP-LOCAL-AUTH`, `TRANSFER-NOT-FOUND` | Signals worker abort; preserves `.part` for resume |
-| `GET` | `/api/v1/events` | `X-Kof-Token` | Event stream (SSE or long-polling) | Query: `?cursor=<id>` | SSE stream or delta event array | `DESKTOP-LOCAL-AUTH` | Tracks cursor position |
+| `GET` | `/api/v1/health` | `X-Kof-Token` | Liveness & local readiness probe | None | `HEALTH-OK` (plain) | `DESKTOP-LOCAL-AUTH` (missing/bad token), `DESKTOP-LOCAL-ORIGIN` (forged Host/Origin) | None |
+| `GET` | `/api/v1/state` | `X-Kof-Token` | Daemon lifecycle, ports, plane status | None | `{"phase": "READY", "plane": "ok"\|"unreachable", ...}` — metadata only, never bearer/keys | `DESKTOP-LOCAL-AUTH`, `DESKTOP-LOCAL-ORIGIN` | None |
+| `GET` | `/api/v1/events` | `X-Kof-Token` | Event stream (polling) | Query `?since=<seq>` | JSON array of event envelopes; `since=<lastSeq>` → `[]` | `DESKTOP-LOCAL-AUTH` | None (ring buffer, resets on restart) |
+| `POST` | `/api/v1/login` | `X-Kof-Token` | Bind an account credential to the daemon | `{"bearer": "<plane-bearer>"}` — file:` lane preferred, value never echoed | `{"sub":"<account>"}` | `DESKTOP-LOCAL-AUTH`, `DESKTOP-LOGIN-REFUSED: <plane-refusal>` | Credential stored 0600 (`kofshare-desktop.credential`) |
+| `POST` | `/api/v1/logout` | `X-Kof-Token` | Drop the bound credential | None | `DESKTOP-LOGOUT-OK` | `DESKTOP-LOCAL-AUTH` | Credential file deleted; mutations refuse `DESKTOP-NO-CREDENTIAL` |
+| `GET` | `/api/v1/accounts` | `X-Kof-Token` + login | Who is currently bound | None | `{"sub":"<account>"}` | `DESKTOP-LOCAL-AUTH`, `DESKTOP-NO-CREDENTIAL` | None |
+| `GET` | `/api/v1/device` | `X-Kof-Token` + login | Local device identity + enrollment | None | `{"deviceId":"<d-…>","pubkey":"<hex>","enrolled":<bool>}` (pub half only) | `DESKTOP-LOCAL-AUTH`, `DESKTOP-NO-CREDENTIAL` | None (enrollment happens on share via the plane) |
+| `POST` | `/api/v1/shares` | `X-Kof-Token` + login | Create a share (file or folder), async job | `{"path":"<local>","to":"<account>"\|"", "ttl":"24h"\|"", "once":<bool>, "readOnly":<bool>}` | `{"job":"<jb-…>","state":"QUEUED"}` — poll `GET /api/v1/shares`; `DONE` rows carry the minted link | `DESKTOP-NO-CREDENTIAL`, `PATH-NOT-FOUND`, `DESKTOP-BAD-REQUEST`, plane refusals (`REG*`/`AUTH*`) surface in the job row | Job row + plane offer/share/grant; worker spawned with bearer as `file:` reference (never argv) |
+| `GET` | `/api/v1/shares` | `X-Kof-Token` | List share jobs (queue + history) | None | Job rows with `state` (`QUEUED`/`RUNNING`/`DONE`/`FAILED`) and link on `DONE` | `DESKTOP-LOCAL-AUTH` | Reads local job table |
+| `POST` | `/api/v1/shares/:id/revoke` | `X-Kof-Token` + login | Revoke a minted share (owner law on the plane) | None (`:id` = job id) | `{"status":"REVOKED","id":"<plane-share-id>"}` | `DESKTOP-NO-CREDENTIAL`, `TRANSFER-NOT-FOUND`, `DESKTOP-REVOKE-PENDING` (not minted yet), `AUTH005` (non-owner, from the plane) | Plane share/grant revoked; job row `REVOKED` |
+| `POST` | `/api/v1/transfers` | `X-Kof-Token` + login | Receive a link, async job | `{"link":"http://…/s/<tok>","dest":"<relative-path>"}` (absolute/`..` → `DEST-INVALID`) | `{"job":"<jb-…>","state":"QUEUED","dest":"<…>"}` | `DESKTOP-NO-CREDENTIAL`, `DESKTOP-BAD-REQUEST`, `DEST-INVALID`; `REG035` (wrong identity — zero bytes) surfaces in the job row | Job row + received bytes under the daemon cwd; `.part` resume |
+| `GET` | `/api/v1/transfers` | `X-Kof-Token` | List transfer jobs | None | Job rows with `state` and per-row detail reference | `DESKTOP-LOCAL-AUTH` | Reads local job table |
+| `GET` | `/api/v1/transfers/:id`| `X-Kof-Token`| Transfer detail (honest counters) | None | `{"id":…, "state":…, "dest":…, "bytesDone":<on-disk-size>}` | `TRANSFER-NOT-FOUND` | None (bytesDone read from the file on disk) |
+| `POST` | `/api/v1/transfers/:id/cancel`| `X-Kof-Token`| Cancel a queued/running transfer | None | `{"status":"CANCELLED","id":…}` | `TRANSFER-NOT-FOUND`, `TRANSFER-NOT-CANCELLABLE: <state>` | Worker stopped; `.part` kept for resume |
 
 ---
 
@@ -62,15 +70,17 @@ Every event emitted on `/api/v1/events` conforms to:
 }
 ```
 
-### 3.2 Event Types
-1. `DAEMON_STATE`: Phase transitions (`READY`, `BUSY`, `STOPPING`, `ERROR`).
-2. `PLANE_PRESENCE`: Control plane connection state (`ONLINE`, `OFFLINE`, `UNREACHABLE`).
-3. `SHARE_CREATED`: Outbound share minted.
-4. `SHARE_REVOKED`: Outbound share invalidated.
-5. `TRANSFER_STARTED`: Handshake established, path classified (`DIRECT` or `RELAY`).
-6. `TRANSFER_PROGRESS`: Incremental byte progress derived from real socket counter.
-7. `TRANSFER_COMPLETED`: File written, SHA-256 digest verified.
-8. `TRANSFER_FAILED`: Named error code surfaced (`CONNECTIVITY_FAILED`, `DIGEST_MISMATCH`, `REMOTE_REVOKED`).
+### 3.2 Event Types (emitted — `DESKTOP-PRIV-OK` asserts the catalog)
+1. `DAEMON_STATE`: phase transitions (`READY` at boot).
+2. `PLANE_PRESENCE`: control plane connection state (`ONLINE`, `OFFLINE`, `UNREACHABLE`, from the daemon poller).
+3. `IDENTITY_LOGIN` / `IDENTITY_LOGOUT`: credential bind/drop with `sub`.
+4. `SHARE_DONE` / `SHARE_FAILED`: job outcome; `DONE` rows carry the minted link.
+5. `SHARE_REVOKED`: owner-law revocation confirmed by the plane.
+6. `TRANSFER_DONE` / `TRANSFER_FAILED` / `TRANSFER_CANCELLED`: job outcomes;
+   `FAILED` rows carry the named refusal (`REG035`, `CONNECTIVITY_FAILED`…).
+7. `TRANSFER_PROGRESS` (per-byte) is deliberately NOT emitted — progress is
+   read honestly from `GET /api/v1/transfers/:id` (`bytesDone` = on-disk size);
+   emitting unobserved transitions would invent state (§4 event law).
 
 ### 3.3 Recovery & Disconnection Strategy
 * **State Recovery by Query:** Clients that disconnect or miss events **do not rely on unbounded replay buffers**. The UI queries `GET /api/v1/transfers` and `GET /api/v1/state` upon reconnection to re-establish ground truth.
@@ -78,29 +88,34 @@ Every event emitted on `/api/v1/events` conforms to:
 
 ---
 
-## 3.4 Implementation status (Gate 1 SAFE SUBSET)
+## 3.4 Implementation status (Gate 1 SAFE SUBSET + privileged lane)
 
 **Implemented + proven** (`desktopapi/apicheck.kf` → DESKTOP-API-OK legs=22):
 `/api/v1/health`, `/api/v1/state`, `/api/v1/events?since=<seq>` all guarded by
-Host + Origin + token (`boundaryOk`). Events are the OBSERVABLE subset only —
-`DAEMON_STATE` (boot) and `PLANE_PRESENCE` (real transitions recorded by the
-daemon's presence poller). The file-backed ring buffer (last 64,
-`client.kf appJobJson` precedent) resets on daemon restart; recovery after a
-disconnected consumer is by re-querying `/api/v1/state` and re-subscribing
-`/api/v1/events?since=<lastSeq>` (documented; no fake replay). `TRANSFER_*` /
-`SHARE_*` are catalogued above but NOT emitted yet — emitting them without the
-real mutating operations would invent transitions (§4 event law).
+Host + Origin + token. Events are the OBSERVABLE subset — `DAEMON_STATE`
+(boot) and `PLANE_PRESENCE` (real transitions recorded by the daemon's
+presence poller). The file-backed ring buffer resets on daemon restart;
+recovery after a disconnected consumer is by re-querying `/api/v1/state` and
+re-subscribing `/api/v1/events?since=<lastSeq>` (documented; no fake replay).
 
-**NOT implemented (§DP gate):** `POST/DELETE /api/v1/shares*`,
-`POST /api/v1/transfers*`. These are the privileged mutating surface; building
-them on a 0.0.0.0 bind without the maintainer's bind-address vote is the
-irreversible choice the gate protects. See `docs/desktop/phase0-matrix.md §DP`
-and `docs/desktop/gate0-audit.md §8`.
+**Implemented + proven** (`desktoppriv/privcheck.kf` → DESKTOP-PRIV-OK
+legs=14, three account identities, real P2P through the daemon): `POST
+/api/v1/login|logout`, `GET /api/v1/accounts|device`, `POST|GET
+/api/v1/shares`, `POST /api/v1/shares/:id/revoke`, `POST|GET
+/api/v1/transfers`, `GET /api/v1/transfers/:id`, `POST
+/api/v1/transfers/:id/cancel` — every line rides the token+Host+Origin
+boundary with named refusals; the account bearer travels only as a `file:`
+reference into workers (never argv, never responses, never events —
+secret-hygiene scan leg); identity authorization is imposed by the PLANE
+(stranger links fail `REG035` with zero bytes; non-owner revoke fails
+`AUTH005`).
 
-## 4. Pending Architectural Decisions (§DP Gate)
+## 4. Decided: §DP OPTION A (no longer pending)
 
-1. **Gate Decision 1: Upstream Bind-Address Face vs. Loopback Token Defense**
-   - **Option A (Current / Implemented):** Keep HTTP listener over `0.0.0.0` with strict `X-Kof-Token` (0600 file), `Host` header policing, and no CORS headers. Zero compiler modifications required.
-   - **Option B (Upstream Core Face Request):** Request `web.app().listen(host, port)` in Kof4j. Requires compiler pin bump, upstream compiler patch, and complete RC regression battery.
-   - **Option C (IPC Unix Domain Socket):** Implement Unix Domain Socket listener via FFI (`kof.ext`). Adds native platform dependency and a secondary IPC stack.
-   - **Recommendation:** Proceed with **Option A** for Phase 2 implementation while keeping **Option B** as a formal upstream feature request for Kof4j, maintaining 100% Kof code purity and preserving the verified release pin `f2629e32d`.
+Recorded in `docs/desktop/phase0-matrix.md §DP`, decided 09/10: keep HTTP on
+`0.0.0.0` + token (0600) + Host policing (DNS-rebinding) + Origin allow-list
+(CSRF/malicious-page), all RED-before-GREEN proven. The privileged surface
+above is UNLOCKED under these conditions. Option B (`listen(host,port)`
+upstream face) remains the named request for the day a pin candidate carries
+it; Option C (Unix socket via FFI) stays rejected (second IPC stack, breaks
+the served-page shell).
