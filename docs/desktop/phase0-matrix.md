@@ -31,7 +31,7 @@ SUFICIENTE · **A** = AUSENTE · **DP** = DECISÃO PENDENTE (mantainer).
 | 21 | Relay only when selected, never shown as direct | EP (plane) / A (desktop UI) | relay pump + stamping EP (RELAYCHECK/CONNECTCHECK); desktop surface = F5 |
 | 22 | No central file storage | EP | architecture law + plane registry holds metadata only (control/* read; runrc HTTPCYCLE); desktop adds zero storage |
 | 23 | P2P DIRECT real | **ES** | loopback/direct-lan transfers EP (E2E/DIRECT legs); NAT traversal A by design (STUN/ICE reserved, §10) — proof stays NOT_DEMONSTRATED for real-NAT (discovery §7 honesty) |
-| 24 | Packaging install/upgrade/uninstall story | A (F7) | scripts + `.desktop` entry + launcher land with F7; not claimed until run |
+| 24 | Packaging install/upgrade/uninstall story | EP (Linux x86_64; F7 scripts) | install-desktop.sh → INSTALL-OK (jar+src+launcher+desktop entry in ~/.local) → `kofshare-desktop --status` up=false → --stop → uninstall-desktop.sh → UNINSTALL-OK with zero residue (smoke-measured 21/10; no golden — installer touches $HOME, outside battery ownership law) |
 | 25 | Windows/macOS support | A | §11; Linux x86_64 only (measured env facts above) |
 
 ## Gate 1 — SAFE SUBSET result (this branch, post-audit)
