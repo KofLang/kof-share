@@ -99,9 +99,46 @@ state has not confirmed (§4 event law).
   daemon-served page + `xdg-open` (the browser-lane precedent, BROWSERCHECK
   EP). If the mantainer wants kof.ui-native immediately, that is a toolchain
   install decision (DP), not a code change.
-- **core extraction timing (D8 trigger)**: shipped BEFORE the desktop code
-  merged (commit A of this branch), per discovery §8-E procedure; RC gate
-  result recorded in STATUS.
+- **core extraction timing (D8 trigger)**: PARTIALLY shipped before the
+  desktop code merged — `core/helpers.kf` carries the spawn/stop/port/errText
+  laws both `cli.kf` and `desktopd.kf` drive; the §8-E function move
+  (`serveOne/startFaceHeartbeat/parseTtlMs` out of `cli.kf`) did NOT happen.
+  What the daemon does instead (measured in `desktopd.kf launchJob`): it
+  spawns the SAME `cli.kf` product lanes (`share`/`receive`) as detached
+  workers with the bearer as a `file:` reference, and reads ONLY the
+  machine-lane markers (`--raw` `SHARE-LINK` / `DOWN-AUTO-OK`, both
+  golden-locked byte-compatible contracts) plus pidfiles and on-disk bytes.
+  This is NOT D8-A stdout-scraping: the machine lane IS the API (UXCHECK
+  locks it), human output never crosses. The full D8 extraction (core as a
+  linked library instead of worker-spawn) stays DEFERRED — gated by the same
+  RC-CHECK-OK zero-behavior-diff rule.
+- **eight GUI pre-questions (post-v2 §9 gate) — ANSWERED 21/10 from the
+  shipped daemon** (each answer names the code that proves it):
+  1. core API surface — the daemon drives NO core library; it drives the
+     `cli.kf` machine lane as workers (`launchJob`: `share`/`receive` +
+     `file:` bearer, markers `SHARE-LINK`/`DOWN-AUTO-OK`); reads are
+     `jobsRead`/`stateJson`/on-disk bytes.
+  2. client lifecycle — `--start` (idempotent guard via `waitHealth`) /
+     `--stop` (pidfile + port law) / `--status` / `--window`; proven
+     `DESKTOP-BOOT-OK` cold + hot re-run.
+  3. where keys live — device key `kofshare-device.ed25519` device-local;
+     credential `kofshare-desktop.credential` 0600, passed to workers only
+     as `file:` (never argv/responses/events — scan leg in DESKTOP-PRIV-OK).
+  4. how the GUI observes TransferSession — it does NOT: the daemon owns
+     jobs (`QUEUED/RUNNING/DONE/FAILED/CANCELLED/REVOKED`), progress is
+     `bytesDone` read from the file on disk; plane sessions stay the
+     control plane's business.
+  5. how it controls shares — `POST /api/v1/shares` (job) + `POST
+     /api/v1/shares/:id/revoke`; the OWNER LAW stays on the plane (`AUTH005`
+     for non-owners), never in the daemon.
+  6. offline behavior — `stateJson` reports `plane: unreachable`; jobs fail
+     with the plane's named refusal; no invented rows, recovery by re-query.
+  7. named refusals as events — `refusalIn` maps the FIRST machine-lane code
+     in the worker log (`REG0/GRANT0/AUTH0/DEV0/SES/DOWN-ERR/...`) into the
+     job row + `TRANSFER_FAILED`/`SHARE_FAILED` events; names preserved.
+  8. transfer start/pause UX — start = `POST /transfers` (async job, poll);
+     pause is NOT a primitive: `cancel` kills the worker but keeps `.part`,
+     re-`POST` resumes from the announced offset (A3 law per child).
 
 ## FASE 1 delivered golden (the proof of rows 2–9, 20)
 
