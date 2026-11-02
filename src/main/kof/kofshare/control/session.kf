@@ -2,6 +2,7 @@ package kofshare.control
 
 import kofshare.control.registry
 import kofshare.control.share
+import kofshare.control.grant
 import kof.json
 
 // TRACK C (product evolution 05/10) — the control plane learns COORDINATION:
@@ -47,6 +48,50 @@ Long sessionTtlMs() {
 
 Bool sessionTerminal(String state) {
     return state == "COMPLETED" || state == "FAILED" || state == "CANCELLED" || state == "EXPIRED"
+}
+
+// GATE 6 (revocation closes pre-bytes negotiation): a session that has not
+// started moving bytes may only advance while its share AND its grant (when
+// one exists for the token) are still alive. Revoking/expireing the resource
+// after CLAIMED must refuse NEGOTIATING/CONNECTED — those are NEW
+// authorizations, not bytes already delivered. Transitions that END the story
+// (COMPLETED/FAILED/CANCELLED) always pass: in-flight bytes finish, cancel
+// is fail-safe, and refusing them would be theater (the recipient already
+// holds the owner's address from CLAIMED and the P2P path runs without the
+// plane). TRANSFERRING passes for the same reason: the first byte was
+// authorized while the resource was alive. Identity is NOT re-checked here —
+// creation already bound it (grantAuthorize at POST /sessions); liveness is
+// a fact about the resource, not about who knocks. Reuses existing codes:
+// REG036 (grant dead) and SES004 (share dead), never new vocabulary.
+String sessionGatePreBytes(Map<String, SessionInfo> sessions, Map<String, ShareInfo> shares,
+                           Map<String, GrantInfo> grants, String id, String to, Long now) {
+    if (to == "COMPLETED" || to == "FAILED" || to == "CANCELLED" || to == "TRANSFERRING") {
+        return "OK"
+    }
+    var e: SessionInfo? = sessionResolve(sessions, id)
+    if (e == null) {
+        return "SES001: unknown session " + id
+    }
+    var g = grantForToken(grants, e.token)
+    if (g != null) {
+        if (g.status != "active") {
+            return "REG036: share " + g.status
+        }
+        if (g.expiresAt > 0 && now >= g.expiresAt) {
+            return "REG037: share expired"
+        }
+    }
+    var s: ShareInfo? = shareResolve(shares, e.token)
+    if (s == null) {
+        return "SES004: unknown share token"
+    }
+    if (s.status != "active") {
+        return "SES004: share not active: " + s.status
+    }
+    if (s.expiresAt > 0 && now > s.expiresAt) {
+        return "SES004: share expired"
+    }
+    return "OK"
 }
 
 // The legal-edge matrix — ONE function, the routes and the golden share it.

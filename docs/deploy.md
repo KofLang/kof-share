@@ -97,7 +97,12 @@ por design chamadas que exijam credencial, mas a confidencialidade do transporte
   TOFU) fecham mint/revoke de terceiros (`AUTH004/005`).
 - Share/grant: `POST /shares/:id/revoke` (duo: gate de dono) ou
   `POST /grants/:id/revoke`; a revogação propaga share↔grant e sobrevive a
-  restart do plano (provado em `REVOKECHECK`). Bytes **já entregues** não são
+  restart do plano (provado em `REVOKECHECK`). Sessões VIVAS não avançam
+  negociação pré-bytes sobre recurso morto: `claim` e `advance` para
+  `NEGOTIATING`/`CONNECTED` consultam grant+share (`sessionGatePreBytes`,
+  recusa `REG036`/`SES004`); transições terminais e `TRANSFERRING` passam
+  (bytes em voo terminam, cancel é fail-safe — o plano não faz teatro com
+  poder que não tem). Bytes **já entregues** não são
  recalláveis — o produto distingue revogação de acesso futuro (nova
   autorização/nova sessão/retomada) de controle sobre conteúdo entregue;
   resume pós-revogação é recusado por nome (`DEPLOYMENT/REVOKE` legs).

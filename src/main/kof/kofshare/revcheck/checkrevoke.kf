@@ -14,7 +14,7 @@ package kofshare.revcheck
 //   and a stream already negotiated may finish its current file. The plane
 //   never carries bytes, so it cannot cut a wire it does not own — honest
 //   boundary, asserted here by proving the SECOND dial/resume is refused.
-// REVOKECHECK-OK legs=12. Port 19457 owned here.
+// REVOKECHECK-OK legs=13. Port 19457 owned here.
 
 import kof.crypto
 import kof.http
@@ -214,6 +214,61 @@ main() {
         && !File("rcv-again.bin").exists()))
     ok = ok && rcvAgain.indexOf("REG035") >= 0 && !File("rcv-again.bin").exists()
 
+    // ── 6b: a LIVE session (created + claimed while alive) accepts NO
+    // further pre-bytes negotiation after the share is revoked (GATE 6 —
+    // attack #5: "revoked user tries to continue a session"). Fresh carol
+    // (bob is revoked since leg 2; GRANT016 forbids self-restricted shares,
+    // so the grant is alice→carol), session opened + claimed, THEN revoke,
+    // then CLAIMED->NEGOTIATING must refuse REG036 (bound grant dies with
+    // the share) and a post-revoke create must refuse too. Terminal moves
+    // stay unblocked by construction (sessionGatePreBytes passes
+    // TRANSFERRING/COMPLETED/FAILED/CANCELLED) — asserted by the design,
+    // not by a leg that would need real bytes in flight.
+    var carolKey = keyOf(http.post(base + "/accounts",
+        json.encode(AccountRequest("carol", "Carol", 0)), admin))
+    var carol = "Authorization: Bearer " + carolKey
+    var shB = cliOut(listOf("share", "rcv-src.bin", "--server", "127.0.0.1:19457",
+        "--face", "19458", "--to", "carol", "--bearer", aliceKey))
+    var tokB = tokOf(shB)
+    var sessB = http.post(base + "/sessions",
+        json.encode(SessionRequest(tokB, "rdv-live", "10.0.0.9:9001")), carol)
+    var seidB = ""
+    if (sessB.indexOf("SESSION-CREATED: ") == 0) {
+        seidB = sessB.substring(17, sessB.length())
+    }
+    var claimB = http.post(base + "/sessions/" + seidB + "/claim", "", alice)
+    var sidB = ""
+    if (tokB.length() == 64) {
+        var lst = http.get(base + "/shares", alice)
+        var ti = lst.indexOf(tokB)
+        if (ti >= 0) {
+            var back = lst.substring(0, ti)
+            var qi = back.lastIndexOf("\"id\":\"")
+            if (qi >= 0) {
+                sidB = back.substring(qi + 6, back.length()).split("\"")[0]
+            }
+        }
+    }
+    var liveSetup = tokB.length() == 64 && seidB.length() > 2
+        && claimB.indexOf("SESSION-STATE: CLAIMED") == 0 && sidB.length() > 4
+    println("liveSessionSetup=" + liveSetup)
+    ok = ok && liveSetup
+    var revB = http.post(base + "/shares/" + sidB + "/revoke?reason=revcheck-6b", "", alice)
+    var advB = http.post(base + "/sessions/" + seidB + "/advance?token=" + tokB,
+        json.encode(AdvanceRequest("NEGOTIATING", "")), "")
+    println("advanceAfterShareRevoke=" + (revB.indexOf("SHARE-REVOKED") == 0
+        && advB.indexOf("REG036") == 0))
+    ok = ok && revB.indexOf("SHARE-REVOKED") == 0 && advB.indexOf("REG036") == 0
+    var sessC = http.post(base + "/sessions",
+        json.encode(SessionRequest(tokB, "rdv-late", "10.0.0.9:9002")), carol)
+    // carol is still a VALID account naming the revoked grant's recipient:
+    // a revoked grant is dead-known (REG036), not unknown (REG035); an
+    // unknown token or a possession share without uses gives SES004.
+    println("createAfterShareRevoke=" + (sessC.indexOf("REG036") == 0
+        || sessC.indexOf("REG035") == 0 || sessC.indexOf("SES004") == 0))
+    ok = ok && (sessC.indexOf("REG036") == 0 || sessC.indexOf("REG035") == 0
+        || sessC.indexOf("SES004") == 0)
+
     // ── 7: revoke ALICE's ACCOUNT — her identity grants must stop serving ──
     // (the owner lane: /whoami alice still alive until revoked)
     var bobReact = http.post(base + "/accounts/bob/revoke", "", admin)
@@ -294,7 +349,7 @@ main() {
         ri = ri + 1
     }
     if (ok) {
-        println("REVOKECHECK-OK legs=12")
+        println("REVOKECHECK-OK legs=13")
     } else {
         println("REVOKECHECK-FAIL")
         throw "kofshare: REVOKECHECK-FAIL"

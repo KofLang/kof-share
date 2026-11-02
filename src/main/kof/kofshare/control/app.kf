@@ -806,6 +806,16 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
         if (g != "OK") {
             return g
         }
+        var e0: SessionInfo? = sessionResolve(sessions, param("id"))
+        if (e0 == null) {
+            return "SES001: unknown session " + param("id")
+        }
+        // GATE 6: claiming a session over a revoked/expired resource is a
+        // NEW authorization, not bytes in flight — refuse by name.
+        var gb = sessionGatePreBytes(sessions, shares, grants, param("id"), "CLAIMED", time.now())
+        if (gb != "OK") {
+            return gb
+        }
         var r = sessionClaim(sessions, devices, param("id"), time.now())
         if (r != "OK") {
             return r
@@ -845,6 +855,15 @@ void controlServe(Int port, Map<String, DeviceInfo> devices, Map<String, OfferIn
             // the first guard was !holdsToken, which let exactly that pass
             // whenever the recipient's POST also carried an account).
             return "SES002: use /claim to pick up a session"
+        }
+        // GATE 6: pre-bytes negotiation over a revoked/expired resource is a
+        // NEW authorization — refuse by name. Terminal transitions
+        // (COMPLETED/FAILED/CANCELLED) and TRANSFERRING always pass through
+        // to the pure matrix: ending in-flight bytes or cancelling must never
+        // be blocked by a revocation (fail-safe, no theater).
+        var gb2 = sessionGatePreBytes(sessions, shares, grants, param("id"), to, time.now())
+        if (gb2 != "OK") {
+            return gb2
         }
         var r = sessionAdvance(sessions, param("id"), to, a.transport, time.now())
         if (r != "OK") {
