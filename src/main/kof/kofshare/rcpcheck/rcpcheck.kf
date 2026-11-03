@@ -179,7 +179,7 @@ main() {
 
     // ── leg 5: bob (the recipient) receives, digest-verified, over the wire ──
     var bobOut = cliOut(listOf("receive", base + "/s/" + link, "rcp-get.bin", "--bearer", bobKey))
-    var bobOk = bobOut.indexOf("DOWN-AUTO-OK") >= 0 || bobOut.indexOf("DOWN-OK") >= 0
+    var bobOk = bobOut.indexOf("DOWN-AUTO-OK") >= 0
     var bytesOk = false
     if (File("rcp-get.bin").exists()) {
         var got = crypto.sha256Bytes(toBytes(File("rcp-get.bin").readBytes()))
@@ -196,7 +196,7 @@ main() {
     // attempts above spent nothing: this link never used --once, but the same
     // law is asserted on --once in leg 7) ──
     var bob2 = cliOut(listOf("receive", base + "/s/" + link, "rcp-again.bin", "--bearer", bobKey))
-    var againOk = bob2.indexOf("DOWN-AUTO-OK") >= 0 || bob2.indexOf("DOWN-OK") >= 0
+    var againOk = bob2.indexOf("DOWN-AUTO-OK") >= 0
     println("budgetUntouched=" + againOk)
     ok = ok && againOk
 
@@ -210,7 +210,7 @@ main() {
         i2 = i2 + 1
     }
     var onceBob = cliOut(listOf("receive", base + "/s/" + onceLink, "rcp-get2.bin", "--bearer", bobKey))
-    var onceOk = onceBob.indexOf("DOWN-AUTO-OK") >= 0 || onceBob.indexOf("DOWN-OK") >= 0
+    var onceOk = onceBob.indexOf("DOWN-AUTO-OK") >= 0
     var onceSecond = cliOut(listOf("receive", base + "/s/" + onceLink, "rcp-get3.bin", "--bearer", bobKey))
     var onceSpent = onceSecond.indexOf("REG038") >= 0
     println("strangersBurnNothing=" + onceOk)
