@@ -78,7 +78,11 @@ server-sorted manifest (`/s/:token` + grant selector, `GET /api/shares`).
 `share --to <account>` mints a restricted link: redemption requires the
 plane-verified recipient identity (wrong identity gets opaque `REG035`,
 byte-identical to a dead link, consuming zero budget —
-`RECIPIENTAUTHCHECK-OK`). The table below lists every refusal code twice:
+`RECIPIENTAUTHCHECK-OK`). The use counter is precise under parallel
+resolves: 20 simultaneous `GET /s` against a `maxUses=1` share yield exactly
+1 metadata answer + 19 `REG038`, and 3/20 for `maxUses=3` (measured live
+against a real plane — no observable check-then-act interleave at the pin).
+The table below lists every refusal code twice:
 once for the machine (diagnostic contract), once with the human `Hint:` the
 user verbs layer on top.
 
