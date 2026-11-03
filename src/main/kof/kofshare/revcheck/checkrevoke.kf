@@ -14,7 +14,7 @@ package kofshare.revcheck
 //   and a stream already negotiated may finish its current file. The plane
 //   never carries bytes, so it cannot cut a wire it does not own — honest
 //   boundary, asserted here by proving the SECOND dial/resume is refused.
-// REVOKECHECK-OK legs=14. Port 19457 owned here.
+// REVOKECHECK-OK legs=15. Port 19457 owned here.
 
 import kof.crypto
 import kof.http
@@ -313,6 +313,53 @@ main() {
         && revD.indexOf("SHARE-REVOKED") == 0
         && cancelD.indexOf("SESSION-STATE: CANCELLED") == 0
 
+    // ── 6d: IN-FLIGHT finishes after revocation (the second fail-safe half —
+    // also design-asserted only until now). A session negotiated to CONNECTED
+    // while alive, then revoked, must still walk TRANSFERRING->COMPLETED:
+    // the plane may not strand bytes it already authorized. Uses a fresh
+    // possession share (no grant row — proves the share-side of the gate).
+    var shE = cliOut(listOf("share", "rcv-src.bin", "--server", "127.0.0.1:19457",
+        "--face", "19458", "--bearer", aliceKey))
+    var tokE = tokOf(shE)
+    var sessE = http.post(base + "/sessions",
+        json.encode(SessionRequest(tokE, "rdv-fly", "10.0.0.9:9004")), alice)
+    var seidE = ""
+    if (sessE.indexOf("SESSION-CREATED: ") == 0) {
+        seidE = sessE.substring(17, sessE.length())
+    }
+    var claimE = http.post(base + "/sessions/" + seidE + "/claim", "", alice)
+    var negE = http.post(base + "/sessions/" + seidE + "/advance?token=" + tokE,
+        json.encode(AdvanceRequest("NEGOTIATING", "")), "")
+    var conE = http.post(base + "/sessions/" + seidE + "/advance?token=" + tokE,
+        json.encode(AdvanceRequest("CONNECTED", "")), "")
+    var sidE = ""
+    if (tokE.length() == 64) {
+        var lstE = http.get(base + "/shares", alice)
+        var tiE = lstE.indexOf(tokE)
+        if (tiE >= 0) {
+            var backE = lstE.substring(0, tiE)
+            var qiE = backE.lastIndexOf("\"id\":\"")
+            if (qiE >= 0) {
+                sidE = backE.substring(qiE + 6, backE.length()).split("\"")[0]
+            }
+        }
+    }
+    var negotiatedAlive = claimE.indexOf("SESSION-STATE: CLAIMED") == 0
+        && negE.indexOf("SESSION-STATE: NEGOTIATING") == 0
+        && conE.indexOf("SESSION-STATE: CONNECTED") == 0
+    var revE = http.post(base + "/shares/" + sidE + "/revoke?reason=revcheck-6d", "", alice)
+    var flyE = http.post(base + "/sessions/" + seidE + "/advance?token=" + tokE,
+        json.encode(AdvanceRequest("TRANSFERRING", "")), "")
+    var doneE = http.post(base + "/sessions/" + seidE + "/advance?token=" + tokE,
+        json.encode(AdvanceRequest("COMPLETED", "")), "")
+    println("inflightFinishesAfterRevoke=" + (negotiatedAlive
+        && revE.indexOf("SHARE-REVOKED") == 0
+        && flyE.indexOf("SESSION-STATE: TRANSFERRING") == 0
+        && doneE.indexOf("SESSION-STATE: COMPLETED") == 0))
+    ok = ok && negotiatedAlive && revE.indexOf("SHARE-REVOKED") == 0
+        && flyE.indexOf("SESSION-STATE: TRANSFERRING") == 0
+        && doneE.indexOf("SESSION-STATE: COMPLETED") == 0
+
     // ── 7: revoke ALICE's ACCOUNT — her identity grants must stop serving ──
     // (the owner lane: /whoami alice still alive until revoked)
     var bobReact = http.post(base + "/accounts/bob/revoke", "", admin)
@@ -393,7 +440,7 @@ main() {
         ri = ri + 1
     }
     if (ok) {
-        println("REVOKECHECK-OK legs=14")
+        println("REVOKECHECK-OK legs=15")
     } else {
         println("REVOKECHECK-FAIL")
         throw "kofshare: REVOKECHECK-FAIL"
