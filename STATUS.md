@@ -11,7 +11,7 @@ next                 rodadas de continuacao 3h ATIVAS desde 22/10 (ler→plano�
 proof                RC-CHECK-OK steps=32 DUAS VEZES CONSECUTIVAS na mesma arvore (rc32c+rc32d, 09/10; bateria anterior 32a/32b tambem verdes antes de um fix de teardown do revcheck revalidado 2x); corte 23/23 intacto no v2; harness pinado + desktop na bateria: RC-CHECK-OK steps=34 2x consecutivas (corridas 18/10+21/10); GATE 6 (revoke fecha negociacao pre-bytes): RC-CHECK-OK steps=34 2x consecutivas na arvore do fix (rodada do fix + esta rodada), zero FAILs
 result               tudo do v2 + compartilhamento restrito a destinatario (prova com 3 identidades) + desktop com jobs/eventos/state + deploy com isolamento de dir e backup-restore + isolamento multi-usuario + revogacao nao-retroativa
 tests                14 pernas --check JVM+Script; 53/53 arquivos check-clean standalone
-goldens              + DESKTOP-BOOT-OK steps=21, DESKTOP-API-OK legs=22, GRANTCHECK-OK, HTTPGRANT-OK legs=14, RECIPIENTAUTHCHECK-OK legs=10, DESKTOP-PRIV-OK legs=14, DEPLOYMENTCHECK-OK legs=10, REVOKECHECK-OK legs=13 (+6b: sessao viva nao negocia pos-revoke), ACCOUNTISOLATIONCHECK-OK legs=11
+goldens              + DESKTOP-BOOT-OK steps=21, DESKTOP-API-OK legs=22, GRANTCHECK-OK, HTTPGRANT-OK legs=14, RECIPIENTAUTHCHECK-OK legs=10, DESKTOP-PRIV-OK legs=14, DEPLOYMENTCHECK-OK legs=10, REVOKECHECK-OK legs=14 (+6b: sessao viva nao negocia pos-revoke; +6c: CANCELLED passa pos-revoke), ACCOUNTISOLATIONCHECK-OK legs=11
 USER IDENTITY SESSION CONNECT BROWSER RESOURCE SERVE RESUME
                      PERSIST RELAY SHARE HTTP RESTART FOLDER UX INTEGRATION — todos OK
 compiler_changes     nenhum produto depende de tip não-lançado; D-KOF-SIGN já no jar
