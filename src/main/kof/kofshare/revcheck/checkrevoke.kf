@@ -14,7 +14,7 @@ package kofshare.revcheck
 //   and a stream already negotiated may finish its current file. The plane
 //   never carries bytes, so it cannot cut a wire it does not own — honest
 //   boundary, asserted here by proving the SECOND dial/resume is refused.
-// REVOKECHECK-OK legs=13. Port 19457 owned here.
+// REVOKECHECK-OK legs=14. Port 19457 owned here.
 
 import kof.crypto
 import kof.http
@@ -269,6 +269,50 @@ main() {
     ok = ok && (sessC.indexOf("REG036") == 0 || sessC.indexOf("REG035") == 0
         || sessC.indexOf("SES004") == 0)
 
+    // ── 6c: terminal moves stay UNBLOCKED after revocation (the fail-safe
+    // half of GATE 6 — previously asserted by design only). On the revoked
+    // CLAIMED identity session, CANCELLED must pass; on a fresh possession
+    // share whose resource is then revoked, CANCELLED must pass too. (FAILED
+    // straight from CLAIMED is not a probe: the pure matrix never allowed
+    // CLAIMED->FAILED — only the ladder or CANCELLED — so it cannot tell
+    // gate from matrix.) A revocation must stop negotiation, never trap a
+    // session or block abort.
+    var cancelB = http.post(base + "/sessions/" + seidB + "/advance?token=" + tokB,
+        json.encode(AdvanceRequest("CANCELLED", "")), "")
+    println("cancelledIdentityAfterRevoke=" + (cancelB.indexOf("SESSION-STATE: CANCELLED") == 0))
+    ok = ok && cancelB.indexOf("SESSION-STATE: CANCELLED") == 0
+    var shD = cliOut(listOf("share", "rcv-src.bin", "--server", "127.0.0.1:19457",
+        "--face", "19458", "--bearer", aliceKey))
+    var tokD = tokOf(shD)
+    var sessD = http.post(base + "/sessions",
+        json.encode(SessionRequest(tokD, "rdv-pos", "10.0.0.9:9003")), alice)
+    var seidD = ""
+    if (sessD.indexOf("SESSION-CREATED: ") == 0) {
+        seidD = sessD.substring(17, sessD.length())
+    }
+    var claimD = http.post(base + "/sessions/" + seidD + "/claim", "", alice)
+    var sidD = ""
+    if (tokD.length() == 64) {
+        var lstD = http.get(base + "/shares", alice)
+        var tiD = lstD.indexOf(tokD)
+        if (tiD >= 0) {
+            var backD = lstD.substring(0, tiD)
+            var qiD = backD.lastIndexOf("\"id\":\"")
+            if (qiD >= 0) {
+                sidD = backD.substring(qiD + 6, backD.length()).split("\"")[0]
+            }
+        }
+    }
+    var revD = http.post(base + "/shares/" + sidD + "/revoke?reason=revcheck-6c", "", alice)
+    var cancelD = http.post(base + "/sessions/" + seidD + "/advance?token=" + tokD,
+        json.encode(AdvanceRequest("CANCELLED", "")), "")
+    println("cancelledAfterShareRevoke=" + (claimD.indexOf("SESSION-STATE: CLAIMED") == 0
+        && revD.indexOf("SHARE-REVOKED") == 0
+        && cancelD.indexOf("SESSION-STATE: CANCELLED") == 0))
+    ok = ok && claimD.indexOf("SESSION-STATE: CLAIMED") == 0
+        && revD.indexOf("SHARE-REVOKED") == 0
+        && cancelD.indexOf("SESSION-STATE: CANCELLED") == 0
+
     // ── 7: revoke ALICE's ACCOUNT — her identity grants must stop serving ──
     // (the owner lane: /whoami alice still alive until revoked)
     var bobReact = http.post(base + "/accounts/bob/revoke", "", admin)
@@ -349,7 +393,7 @@ main() {
         ri = ri + 1
     }
     if (ok) {
-        println("REVOKECHECK-OK legs=13")
+        println("REVOKECHECK-OK legs=14")
     } else {
         println("REVOKECHECK-FAIL")
         throw "kofshare: REVOKECHECK-FAIL"
