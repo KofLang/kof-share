@@ -140,7 +140,9 @@ main() {
     ok = ok && grantOut.indexOf("GRANTED gr") == 0 && tok.length() == 64
     var sUrl = base + "/s/" + tok
     var bobView = http.get(sUrl, bob)
-    var bobSees = bobView.indexOf("\"offerId\":\"off1\"") >= 0 || bobView.indexOf("off1") >= 0
+    // strict: the JSON grant row, not a loose substring (an error body that
+    // merely echoes the offer id must never satisfy redemption).
+    var bobSees = bobView.indexOf("\"offerId\":\"off1\"") >= 0
     println("bobRedeems=" + bobSees)
     ok = ok && bobSees
     // Carol holds the EXACT URL. Authenticated as herself → indistinguishable
@@ -180,10 +182,13 @@ main() {
     var gid = gidOf(grantOut)
     var rv = http.post(base + "/grants/" + gid + "/revoke?reason=owner-changed-mind", "", admin)
     var afterRv = http.get(sUrl, bob)
+    // strict: only the GRANT row is revoked here, the share stays active —
+    // the gate reads the grant first, so a revoked grant is dead-known
+    // (REG036), never unknown (REG035).
     println("grantRevoke=" + (rv.indexOf("GRANT-REVOKED: " + gid) == 0))
-    println("revokedBlocks=" + (afterRv.indexOf("REG036") == 0 || afterRv.indexOf("REG035") == 0))
+    println("revokedBlocks=" + (afterRv.indexOf("REG036") == 0))
     ok = ok && rv.indexOf("GRANT-REVOKED: " + gid) == 0
-        && (afterRv.indexOf("REG036") == 0 || afterRv.indexOf("REG035") == 0)
+        && afterRv.indexOf("REG036") == 0
 
     // ── possession mode still works for the bare holder (#2 regression) ──
     var possOut = http.post(base + "/shares",
