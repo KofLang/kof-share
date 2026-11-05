@@ -198,6 +198,22 @@ main() {
     println("possessionHolds=" + (possTok.length() == 64 && possView.indexOf(opaque) < 0))
     ok = ok && possTok.length() == 64 && possView.indexOf(opaque) < 0
 
+    // ── #20 — TWO policies live at once over the SAME offer: the identity
+    // share (bob only) and the possession share (any holder) coexist, and
+    // each token answers by its OWN policy. A stranger on the identity token
+    // stays opaque while the same stranger on the possession token is served
+    // — no policy bleed through the shared offer record.
+    var identTok2 = tokOf(http.post(base + "/shares/identity", json.encode(
+        GrantRequest("off1", "bob", 0, 0, true, false, true)), alice))
+    var strangerOnIdent = http.get(base + "/s/" + identTok2, carol)
+    var strangerOnPoss = http.get(base + "/s/" + possTok, carol)
+    var bobOnIdent = http.get(base + "/s/" + identTok2, bob)
+    var policiesCoexist = strangerOnIdent.indexOf(opaque) == 0
+        && strangerOnPoss.indexOf(opaque) < 0 && strangerOnPoss.indexOf("REG") < 0
+        && bobOnIdent.indexOf(opaque) < 0 && bobOnIdent.indexOf("REG") < 0
+    println("policiesCoexist=" + policiesCoexist)
+    ok = ok && policiesCoexist
+
     // ── #16 — restart: the binding survives the reload, the URL still fails ──
     cliOut(listOf("stop"))
     var re = cliOut(listOf("server", "19450", "--start"))
@@ -258,7 +274,7 @@ main() {
 
 
     if (ok) {
-        println("HTTPGRANT-OK legs=14")
+        println("HTTPGRANT-OK legs=15")
     } else {
         println("HTTPGRANT-FAIL")
         throw "kofshare: HTTPGRANT-FAIL"
