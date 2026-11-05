@@ -11,7 +11,7 @@ package kofshare.deploycheck
 //     name (GRANT041), preventing silent downgrade to possession mode
 //   - body cap: payloads >65KB refused as REG042
 //   - bad port in config refused as SERVER-CONF-ERR
-// DEPLOYMENTCHECK-OK legs=10. Port 19456 owned here.
+// DEPLOYMENTCHECK-OK legs=11. Port 19456 owned here.
 
 import kof.http
 import kof.json
@@ -189,6 +189,42 @@ main() {
     println("failClosedOnCorruption=" + corruptRefused)
     ok = ok && corruptRefused
 
+    // ── 8b: the SAME fail-closed law for every other registry (attack #9:
+    // corrupt/truncated state must refuse BY NAME at boot, never boot into a
+    // permissive default). Grants prove one lane; these prove the rest.
+    File(dir2 + "/server-registry.grants.json").delete()
+    var regSpecs = new List<String>()
+    regSpecs.add("server-registry.accounts.json::AUTH043")
+    regSpecs.add("server-registry.sessions.json::SES041")
+    regSpecs.add("server-registry.presence.json::PRES041")
+    regSpecs.add("server-registry.shares.json::REG041")
+    regSpecs.add("server-registry.devkeys.json::REG009")
+    var rcOk = true
+    for (var spec in regSpecs) {
+        var parts = spec.split("::")
+        var fname = parts[0]
+        var code = parts[1]
+        killPort(port)
+        File(dir2 + "/" + fname).writeText("{\"truncated\":")
+        if (File("kofshare-server.log").exists()) {
+            File("kofshare-server.log").delete()
+        }
+        cliCmd(conf2, listOf("server", "--start"))
+        var slog = "" + File("kofshare-server.log").readText()
+        var refused = slog.indexOf(code) >= 0 && !quickProbe(base)
+        if (!refused) {
+            var cap = slog
+            if (cap.length() > 160) {
+                cap = cap.substring(0, 160)
+            }
+            println("DBG failClosed-" + code + "=[" + cap + "]")
+        }
+        rcOk = rcOk && refused
+        File(dir2 + "/" + fname).delete()
+    }
+    println("failClosedEveryRegistry=" + rcOk)
+    ok = ok && rcOk
+
     // ── 9: abuse protection / body cap (REG042) ──
     // start clean plane for cap assertion
     killPort(port)
@@ -221,7 +257,7 @@ main() {
     shell.run("rm", listOf("-rf", dir1, dir2, conf1, conf2, confBad))
 
     if (ok) {
-        println("DEPLOYMENTCHECK-OK legs=10")
+        println("DEPLOYMENTCHECK-OK legs=11")
     } else {
         println("DEPLOYMENTCHECK-FAIL")
         throw "kofshare: DEPLOYMENTCHECK-FAIL"
