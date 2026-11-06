@@ -174,16 +174,44 @@ src/main/kof/kofshare/
 | Control plane | HTTP E2E (`HTTPCHECK`, `PERSIST-OK`, `RESTART-OK`) | ✅ |
 | Data plane | JVM+Script E2E (`USERCHECK`…`RELAY-OK`, `SECURE`) | ✅ |
 | Directories | `FOLDERCHECK-OK` (13 legs) | ✅ |
-| Recipient auth | `GRANTCHECK-OK` + `HTTPGRANT-OK` (14) + `RECIPIENTAUTHCHECK-OK` (10, three identities) | ✅ |
+| Recipient auth | `GRANTCHECK-OK` + `HTTPGRANT-OK` (15, incl. #20 policy coexistence) + `RECIPIENTAUTHCHECK-OK` (10, three identities) | ✅ |
 | Account isolation | `ACCOUNTISOLATIONCHECK-OK` (11: TOFU owner fence, AUTH004/AUTH005, admin lane, keyless v1 preserved) | ✅ |
-| Revocation | `REVOKECHECK-OK` (12: account/device/share, non-retroactive, restart-surviving) | ✅ |
-| Deployment | `DEPLOYMENTCHECK-OK` (10: dir isolation, publicurl, backup-restore, fail-closed, body caps) | ✅ |
+| Revocation | `REVOKECHECK-OK` (15: account/device/share, 6b pre-bytes blocked, 6c/6d fail-safe, non-retroactive, restart-surviving) | ✅ |
+| Deployment | `DEPLOYMENTCHECK-OK` (11: dir isolation, publicurl, backup-restore, fail-closed on ALL six registries, body caps) | ✅ |
 | Desktop boot | `DESKTOP-BOOT-OK` (21: lifecycle, 0600 token, state, page, stop/recovery) | ✅ |
 | Desktop API (safe) | `DESKTOP-API-OK` (22: host/origin/token boundary, events, raw-socket forged-Host proof) | ✅ |
 | Desktop privileged | `DESKTOP-PRIV-OK` (14: login/shares/transfers/cancel/device, bearer `file:` lane, zero-leak scan) | ✅ |
 | UX | `UXCHECK-OK` (15 legs) | ✅ |
 | Full product | `INTEGRATIONCHECK-OK` (22 legs, real processes) | ✅ |
 | Release | `RC-CHECK-OK steps=34` full battery (`rc/runrc.kf`), 2x consecutive clean required | RC gate |
+
+### 9.1 Attack matrix (gigaprompt §11) → the leg that proves it
+
+Every row names the observable that fails if the property regresses (no row
+is "covered by design").
+
+| # | Attack | Proof (leg / marker) |
+|---|---|---|
+| 1 | Anonymous opens a private link | `RECIPIENTAUTHCHECK-OK` `anonOpaque`+`anonNoFile` (byte-identical to a dead link) |
+| 2 | Authenticated but unauthorized account opens it | `RECIPIENTAUTHCHECK-OK` `carolRefusedOpaque`; `HTTPGRANT-OK` `policiesCoexist` |
+| 3 | A swaps the resource id for B's | `RESOURCECHECK-OK` `foreignResourceRefused` (REG014, plane recomputes) |
+| 4 | A uses B's share token | `RECIPIENTAUTHCHECK-OK` leg 3 (exact URL, wrong identity, zero budget) |
+| 5 | Revoked authorized user continues a session | `REVOKECHECK-OK` 6b `advanceAfterShareRevoke` (REG036) |
+| 6 | Revoked device uses a previously issued grant | `REVOKECHECK-OK` `deviceRevokeKillsGrants` (DEV003) |
+| 7 | Expired/revoked/tampered/unknown token | `SHARECHECK` `touchExpired` (REG037) + `touchRevoked` (REG036); `HTTPCHECK` `grantAfterRevoke` (REG036), `grantUnknown` (REG035), `grantExhausted` (REG038) |
+| 8 | JWT tampered / expired / wrong secret | `HTTPCHECK` `gateWrong` (runtime signature 401) + `jwtExpiry` (ttlSec=1 outlived) |
+| 9 | Persistence missing / truncated / corrupt | `DEPLOYMENTCHECK-OK` 8 `failClosedOnCorruption` (GRANT041) + 8b `failClosedEveryRegistry` (AUTH043/SES041/PRES041/REG041/REG009); `PERSIST-OK` REG009 |
+| 10 | Link reuse with maxUses / `--once` | `HTTPCHECK` `grantExhausted`; `RECIPIENTAUTHCHECK-OK` `onceSpentForReal`; `SHARECHECK` `onceUsed` |
+| 11 | Consume maxUses without auth/authorization | `RECIPIENTAUTHCHECK-OK` `strangersBurnNothing` (5 stranger attempts, budget intact) |
+| 12 | Traversal / alt separators / duplicates / symlinks | `FOLDERCHECK-OK` `REG015` legs + `dirJoinSafe` refusal |
+| 13 | Tampered manifest / wrong digest | `FOLDERCHECK-OK` `REG016` |
+| 14 | File changed after the offer | `USERCHECK` `tamperRefuse` (`DOWN-ERR: content digest mismatch`, no file written) |
+| 15 | Invalid crypto tag | `probe/tamper.kf` → `TAMPER-OK`; `RELAY-OK` (flip → tag dies, zero bytes) |
+| 16 | Local API from a foreign origin | `DESKTOP-API-OK` `origin-refused` (integration, real socket) + `unit-origin-shape` |
+| 17 | Malicious page driving privileged ops | `DESKTOP-API-OK` `raw-forged-host-refused` (DNS rebinding, raw socket) + `DESKTOP-PRIV-OK` `loginEvilOrigin` |
+| 18 | Secrets in logs/errors/URLs/bodies | `BROWSERCHECK-OK` `secretAbsent`; `DESKTOP-PRIV-OK` `noBearerLeak`; `UXCHECK-OK` `humanOutputClean` |
+| 19 | Plane restarted during a session / after revocation | `SESSIONCHECK-OK` `restartSurvives`; `REVOKECHECK-OK` `revocationSurvivesRestart`; `HTTPCYCLE-OK` |
+| 20 | Two users, same resource, distinct policies | `HTTPGRANT-OK` `policiesCoexist` (identity + possession live over one offer) |
 
 ## 10. Known gaps (honest)
 
