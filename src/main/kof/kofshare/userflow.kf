@@ -302,6 +302,15 @@ dirWalkInto(String deviceId, String dir, String logicalPrefix, List<DirEntry> ou
         if (logicalPrefix.length() > 0) {
             lpath = logicalPrefix + "/" + seg
         }
+        // REG017: a symlink inside the shared tree is REFUSED, never followed.
+        // Measured before this guard existed: a link to ../secret/passwd.txt
+        // was published with its TARGET's bytes (20 B) and a symlinked
+        // directory was walked — sharing a folder leaked everything outside
+        // it. Refusing by name beats silently skipping: the user must know
+        // their tree was rejected. The check runs BEFORE any read.
+        if (File(full).isSymlink()) {
+            throw "REG017: symlink not allowed in a shared directory: " + lpath
+        }
         if (File(full).isDirectory()) {
             out.add(DirEntry(resourceIdFor(deviceId, lpath, 0, ""), lpath, "DIRECTORY", 0, "",
                 File(full).modifiedTime()))

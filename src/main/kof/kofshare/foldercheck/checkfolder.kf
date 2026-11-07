@@ -337,6 +337,28 @@ main() {
     println("joinRefusesTraversal=" + joinOk)
     ok = ok && joinOk
 
+    // attack #12 (symlinks): a link inside the shared tree is refused BY NAME
+    // and never followed. Measured red before the guard: a link to
+    // ../outside/secret.txt was published with its TARGET's bytes, so sharing
+    // a folder leaked everything outside it. The clean tree must still walk.
+    shell.run("sh", listOf("-c", "rm -rf fc-symlink fc-outside && mkdir -p fc-symlink fc-outside && " +
+        "echo inside > fc-symlink/ok.txt && echo SECRET > fc-outside/secret.txt && " +
+        "ln -s ../fc-outside/secret.txt fc-symlink/leak.txt"))
+    var symRefusal = ""
+    try {
+        var entriesSym = dirWalk(devId, "fc-symlink")
+        symRefusal = "NO-REFUSAL entries=" + entriesSym.size
+    } catch (String e) {
+        symRefusal = e
+    }
+    var symRefused = symRefusal.indexOf("REG017") == 0
+        && symRefusal.indexOf("fc-symlink/leak.txt") >= 0
+    var cleanWalkStillWorks = dirWalk(devId, "fc-outside").size == 2
+    println("symlinkRefused=" + symRefused)
+    println("cleanTreeStillWalks=" + cleanWalkStillWorks)
+    ok = ok && symRefused && cleanWalkStillWorks
+    shell.run("sh", listOf("-c", "rm -rf fc-symlink fc-outside"))
+
     // manifest tampering dies at the PLANE before insertion
     var wrongHash = "0" + dh.substring(1, 64)
     var badHash = signOffer(sk, "o-tamper", devId, "fc-docs", sorted.size, wrongHash)
