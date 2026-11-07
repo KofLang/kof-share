@@ -203,7 +203,7 @@ is "covered by design").
 | 9 | Persistence missing / truncated / corrupt | `DEPLOYMENTCHECK-OK` 8 `failClosedOnCorruption` (GRANT041) + 8b `failClosedEveryRegistry` (AUTH043/SES041/PRES041/REG041/REG009); `PERSIST-OK` REG009 |
 | 10 | Link reuse with maxUses / `--once` | `HTTPCHECK` `grantExhausted`; `RECIPIENTAUTHCHECK-OK` `onceSpentForReal`; `SHARECHECK` `onceUsed` |
 | 11 | Consume maxUses without auth/authorization | `RECIPIENTAUTHCHECK-OK` `strangersBurnNothing` (5 stranger attempts, budget intact) |
-| 12 | Traversal / alt separators / duplicates / symlinks | `FOLDERCHECK-OK` `REG015` legs + `dirJoinSafe` refusal + `symlinkRefused`/`cleanTreeStillWalks` (REG017, link never followed) |
+| 12 | Traversal / alt separators / duplicates / symlinks | `FOLDERCHECK-OK` `REG015` legs + `dirJoinSafe` refusal + `symlinkRefused`/`cleanTreeStillWalks` (REG017 at publish) + `symlinkMidServeRefused`/`faceSurvivesSymlink` (REG017 at serve, refused per connection) |
 | 13 | Tampered manifest / wrong digest | `FOLDERCHECK-OK` `REG016` |
 | 14 | File changed after the offer | `USERCHECK` `tamperRefuse` (`DOWN-ERR: content digest mismatch`, no file written) |
 | 15 | Invalid crypto tag | `probe/tamper.kf` → `TAMPER-OK`; `RELAY-OK` (flip → tag dies, zero bytes) |

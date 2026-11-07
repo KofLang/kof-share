@@ -429,13 +429,30 @@ String serveDirLoop(String rootPath, Int port, String key) {
             sel = typ - dirHelloBase()
         }
         var rootName = resourceName(rootPath)
-        var rel = pickNthFile(rootPath, rootName, sel)
-        if (rel.length() == 0) {
+        // REG017 must refuse THIS connection, never kill the server: the
+        // walk throws when a symlink exists (guard against mid-serve swaps),
+        // so the throw is caught here and answered with the same named-error
+        // head the client already understands. Measured red before the fix:
+        // one planted link killed the serving process outright and the
+        // recipient got a raw 'channel closed mid-frame' stack.
+        var refusal = ""
+        var rel = ""
+        try {
+            rel = pickNthFile(rootPath, rootName, sel)
+        } catch (String e) {
+            refusal = e
+        }
+        if (refusal.length() > 0) {
+            println("SERVE-REFUSED " + refusal)
             c.send(headFrame(0, resumeErrIndex()))
         } else {
-            var rc = serveFilePicked(c, rootPath + "/" + rel, off, key)
-            println("SERVED " + rc + " child=" + sel)
-            served = served + 1
+            if (rel.length() == 0) {
+                c.send(headFrame(0, resumeErrIndex()))
+            } else {
+                var rc = serveFilePicked(c, rootPath + "/" + rel, off, key)
+                println("SERVED " + rc + " child=" + sel)
+                served = served + 1
+            }
         }
         guard = guard + 1
     }

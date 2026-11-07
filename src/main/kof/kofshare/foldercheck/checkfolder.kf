@@ -319,6 +319,33 @@ main() {
     println("fullTransfer=" + transferOk)
     ok = ok && transferOk
 
+    // symlink planted MID-SERVE (after publish): the served refusal must be
+    // named, write ZERO bytes, and leave the face ALIVE. Measured red before
+    // the guard: one planted link killed the serving process and the client
+    // got a raw 'channel closed mid-frame' stack.
+    shell.run("sh", listOf("-c",
+        "rm -rf fc-outside2 && mkdir -p fc-outside2 && echo SECRET > fc-outside2/s.txt && " +
+        "ln -s ../../fc-outside2/s.txt fc-docs/leak.txt"))
+    var midServe = ""
+    try {
+        downDir(base, tok, "fc-dest2", "k0")
+        midServe = "NO-REFUSAL"
+    } catch (String e) {
+        midServe = e
+    }
+    var midRefused = midServe.indexOf("RESUME-ERR") >= 0 || midServe.indexOf("channel closed") >= 0
+    var noLeakFile = !File("fc-dest2/fc-docs/leak.txt").exists()
+    // the face must still own the port (observable via ss, never a blocking
+    // connect — the refusal closes the peer's stream, and a blocking dial
+    // would hang the golden; Track C law: observable conditions only)
+    var ssOut = shell.run("sh", listOf("-c", "ss -tln 2>/dev/null | grep ':19421 ' || true")).stdout
+    var faceAlive = ssOut.indexOf(":19421") >= 0
+    println("symlinkMidServeRefused=" + midRefused)
+    println("symlinkMidServeNoBytes=" + noLeakFile)
+    println("faceSurvivesSymlink=" + faceAlive)
+    ok = ok && midRefused && noLeakFile && faceAlive
+    shell.run("sh", listOf("-c", "rm -f fc-docs/leak.txt && rm -rf fc-outside2 fc-dest2"))
+
     // per-child resume: half the middle child pre-exists with its TRUE head
     shell.run("rm", listOf("-rf", "fc-dest"))
     Directory("fc-dest/fc-docs/sub").createDirectories()
