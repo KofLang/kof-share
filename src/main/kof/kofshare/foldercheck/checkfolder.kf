@@ -386,6 +386,24 @@ main() {
     ok = ok && symRefused && cleanWalkStillWorks
     shell.run("sh", listOf("-c", "rm -rf fc-symlink fc-outside"))
 
+    // the ROOT itself as a symlink: the child guard never sees it, so a
+    // symlinked share target walked its TARGET (measured red: entries of the
+    // outside dir were published). Same REG017, checked at dirWalk's door.
+    shell.run("sh", listOf("-c",
+        "rm -rf fc-outroot fc-target && mkdir -p fc-target && echo T > fc-target/t.txt && " +
+        "ln -s ../fc-target fc-outroot"))
+    var rootRefusal = ""
+    try {
+        var eRoot = dirWalk(devId, "fc-outroot")
+        rootRefusal = "NO-REFUSAL entries=" + eRoot.size
+    } catch (String e) {
+        rootRefusal = e
+    }
+    var rootSymRefused = rootRefusal.indexOf("REG017") == 0
+    println("symlinkRootRefused=" + rootSymRefused)
+    ok = ok && rootSymRefused
+    shell.run("sh", listOf("-c", "rm -rf fc-outroot fc-target"))
+
     // manifest tampering dies at the PLANE before insertion
     var wrongHash = "0" + dh.substring(1, 64)
     var badHash = signOffer(sk, "o-tamper", devId, "fc-docs", sorted.size, wrongHash)

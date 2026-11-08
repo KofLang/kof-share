@@ -225,6 +225,18 @@ main() {
     println("humanOutputClean=" + noInternals)
     ok = ok && shareFile && noInternals
 
+    // REG017 on a symlinked FILE as the share target: publishes nothing and
+    // the human sees the name + a Hint, never a stack (same UX law).
+    shell.run("sh", listOf("-c",
+        "rm -rf ux-symtarget && mkdir -p ux-symtarget && echo SECRET > ux-symtarget/s.txt && " +
+        "ln -s ux-symtarget/s.txt ux-link.txt"))
+    var shSym = cliOut(listOf("share", "ux-link.txt", "--server", "127.0.0.1:19430", "--face", "19431"))
+    var symShareRefused = shSym.indexOf("REG017") >= 0
+        && shSym.indexOf("Link (copy and send)") < 0 && shSym.indexOf("at java") < 0
+    println("shareSymlinkRefused=" + symShareRefused)
+    ok = ok && symShareRefused
+    shell.run("sh", listOf("-c", "rm -rf ux-symtarget ux-link.txt"))
+
     // wait for the detached face to bind (observable condition, not sleep)
     var faceReady = false
     var t0 = 0

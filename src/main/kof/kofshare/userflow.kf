@@ -74,6 +74,11 @@ String upPublish(String controlBase, String deviceId, String name, String addres
     if (!File(filePath).exists()) {
         throw "UP-ERR: file not found: " + filePath
     }
+    // REG017: a symlinked FILE publishes its TARGET's bytes — same leak as
+    // the directory case, refused with the same name.
+    if (File(filePath).isSymlink()) {
+        throw "REG017: symlink not allowed in a shared directory: " + filePath
+    }
     var data = File(filePath).readBytes()
     if (data.size == 0) {
         throw "UP-ERR: empty file: " + filePath
@@ -102,6 +107,10 @@ String upPublishSigned(String controlBase, Secret sk, String name, String addres
                        String filePath, String authHeader) {
     if (!File(filePath).exists()) {
         throw "UP-ERR: file not found: " + filePath
+    }
+    // REG017 (same law as upPublish): never publish a link's TARGET bytes.
+    if (File(filePath).isSymlink()) {
+        throw "REG017: symlink not allowed in a shared directory: " + filePath
     }
     var data = File(filePath).readBytes()
     if (data.size == 0) {
@@ -284,6 +293,12 @@ String downAutoWithGrant(String controlBase, String token, ShareGrant g, String 
 // resume, per-file verification (the golden proves mid-child resume).
 
 List<DirEntry> dirWalk(String deviceId, String rootPath) {
+    // REG017 applies to the ROOT too: measured before this guard, sharing a
+    // symlinked directory walked its TARGET (outside the intended tree) and
+    // published those bytes. The child guard never sees the root.
+    if (File(rootPath).isSymlink()) {
+        throw "REG017: symlink not allowed in a shared directory: " + rootPath
+    }
     var out = new List<DirEntry>()
     var rootName = resourceName(rootPath)
     out.add(DirEntry("r-" + crypto.sha256("dirself|" + deviceId + "|" + rootName).substring(0, 16),
