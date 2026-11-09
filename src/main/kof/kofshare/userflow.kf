@@ -544,6 +544,12 @@ String downDir(String controlBase, String token, String destRoot, String key) {
         }
         var rel = dirBaseName(e.logicalPath)
         var full = destRoot + "/" + e.logicalPath
+        // REG018: refuse a child whose path already crosses a symlink under
+        // the chosen root (the textual join cannot see the filesystem).
+        var dref = destPathRefusal(destRoot, e.logicalPath)
+        if (dref.length() > 0) {
+            throw dref
+        }
         var mk = full
         var cut = mk.lastIndexOf("/")
         if (cut > 0) {
@@ -602,6 +608,10 @@ String downDirAutoWithGrant(String controlBase, String token, ShareGrant pg, Str
             var full = dirJoinSafe(destRoot, e.logicalPath)
             if (full.length() == 0) {
                 throw "DOWN-ERR: traversal-shaped logical path: " + e.logicalPath
+            }
+            var dref2 = destPathRefusal(destRoot, e.logicalPath)
+            if (dref2.length() > 0) {
+                throw dref2
             }
             var cut = full.lastIndexOf("/")
             if (cut > 0) {

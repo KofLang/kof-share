@@ -82,6 +82,8 @@ byte-identical to a dead link, consuming zero budget —
 resolves: 20 simultaneous `GET /s` against a `maxUses=1` share yield exactly
 1 metadata answer + 19 `REG038`, and 3/20 for `maxUses=3` (measured live
 against a real plane — no observable check-then-act interleave at the pin).
+Recipient-side symlinks are refused with REG018 (`destPathRefusal` checks every existing segment of every child path against `File.isSymlink()` in BOTH dir write lanes, before any byte is written; landing outside the chosen root is never silent).
+
 The table below lists every refusal code twice:
 once for the machine (diagnostic contract), once with the human `Hint:` the
 user verbs layer on top.
@@ -203,7 +205,7 @@ is "covered by design").
 | 9 | Persistence missing / truncated / corrupt | `DEPLOYMENTCHECK-OK` 8 `failClosedOnCorruption` (GRANT041) + 8b `failClosedEveryRegistry` (AUTH043/SES041/PRES041/REG041/REG009); `PERSIST-OK` REG009 |
 | 10 | Link reuse with maxUses / `--once` | `HTTPCHECK` `grantExhausted`; `RECIPIENTAUTHCHECK-OK` `onceSpentForReal`; `SHARECHECK` `onceUsed` |
 | 11 | Consume maxUses without auth/authorization | `RECIPIENTAUTHCHECK-OK` `strangersBurnNothing` (5 stranger attempts, budget intact) |
-| 12 | Traversal / alt separators / duplicates / symlinks | `FOLDERCHECK-OK` `REG015` legs + `dirJoinSafe` refusal + `symlinkRefused`/`cleanTreeStillWalks` (REG017 at publish) + `symlinkMidServeRefused`/`faceSurvivesSymlink` (REG017 at serve, refused per connection) + `symlinkRootRefused`/`shareSymlinkRefused` (REG017 on the share TARGET: root dir and single file) |
+| 12 | Traversal / alt separators / duplicates / symlinks | `FOLDERCHECK-OK` `symlinkRootRefused` (target) + `symlinkMidServeRefused` (serve-time) + `destSymlinkRefused` (destination capture) + Hint sentences | `FOLDERCHECK-OK` `REG015` legs + `dirJoinSafe` refusal + `symlinkRefused`/`cleanTreeStillWalks` (REG017 at publish) + `symlinkMidServeRefused`/`faceSurvivesSymlink` (REG017 at serve, refused per connection) + `symlinkRootRefused`/`shareSymlinkRefused` (REG017 on the share TARGET: root dir and single file) |
 | 13 | Tampered manifest / wrong digest | `FOLDERCHECK-OK` `REG016` |
 | 14 | File changed after the offer | `USERCHECK` `tamperRefuse` (`DOWN-ERR: content digest mismatch`, no file written) |
 | 15 | Invalid crypto tag | `probe/tamper.kf` → `TAMPER-OK`; `RELAY-OK` (flip → tag dies, zero bytes) |

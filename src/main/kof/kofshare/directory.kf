@@ -190,6 +190,31 @@ String dirJoinSafe(String destRoot, String logicalPath) {
     return destRoot + "/" + logicalPath
 }
 
+// REG018 — the RECIPIENT-side filesystem check the textual join cannot make:
+// a symlink already present under the destination root would capture the
+// write and land the bytes outside the folder the user chose. Measured:
+// received/docs -> outside, then dirJoinSafe's path wrote into 'outside'.
+// Walks only the segments that ALREADY exist (creating a missing dir cannot
+// cross a link) and refuses the whole child when one of them is a link.
+// Returns "" when safe, else the named refusal.
+String destPathRefusal(String destRoot, String logicalPath) {
+    var p = destRoot
+    if (File(destRoot).isSymlink()) {
+        return "REG018: destination crosses a symlink: " + destRoot
+    }
+    var segs = logicalPath.split("/")
+    var k = 0
+    while (k < segs.size) {
+        var seg = segs[k]
+        p = p + "/" + seg
+        if (File(p).isSymlink()) {
+            return "REG018: destination crosses a symlink: " + p
+        }
+        k = k + 1
+    }
+    return ""
+}
+
 String dirBaseName(String logicalPath) {
     var i = logicalPath.lastIndexOf("/")
     if (i < 0) {

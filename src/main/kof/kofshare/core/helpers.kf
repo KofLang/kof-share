@@ -259,6 +259,9 @@ String errText(String raw) {
     if (raw.indexOf("REG017") >= 0) {
         return "That path is a symbolic link. Sharing never follows links (a link can point outside the folder you meant to share) — share the real file or folder instead."
     }
+    if (raw.indexOf("REG018") >= 0) {
+        return "The destination folder contains a symbolic link on the path this file would take, so the bytes would land outside the folder you chose. Remove the link (or pick another destination) and receive again."
+    }
     if (raw.indexOf("AUTH001") >= 0 || raw.indexOf("AUTH") >= 0) {
         return "The control plane needs credentials. Run kofshare server first (it writes the bearer next to the registry), or pass --bearer."
     }

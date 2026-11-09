@@ -319,6 +319,26 @@ main() {
     println("fullTransfer=" + transferOk)
     ok = ok && transferOk
 
+    // REG018 — the RECIPIENT's destination holds a symlink on the path a
+    // child would take: the write must be refused BY NAME and land NOWHERE.
+    // Measured red: 'received/docs -> outside' captured the bytes.
+    shell.run("sh", listOf("-c",
+        "rm -rf fc-dest3 fc-out3 && mkdir -p fc-dest3 fc-out3 && ln -s ../../fc-out3 fc-dest3/fc-docs"))
+    var destRefusal = ""
+    try {
+        downDir(base, tok, "fc-dest3", "k0")
+        destRefusal = "NO-REFUSAL"
+    } catch (String e) {
+        destRefusal = e
+    }
+    var destSymRefused = destRefusal.indexOf("REG018") == 0
+    var destOutsideClean = !File("fc-out3/a.txt").exists()
+        && !File("fc-out3/sub/b.txt").exists()
+    println("destSymlinkRefused=" + destSymRefused)
+    println("destOutsideUntouched=" + destOutsideClean)
+    ok = ok && destSymRefused && destOutsideClean
+    shell.run("sh", listOf("-c", "rm -rf fc-dest3 fc-out3"))
+
     // symlink planted MID-SERVE (after publish): the served refusal must be
     // named, write ZERO bytes, and leave the face ALIVE. Measured red before
     // the guard: one planted link killed the serving process and the client
