@@ -268,6 +268,22 @@ main() {
     // ── leg 4: --once spent ⇒ named + hint, NO stack ──
     var shOnce = cliOut(listOf("share", "ux-src.bin", "--server", "127.0.0.1:19430", "--face", "19431", "--once"))
     var linkOnce = linkOf(shOnce)
+    // ── leg 4b: symlinked DESTINATION is refused BY NAME (does NOT consume
+    // the --once use): a symlink crossing out of the recipient's chosen
+    // folder must never land bytes there, and the budget must stay intact.
+    shell.run("sh", listOf("-c",
+        "rm -rf ux-symdest ux-symoutside && mkdir -p ux-symdest ux-symoutside && " +
+        "ln -s ../ux-symoutside ux-symdest/symdir"))
+    var symAttempt = cliOut(listOf("receive", linkOnce, "ux-symdest/symdir/escaped.bin"))
+    var symDestRefused = symAttempt.indexOf("REG018") >= 0
+        && symAttempt.indexOf("Hint:") >= 0 && symAttempt.indexOf("at java") < 0
+        && !File("ux-symoutside/escaped.bin").exists()
+    if (!symDestRefused) {
+        println("DBG symAttempt=" + cap(symAttempt, 200))
+    }
+    println("symlinkDestRefused=" + symDestRefused)
+    ok = ok && symDestRefused
+    shell.run("sh", listOf("-c", "rm -rf ux-symdest ux-symoutside"))
     var first = cliOut(listOf("receive", linkOnce, "ux-legacy.down"))
     var second = cliOut(listOf("receive", linkOnce, "ux-ghost.bin"))
     var onceOk = first.indexOf("DOWN-AUTO-OK") >= 0 && second.indexOf("REG038") >= 0

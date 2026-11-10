@@ -1196,10 +1196,10 @@ Int runServer(List<String> args) {
         }
         var t0 = 0
         var ready = false
-        while (t0 < 60 && !ready) {
+        while (t0 < 120 && !ready) {
             if (File("kofshare-server.log").exists()) {
                 var txt = File("kofshare-server.log").readText()
-                if (txt != null && txt.indexOf("SERVER-READY") >= 0) {
+                if (txt != null && txt.indexOf("SERVER-READY port=" + port) >= 0 && healthNow("http://127.0.0.1:" + port)) {
                     ready = true
                 }
             }
@@ -1209,7 +1209,7 @@ Int runServer(List<String> args) {
             }
         }
         if (!ready) {
-            println("SERVER-ERR: plane did not become ready in 15s (see kofshare-server.log)")
+            println("SERVER-ERR: plane did not become ready in 30s (see kofshare-server.log)")
             return 1
         }
         println("SERVER-READY port=" + port + " (detached; kofshare stop --server to stop)")
@@ -1667,8 +1667,16 @@ Int receiveProduct(List<String> args) {
         println("SERVER-UNREACHABLE " + base)
         return 1
     }
+    // REG018: validate explicit destination BEFORE /s/<token> so a symlinked
+    // destination cannot burn a `--once` share.
+    if (dest.length() > 0) {
+        var drefPre = destFileRefusal(dest)
+        if (drefPre.length() > 0) {
+            throw drefPre
+        }
+    }
     var grantRaw = http.get(base + "/s/" + token, "Authorization: Bearer " + bearerArg(rest, 1))
-    if (grantRaw.indexOf("{") != 0) {
+    if (grantRaw.indexOf("{") != 0 || grantRaw.indexOf("\"error\"") >= 0) {
         println("The link refused: " + grantRaw)
         var hint = errText(grantRaw)
         if (hint.length() > 0) {

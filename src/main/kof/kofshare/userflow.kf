@@ -169,6 +169,12 @@ String downFetch(String controlBase, String token, String dest, String key) {
 // — it never sees the content). relayHost empty == direct dial.
 String downFetch(String controlBase, String token, String dest, String key,
                  String relayHost, Int relayPort) {
+    // REG018: refuse a destination crossing a symlink BEFORE spending /s
+    // or opening the network stream.
+    var dref = destFileRefusal(dest)
+    if (dref.length() > 0) {
+        throw dref
+    }
     var g = grantDecode(controlBase, token)
     var host = hostOfAddress(g.deviceAddress)
     var port = portOfAddress(g.deviceAddress)
@@ -194,7 +200,7 @@ ShareGrant grantDecode(String controlBase, String token) {
 // call, byte-identical on the wire (Track M).
 ShareGrant grantDecode(String controlBase, String token, String auth) {
     var body = http.get(controlBase + "/s/" + token, auth)
-    if (body.indexOf("{") != 0) {
+    if (body.indexOf("{") != 0 || body.indexOf("\"error\"") >= 0) {
         throw "DOWN-ERR: grant refused: " + body
     }
     return json.decode<ShareGrant>(body)
@@ -204,6 +210,10 @@ ShareGrant grantDecode(String controlBase, String token, String auth) {
 // the offer) — ONE implementation shared by the manual lanes and the
 // automatic Track D runner (transport selection never forks transfer logic).
 Transfer takeAndVerify(Conn c, ShareGrant g, String dest, String key) {
+    var dref = destFileRefusal(dest)
+    if (dref.length() > 0) {
+        throw dref
+    }
     var resume = 0
     if (File(dest).exists()) {
         resume = File(dest).size() as Int
@@ -240,6 +250,10 @@ String downAuto(String controlBase, String token, String dest, String key,
 // law (shareTouch), so every consumer takes the pre-resolved route.
 String downAutoWithGrant(String controlBase, String token, ShareGrant g, String dest, String key,
                 String sessionAuth, String recipientDevice, String relayHost, Int relayPort) {
+    var dref = destFileRefusal(dest)
+    if (dref.length() > 0) {
+        throw dref
+    }
     var host = hostOfAddress(g.deviceAddress)
     var port = portOfAddress(g.deviceAddress)
     var sid = ""

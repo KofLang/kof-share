@@ -154,7 +154,7 @@ Bool healthNow(String base) {
 
 Bool waitHealth(String base) {
     var t0 = 0
-    while (t0 < 60) {
+    while (t0 < 160) {
         if (healthNow(base)) {
             return true
         }

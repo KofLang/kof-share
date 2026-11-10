@@ -199,20 +199,38 @@ String dirJoinSafe(String destRoot, String logicalPath) {
 // Returns "" when safe, else the named refusal.
 String destPathRefusal(String destRoot, String logicalPath) {
     var p = destRoot
-    if (File(destRoot).isSymlink()) {
+    if (destRoot.length() > 0 && File(destRoot).isSymlink()) {
         return "REG018: destination crosses a symlink: " + destRoot
     }
     var segs = logicalPath.split("/")
     var k = 0
     while (k < segs.size) {
         var seg = segs[k]
-        p = p + "/" + seg
-        if (File(p).isSymlink()) {
-            return "REG018: destination crosses a symlink: " + p
+        if (seg.length() > 0) {
+            if (p.length() == 0) {
+                p = seg
+            } else if (p == "/") {
+                p = "/" + seg
+            } else {
+                p = p + "/" + seg
+            }
+            if (File(p).isSymlink()) {
+                return "REG018: destination crosses a symlink: " + p
+            }
         }
         k = k + 1
     }
     return ""
+}
+
+// Single-file destination guard: validates every existing segment of an
+// arbitrary (relative or absolute) destination path against symlinks.
+String destFileRefusal(String dest) {
+    if (dest.indexOf("/") == 0) {
+        // absolute: split without leading slash
+        return destPathRefusal("/", dest.substring(1, dest.length()))
+    }
+    return destPathRefusal("", dest)
 }
 
 String dirBaseName(String logicalPath) {
