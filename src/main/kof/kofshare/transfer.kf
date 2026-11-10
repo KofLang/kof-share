@@ -19,9 +19,17 @@ import kof.security
 // resumeOffset. META frame carries the total size; every payload frame is
 // followed by its HMAC tag. In-order by construction.
 Int serveFile(Conn c, String path, Int resumeOffset, String key) {
+    // REG017: the file may have been SWAPPED for a symlink after the share
+    // was minted (measured: serve published the link's TARGET bytes). Refuse
+    // before reading; the client's HELLO is consumed first so the refusal
+    // rides the same frame order as every other refusal.
+    var first = recvRaw(c, 8)
+    if (File(path).isSymlink()) {
+        c.send(headFrame(0, resumeErrIndex()))
+        return 0 - 4
+    }
     var data = File(path).readBytes()
     var total = data.size
-    var first = recvRaw(c, 8)
     var off = resumeOffset
     if (first.length == 8 && be32(first, 4) == helloIndex()) {
         off = be32(first, 0)

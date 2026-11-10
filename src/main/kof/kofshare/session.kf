@@ -99,6 +99,9 @@ Int serveFileSecure(Conn c, String path, Int resumeOffset, Secret myPriv, String
     var peer = readHello(c)
     var shared = keyExchange.shared(myPriv, secrets.of(peer.get(0)))
     var keys = sessionKeys(shared, saltHex, true)
+    // REG017, sealed lane: a post-share swap to a symlink must not publish
+    // the target (same law as serveFile; the handshake is already done, so
+    // the refusal rides the resume-error head inside serveLoopEncrypted).
     return serveLoopEncrypted(c, path, resumeOffset, keys.get(0), keys.get(1))
 }
 
@@ -120,9 +123,15 @@ List<String> fetchHandshake(Conn c, Secret myPriv) {
 }
 
 Int serveLoopEncrypted(Conn c, String path, Int resumeOffset, String encKey, String macKey) {
+    // REG017 (sealed lane): never publish a link's target after a post-share
+    // swap; the resume HELLO is consumed first, then the named refusal.
+    var first = recvRaw(c, 8)
+    if (File(path).isSymlink()) {
+        c.send(headFrame(0, resumeErrIndex()))
+        return 0 - 4
+    }
     var data = File(path).readBytes()
     var total = data.size
-    var first = recvRaw(c, 8)
     var off = resumeOffset
     if (first.length == 8 && be32(first, 4) == helloIndex()) {
         off = be32(first, 0)

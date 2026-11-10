@@ -264,6 +264,36 @@ main() {
     println("servedSecureTail=1800=" + servedSecure)
     ok = ok && servedSecure
 
+    // ── post-share swap: the served file becomes a SYMLINK ──
+    // Measured red before the guard: the face published the link's TARGET
+    // bytes ('SECRET-TARGET' arrived instead of the shared content).
+    var swSrc = "serve-swap.bin"
+    var swSecret = "serve-swap-secret.bin"
+    File(swSrc).writeBytes(data)
+    File(swSecret).writeText("SECRET-TARGET-MUST-NOT-LEAK")
+    var logD = "serve-swap.log"
+    if (!spawnServe(logD, listOf(swSrc, "" + (portOf() + 3), "--key", "k0"))) {
+        println("SERVECHECK-FAIL: swap server did not come up (port held?)")
+        throw "kofshare: SERVECHECK-FAIL"
+    }
+    File(swSrc).delete()
+    shell.run("sh", listOf("-c", "ln -s " + swSecret + " " + swSrc))
+    var swapRefused = ""
+    try {
+        var cD = net.connect("127.0.0.1", portOf() + 3)
+        fetchFile(cD, "serve-swap.out", 0, "share-serve", "devS", "k0")
+        cD.close()
+    } catch (String e) {
+        swapRefused = e
+    }
+    var swapNoLeak = !File("serve-swap.out").exists()
+    var swapNamed = swapRefused.indexOf("RESUME-ERR") >= 0
+    println("symlinkSwapRefused=" + swapNamed)
+    println("symlinkSwapNoBytes=" + swapNoLeak)
+    ok = ok && swapNamed && swapNoLeak
+    shell.run("sh", listOf("-c", "rm -f serve-swap.bin serve-swap.out"))
+    File(swSecret).delete()
+
     File(src).delete()
     File(dst).delete()
     File(dst2).delete()

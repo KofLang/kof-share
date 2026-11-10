@@ -480,6 +480,12 @@ String serveDirLoop(String rootPath, Int port, String key) {
 // HELLO already consumed by the loop — stream the picked bytes directly
 // (serveFile would wait for a second handshake; v1 files keep that shape).
 Int serveFilePicked(Conn c, String path, Int off, String key) {
+    // REG017: the child may have been swapped for a symlink between the walk
+    // and this read (TOCTOU window); refuse with the head the client knows.
+    if (File(path).isSymlink()) {
+        c.send(headFrame(0, resumeErrIndex()))
+        return 0 - 4
+    }
     var data = File(path).readBytes()
     var total = data.size
     var v = resumeVerify(off, total)
