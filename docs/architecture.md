@@ -183,7 +183,7 @@ src/main/kof/kofshare/
 | Desktop boot | `DESKTOP-BOOT-OK` (21: lifecycle, 0600 token, state, page, stop/recovery) | ✅ |
 | Desktop API (safe) | `DESKTOP-API-OK` (22: host/origin/token boundary, events, raw-socket forged-Host proof) | ✅ |
 | Desktop privileged | `DESKTOP-PRIV-OK` (14: login/shares/transfers/cancel/device, bearer `file:` lane, zero-leak scan) | ✅ |
-| UX | `UXCHECK-OK` (15 legs) | ✅ |
+| UX | `UXCHECK-OK` (16 legs: inclui 3b receive em pasta existente e 4b symlink dest) | ✅ |
 | Full product | `INTEGRATIONCHECK-OK` (22 legs, real processes) | ✅ |
 | Release | `RC-CHECK-OK steps=34` full battery (`rc/runrc.kf`), 2x consecutive clean required | RC gate |
 

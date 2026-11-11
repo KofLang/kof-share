@@ -265,6 +265,22 @@ main() {
     println("receiveDirect=" + recvOk)
     ok = ok && recvOk
 
+    // ── leg 3b: receive single file into an existing FOLDER lands inside
+    // (with grant's filename), preserving the destination directory.
+    shell.run("rm", listOf("-rf", "ux-folderdest"))
+    Directory("ux-folderdest").createDirectories()
+    var recFolder = cliOut(listOf("receive", link, "ux-folderdest/"))
+    var folderLandedOk = recFolder.indexOf("DOWN-AUTO-OK transport=direct") >= 0
+        && File("ux-folderdest/ux-src.bin").exists()
+        && identical(File("ux-folderdest/ux-src.bin").readBytes(), makeData(2600))
+        && File("ux-folderdest").isDirectory()
+    if (!folderLandedOk) {
+        println("DBG recFolder=" + cap(recFolder, 200))
+    }
+    println("receiveIntoFolder=" + folderLandedOk)
+    ok = ok && folderLandedOk
+    shell.run("rm", listOf("-rf", "ux-folderdest"))
+
     // ── leg 4: --once spent ⇒ named + hint, NO stack ──
     var shOnce = cliOut(listOf("share", "ux-src.bin", "--server", "127.0.0.1:19430", "--face", "19431", "--once"))
     var linkOnce = linkOf(shOnce)

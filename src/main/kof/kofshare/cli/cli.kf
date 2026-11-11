@@ -1687,6 +1687,24 @@ Int receiveProduct(List<String> args) {
     var g = json.decode<ShareGrant>(grantRaw)
     if (dest.length() == 0) {
         dest = g.name
+    } else if (g.type != "DIRECTORY") {
+        // A single-file download targeting an existing folder or a trailing
+        // slash lands INSIDE that folder with the grant's own name, mirroring
+        // curl/wget (never overwriting/replacing the directory entry itself).
+        if (File(dest).isDirectory()) {
+            if (dest.indexOf("/") == dest.length() - 1) {
+                dest = dest + g.name
+            } else {
+                dest = dest + "/" + g.name
+            }
+        } else if (dest.indexOf("/") == dest.length() - 1) {
+            Directory(dest.substring(0, dest.length() - 1)).createDirectories()
+            dest = dest + g.name
+        }
+        var drefFinal = destFileRefusal(dest)
+        if (drefFinal.length() > 0) {
+            throw drefFinal
+        }
     }
     // NOTE: this resolve ALREADY spent one use (shareTouch law) — the
     // download paths below take the PRE-RESOLVED grant; resolving /s a
