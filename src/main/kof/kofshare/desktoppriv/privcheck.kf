@@ -10,7 +10,7 @@ package kofshare.desktoppriv
 //   - identity authorization is imposed by the PLANE: a stranger's link
 //     attempt lands FAILED/REG035 with zero bytes on disk
 //   - revoke goes through the plane's owner law
-// DESKTOP-PRIV-OK legs=14. Ports 19455 owned here; 8799 is the daemon's own
+// DESKTOP-PRIV-OK legs=16. Ports 19455 owned here; 8799 is the daemon's own
 // conf contract (desktopcheck owns its lifecycle, this suite boots it fresh).
 
 import kof.crypto
@@ -110,7 +110,8 @@ main() {
         "server-registry.shares.json", "server-registry.grants.json", "server-registry.accounts.json",
         "server-registry.devkeys.json", "server-registry.sessions.json", "server-registry.presence.json",
         "kofshare-server.log", "kofshare-server.pid", "kofshare-face.log", "kofshare-face.pid",
-        "kofshare-cli.config", "dp-src.bin", "dp-get.bin", "dp-carol.bin", "dp-cancel.bin")
+        "kofshare-cli.config", "dp-src.bin", "dp-get.bin", "dp-carol.bin", "dp-cancel.bin",
+        "dp-empty.bin", "dp-dir", "dp-dir-get")
     for (var f in scratch) {
         if (File(f).exists()) {
             if (File(f).isDirectory()) {
@@ -289,6 +290,80 @@ main() {
         && afterRv.indexOf("REG") == 0))
     ok = ok && revAsAlice.indexOf("REVOKED") >= 0 && afterRv.indexOf("REG") == 0
 
+    // ── 15: empty-file share fails fast with named UP-ERR (real PID check +
+    // refusalIn coverage; previously hung 300s polling /proc/1) ──
+    File("dp-empty.bin").writeText("")
+    var emptySh = http.post(deskUrl() + "/api/v1/shares",
+        json.encode(ShareReqP("dp-empty.bin", "bob", "1h", false, true)), hdr)
+    var emptyJid = fieldOfJson(emptySh, "\"job\":\"")
+    var emptyDone = waitJob(hdr, emptyJid, "/api/v1/shares")
+    seen = seen + emptySh + emptyDone
+    var eRowStart = emptyDone.indexOf(emptyJid)
+    var eRow = ""
+    if (eRowStart >= 0) {
+        var eRowEnd = emptyDone.indexOf("}", eRowStart)
+        if (eRowEnd > eRowStart) {
+            eRow = emptyDone.substring(eRowStart, eRowEnd)
+        }
+    }
+    var emptyFast = eRow.indexOf("\"FAILED\"") >= 0 && eRow.indexOf("UP-ERR") >= 0
+    println("emptyShareRefusedFast=" + emptyFast)
+    ok = ok && emptyFast
+
+    // ── 16: directory share + receive through daemon + honest dirDiskBytes ──
+    shell.run("sh", listOf("-c", "rm -rf dp-dir dp-dir-get && mkdir -p dp-dir/sub"))
+    var dData = makeData(150)
+    File("dp-dir/sub/x.bin").writeBytes(dData)
+    var dSh = http.post(deskUrl() + "/api/v1/shares",
+        json.encode(ShareReqP("dp-dir", "bob", "1h", false, true)), hdr)
+    var dJid = fieldOfJson(dSh, "\"job\":\"")
+    var dShareDone = waitJob(hdr, dJid, "/api/v1/shares")
+    seen = seen + dSh + dShareDone
+    var dLink = ""
+    var dRowStart = dShareDone.indexOf(dJid)
+    var dRow = ""
+    if (dRowStart >= 0) {
+        var dRowEnd = dShareDone.indexOf("}", dRowStart)
+        if (dRowEnd > dRowStart) {
+            dRow = dShareDone.substring(dRowStart, dRowEnd)
+        }
+    }
+    var dlcut = dRow.indexOf("http://127.0.0.1:19455/s/")
+    if (dlcut >= 0) {
+        var dtail = dRow.substring(dlcut, dRow.length())
+        var dq = dtail.indexOf("\"")
+        if (dq > 0) {
+            dLink = dtail.substring(0, dq)
+        }
+    }
+    http.post(deskUrl() + "/api/v1/login", json.encode(LoginReqP(bobKey)), hdr)
+    var dTr = http.post(deskUrl() + "/api/v1/transfers",
+        json.encode(TransferReqP(dLink, "dp-dir-get")), hdr)
+    var dTrJid = fieldOfJson(dTr, "\"job\":\"")
+    var dTrDone = waitJob(hdr, dTrJid, "/api/v1/transfers")
+    var dTrRowStart = dTrDone.indexOf(dTrJid)
+    var dTrRow = ""
+    if (dTrRowStart >= 0) {
+        var dTrRowEnd = dTrDone.indexOf("}", dTrRowStart)
+        if (dTrRowEnd > dTrRowStart) {
+            dTrRow = dTrDone.substring(dTrRowStart, dTrRowEnd)
+        }
+    }
+    var dDet = http.get(deskUrl() + "/api/v1/transfers/" + dTrJid, hdr)
+    seen = seen + dTr + dTrDone + dDet
+    var dirBytesOk = false
+    if (File("dp-dir-get/dp-dir/sub/x.bin").exists()) {
+        dirBytesOk = crypto.sha256Bytes(toBytes(File("dp-dir-get/dp-dir/sub/x.bin").readBytes()))
+            == crypto.sha256Bytes(toBytes(dData))
+    }
+    var dirViaDaemon = dRow.indexOf("\"DONE\"") >= 0 && dTrRow.indexOf("\"DONE\"") >= 0
+        && dirBytesOk && dDet.indexOf("\"bytesDone\":150") >= 0
+    if (!dirViaDaemon) {
+        println("DBG dRow=" + dRow + " dTrRow=" + dTrRow + " dDet=" + dDet + " dirBytesOk=" + dirBytesOk)
+    }
+    println("dirViaDaemonAndBytes=" + dirViaDaemon)
+    ok = ok && dirViaDaemon
+
     // ── 12: events exist, are named, and carry NO secret material ──
     var evs = http.get(deskUrl() + "/api/v1/events?since=0", hdr)
     seen = seen + evs
@@ -330,7 +405,7 @@ main() {
     }
 
     if (ok) {
-        println("DESKTOP-PRIV-OK legs=14")
+        println("DESKTOP-PRIV-OK legs=16")
     } else {
         println("DESKTOP-PRIV-FAIL")
         throw "kofshare: DESKTOP-PRIV-FAIL"

@@ -343,6 +343,9 @@ void jobState(String jid, String state, String details) {
     while (i < rows.size) {
         var r = rows.get(i)
         if (r.id == jid) {
+            if (r.state == "CANCELLED" && state != "CANCELLED") {
+                return
+            }
             var keep = details
             if (keep.length() == 0 && (state == "RUNNING" || state == "DONE")) {
                 keep = r.details
@@ -352,6 +355,19 @@ void jobState(String jid, String state, String details) {
         i = i + 1
     }
     jobsWrite(rows)
+}
+
+Bool isJobCancelled(String jid) {
+    var rows = jobsRead()
+    var i = 0
+    while (i < rows.size) {
+        var r = rows.get(i)
+        if (r.id == jid) {
+            return r.state == "CANCELLED"
+        }
+        i = i + 1
+    }
+    return false
 }
 
 String newJobId() {
@@ -431,6 +447,9 @@ void launchJob(String jid, String kind, List<String> verbArgs, String okMarker) 
     recordEvent(kind + "_QUEUED", "{\"job\":\"" + jid + "\"}")
     var pidfile = "kofshare-desktop-job-" + jid + ".pid"
     var logfile = "kofshare-desktop-job-" + jid + ".log"
+    if (File(pidfile).exists()) {
+        File(pidfile).delete()
+    }
     var sp = spawnDetachedEntry(logfile, verbArgs, pidfile, "src/main/kof/kofshare/cli/cli.kf")
     if (sp < 0) {
         jobState(jid, "FAILED", "DESKTOP-WORKER-UNSPAWNABLE")
@@ -443,6 +462,9 @@ void launchJob(String jid, String kind, List<String> verbArgs, String okMarker) 
         var t = 0
         while (t < 600 && finalState.length() == 0) {
             t = t + 1
+            if (isJobCancelled(jid)) {
+                return
+            }
             var log = readOr(logfile)
             if (log.indexOf(okMarker) >= 0) {
                 finalState = "DONE"
@@ -455,7 +477,23 @@ void launchJob(String jid, String kind, List<String> verbArgs, String okMarker) 
                 finalDetails = code
                 break
             }
-            if (!File("/proc/" + sp).exists()) {
+            // Check the REAL worker PID from pidfile (spawnDetachedEntry always
+            // returns 1, which previously polled /proc/1 and hung 300s until
+            // timeout whenever a worker died with an unrecognized exit).
+            var realPid = readOr(pidfile).trim()
+            if (realPid.length() > 0 && !File("/proc/" + realPid).exists()) {
+                var logAfter = readOr(logfile)
+                if (logAfter.indexOf(okMarker) >= 0) {
+                    finalState = "DONE"
+                    finalDetails = shellField(logAfter, okMarker)
+                    break
+                }
+                var codeAfter = refusalIn(logAfter)
+                if (codeAfter.length() > 0) {
+                    finalState = "FAILED"
+                    finalDetails = codeAfter
+                    break
+                }
                 finalState = "FAILED"
                 finalDetails = "DESKTOP-WORKER-DIED"
                 break
@@ -467,9 +505,31 @@ void launchJob(String jid, String kind, List<String> verbArgs, String okMarker) 
             finalState = "FAILED"
             finalDetails = "DESKTOP-JOB-TIMEOUT"
         }
+        if (isJobCancelled(jid)) {
+            return
+        }
         jobState(jid, finalState, finalDetails)
         recordEvent(kind + "_" + finalState, "{\"job\":\"" + jid + "\",\"details\":\"" + finalDetails + "\"}")
     }
+}
+
+// real on-disk byte counter: for a directory transfer, walks files instead of
+// returning the filesystem's directory-inode metadata size (e.g. 40 B).
+Int dirDiskBytes(String path) {
+    if (!File(path).exists() || File(path).isSymlink()) {
+        return 0
+    }
+    if (!File(path).isDirectory()) {
+        return File(path).size() as Int
+    }
+    var sum = 0
+    var names = Directory(path).list()
+    var i = 0
+    while (i < names.size) {
+        sum = sum + dirDiskBytes(path + "/" + names.get(i))
+        i = i + 1
+    }
+    return sum
 }
 
 // the first named refusal inside a worker log (codes, never stack noise).
@@ -480,6 +540,11 @@ String refusalIn(String log) {
     marks.add("AUTH0")
     marks.add("DEV0")
     marks.add("SES")
+    marks.add("UP-ERR")
+    marks.add("SHARE-ERR")
+    marks.add("UF-ERR")
+    marks.add("SERVE-ERR")
+    marks.add("SERVER-UNREACHABLE")
     marks.add("DOWN-ERR")
     marks.add("RECEIVE-ERR")
     marks.add("CONNECTIVITY_FAILED")
@@ -826,10 +891,7 @@ Int daemonServe() {
         while (i < rows.size) {
             var r = rows.get(i)
             if (r.id == param("id") && r.kind == "transfer") {
-                var done = 0
-                if (File(r.details).exists()) {
-                    done = File(r.details).size() as Int
-                }
+                var done = dirDiskBytes(r.details)
                 return "{\"id\":\"" + r.id + "\",\"state\":\"" + r.state
                     + "\",\"dest\":\"" + r.details + "\",\"bytesDone\":" + done + "}"
             }

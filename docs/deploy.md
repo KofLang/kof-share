@@ -115,10 +115,13 @@ por design chamadas que exijam credencial, mas a confidencialidade do transporte
 - NAT traversal real (STUN/ICE) não existe no runtime — a estratégia DIRECT→
   NAT→RELAY mantém a lacuna reservada e nomeada; relay é manual por voto
   (`--relay host:port`), ciphertext-only, provado (`RELAY-OK`).
-- Bind `0.0.0.0` é contrato do runtime (`web.listen(Int)`) — a superfície local
-  privilegiada do desktop vive atrás de token 0600 + Host/Origin policing
-  (decisão §DP Opção A registrada em `docs/desktop/phase0-matrix.md`); a face
-  `listen(host, port)` segue como pedido upstream nomeado.
+- Bind `0.0.0.0` é contrato do runtime no pin (`web.listen(Int)`) — a superfície
+  local privilegiada do desktop vive atrás de token 0600 + Host/Origin policing
+  (decisão §DP Opção A registrada em `docs/desktop/phase0-matrix.md`). A face
+  `app.listen(host, port)` JÁ POUSOU upstream no Kof4j (commit `6553669ae`,
+  issue #1114 / PR #1115 — JVM; Native WEB001); adotá-la exige promoção de pin
+  + bateria completa 2x, decisão que cabe ao dono do produto. Até lá a Opção A
+  permanece o contrato em vigor.
 - Envelope selado X25519 cobre arquivos individuais; para árvores de
   diretórios permanece como lacuna documentada (sem downgrade silencioso).
 
@@ -126,7 +129,7 @@ por design chamadas que exijam credencial, mas a confidencialidade do transporte
 
 ```sh
 # golden de deploy (processos reais, portas próprias 19456):
-java -jar <pin> run src/main/kof/kofshare/deploycheck/checkdeploy.kf   # DEPLOYMENTCHECK-OK legs=10
+java -jar <pin> run src/main/kof/kofshare/deploycheck/checkdeploy.kf   # DEPLOYMENTCHECK-OK legs=11
 # bateria completa (34 steps):
 java -jar <pin> run src/main/kof/kofshare/rc/runrc.kf                  # RC-CHECK-OK steps=34
 ```

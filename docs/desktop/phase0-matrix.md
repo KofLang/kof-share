@@ -78,6 +78,13 @@ state has not confirmed (§4 event law).
   downloads). That authorization is the mantainer's call — recorded, not made
   silently.
   **DECIDED 09/10/2026 (gigaprompt §5 orders the gate closed): OPTION A.**
+  **UPSTREAM STATUS (measured 10/11/2026): `app.listen(host, port)` has LANDED
+  in Kof4j** (commit `6553669ae`, issue #1114 / PR #1115 — JVM+JS faces, test
+  `WebListenHostE2ETest`; `6553669ae` verified an ancestor of Kof4j HEAD).
+  Per the pin law this does NOT auto-promote: adopting B requires a pin
+  candidate carrying the face, a full 2x-clean RC battery on the rebuilt jar,
+  and the maintainer's promotion decision. Until that decision, Option A
+  remains the contract in force.
   Contracts compared, not invented: B needs a face `web.listen(host, port)`
   that does NOT exist at the pin (`KofWeb.java:154` types `listen(Int)` only)
   ⇒ it is a Kof4j change + pin promotion + full re-battery, which the pin law

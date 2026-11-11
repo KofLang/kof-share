@@ -182,7 +182,7 @@ src/main/kof/kofshare/
 | Deployment | `DEPLOYMENTCHECK-OK` (11: dir isolation, publicurl, backup-restore, fail-closed on ALL six registries, body caps) | ✅ |
 | Desktop boot | `DESKTOP-BOOT-OK` (21: lifecycle, 0600 token, state, page, stop/recovery) | ✅ |
 | Desktop API (safe) | `DESKTOP-API-OK` (22: host/origin/token boundary, events, raw-socket forged-Host proof) | ✅ |
-| Desktop privileged | `DESKTOP-PRIV-OK` (14: login/shares/transfers/cancel/device, bearer `file:` lane, zero-leak scan) | ✅ |
+| Desktop privileged | `DESKTOP-PRIV-OK` (16: login/shares/transfers/cancel/device, bearer `file:` lane, zero-leak scan, UP-ERR fast-fail + dir receive honest bytes) | ✅ |
 | UX | `UXCHECK-OK` (16 legs: inclui 3b receive em pasta existente e 4b symlink dest) | ✅ |
 | Full product | `INTEGRATIONCHECK-OK` (22 legs, real processes) | ✅ |
 | Release | `RC-CHECK-OK steps=34` full battery (`rc/runrc.kf`), 2x consecutive clean required | RC gate |
@@ -210,7 +210,7 @@ is "covered by design").
 | 14 | File changed after the offer | `USERCHECK` `tamperRefuse` (`DOWN-ERR: content digest mismatch`, no file written) |
 | 15 | Invalid crypto tag | `probe/tamper.kf` → `TAMPER-OK`; `RELAY-OK` (flip → tag dies, zero bytes) |
 | 16 | Local API from a foreign origin | `DESKTOP-API-OK` `origin-refused` (integration, real socket) + `unit-origin-shape` |
-| 17 | Malicious page driving privileged ops | `DESKTOP-API-OK` `raw-forged-host-refused` (DNS rebinding, raw socket) + `DESKTOP-PRIV-OK` `loginEvilOrigin` |
+| 17 | Malicious page driving privileged ops | `DESKTOP-API-OK` `raw-forged-host-refused` (DNS rebinding, raw socket) + `DESKTOP-PRIV-OK` `loginEvilOrigin` + `emptyShareRefusedFast` (job fails fast, no hang) |
 | 18 | Secrets in logs/errors/URLs/bodies | `BROWSERCHECK-OK` `secretAbsent`; `DESKTOP-PRIV-OK` `noBearerLeak`; `UXCHECK-OK` `humanOutputClean` |
 | 19 | Plane restarted during a session / after revocation | `SESSIONCHECK-OK` `restartSurvives`; `REVOKECHECK-OK` `revocationSurvivesRestart`; `HTTPCYCLE-OK` |
 | 20 | Two users, same resource, distinct policies | `HTTPGRANT-OK` `policiesCoexist` (identity + possession live over one offer) |
