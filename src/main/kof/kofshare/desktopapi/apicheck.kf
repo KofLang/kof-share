@@ -125,25 +125,27 @@ main(args: List<String>) {
     var tok = readOr("kofshare-desktop.token")
     step("token-present", tok.length() >= 8, fails)
 
-    // ---- AUTH MATRIX ----
+    // ---- AUTH MATRIX (bodies are the RAW refusal text — measured live:
+    // curl with no token answers exactly "DESKTOP-LOCAL-AUTH", so the
+    // strict form is == 0, never a loose substring) ----
     var hdr = "X-Kof-Token: " + tok
 
     // missing token (no header)
     var m1 = http.get(deskUrl() + "/api/v1/health")
-    step("missing-token-refused", m1.indexOf("DESKTOP-LOCAL-AUTH") >= 0, fails)
+    step("missing-token-refused", m1.indexOf("DESKTOP-LOCAL-AUTH") == 0, fails)
 
     // invalid token
     var m2 = http.get(deskUrl() + "/api/v1/health", "X-Kof-Token: nope")
-    step("invalid-token-refused", m2.indexOf("DESKTOP-LOCAL-AUTH") >= 0, fails)
+    step("invalid-token-refused", m2.indexOf("DESKTOP-LOCAL-AUTH") == 0, fails)
 
     // valid token
     var m3 = http.get(deskUrl() + "/api/v1/health", hdr)
-    step("valid-token-allowed", m3.indexOf("HEALTH-OK") >= 0, fails)
+    step("valid-token-allowed", m3.indexOf("HEALTH-OK") == 0, fails)
 
     // foreign Origin (real HTTP through Java HttpClient sends the Origin
     // header we set explicitly — the web runtime lowercases and delivers)
     var m4 = http.get(deskUrl() + "/api/v1/state", "Origin: http://evil.example\n" + hdr)
-    step("origin-refused", m4.indexOf("DESKTOP-LOCAL-ORIGIN") >= 0, fails)
+    step("origin-refused", m4.indexOf("DESKTOP-LOCAL-ORIGIN") == 0, fails)
 
     // loopback Origin accepted
     var m5 = http.get(deskUrl() + "/api/v1/state",
@@ -156,7 +158,7 @@ main(args: List<String>) {
     // ---- EVENT RING BUFFER ----
     var ev = http.get(deskUrl() + "/api/v1/events?since=0", hdr)
     step("events-deny-no-token",
-        http.get(deskUrl() + "/api/v1/events").indexOf("DESKTOP-LOCAL-AUTH") >= 0, fails)
+        http.get(deskUrl() + "/api/v1/events").indexOf("DESKTOP-LOCAL-AUTH") == 0, fails)
     step("events-array", ev.indexOf("[") == 0, fails)
     step("events-have-boot-state", ev.indexOf("DAEMON_STATE") >= 0
         || ev.indexOf("PLANE_PRESENCE") >= 0, fails)
