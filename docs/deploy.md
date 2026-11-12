@@ -36,6 +36,28 @@ src/main/kof/kofshare/cli/cli.kf server --start` (detached + readiness por
 observável, marker `SERVER-READY`). Parar: verb `stop` (varre apenas as portas
 possuídas pelos pidfiles desta instalação).
 
+### 2.1 Corrida conhecida do face de compartilhamento (documentada, não fingida)
+
+Medido em 2026-11-12: o comando `share <arquivo> --face <porta>` imprime o
+link **antes** de o processo destacado do face (`serve`/`serve-dir`) bindar a
+porta — a janela medida foi de ~17 ms com a máquina ociosa e de vários
+segundos sob carga. O `receive` do destinatário não tem retry: se o primeiro
+dial acontecer dentro dessa janela, a transferência falha com
+`CONNECTIVITY_FAILED: direct=dead relay=absent` (o link e o share
+permanecem válidos — é a conexão que falhou).
+
+**Mitigação operacional (até o fix de readiness entrar):** o destinatário
+pode simplesmente repetir o `receive` — o link continua válido e o face
+estará de pé. O `share` do mesmo arquivo também refaz o face na mesma porta.
+
+**Estado:** o fix (esperar `SERVE-LISTENING <porta>` no log do face **e**
+socket aceitando antes de imprimir o link, mesma disciplina do
+`server --start`) foi escrito e testado em ocioso (`CHECK-OK`), mas **não
+foi validado sob carga** — o ambiente de execução da sessão de 2026-11-12
+matou os processos longos antes de a bateria completar, então ele foi
+**revertido por prudência** e a árvore voltou ao último estado 2x-verde.
+A correção é pequena e a causa está medida; falta apenas a validação.
+
 ## 3. Bootstrap administrativo
 
 No primeiro boot o plano cria a conta `admin` (label `owner`) e grava o bearer
