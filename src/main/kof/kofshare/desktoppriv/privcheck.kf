@@ -10,7 +10,7 @@ package kofshare.desktoppriv
 //   - identity authorization is imposed by the PLANE: a stranger's link
 //     attempt lands FAILED/REG035 with zero bytes on disk
 //   - revoke goes through the plane's owner law
-// DESKTOP-PRIV-OK legs=16. Ports 19455 owned here; 8799 is the daemon's own
+// DESKTOP-PRIV-OK legs=17. Ports 19455 owned here; 8799 is the daemon's own
 // conf contract (desktopcheck owns its lifecycle, this suite boots it fresh).
 
 import kof.crypto
@@ -364,6 +364,30 @@ main() {
     println("dirViaDaemonAndBytes=" + dirViaDaemon)
     ok = ok && dirViaDaemon
 
+    // ── 11b: HOSTILE INPUTS on the privileged routes answer their NAMED
+    // refusal (no hang, no parse crash, no silent pass): nonexistent path,
+    // traversal-shaped recipient, injection-shaped ttl, absolute dest and
+    // non-kofshare link. Alice is logged in (leg 16 left BOB; the daemon
+    // accepts one credential per login).
+    http.post(deskUrl() + "/api/v1/login", json.encode(LoginReqP(aliceKey)), hdr)
+    var hPath = http.post(deskUrl() + "/api/v1/shares",
+        json.encode(ShareReqP("/no/such/file", "bob", "1h", false, true)), hdr)
+    var hTo = http.post(deskUrl() + "/api/v1/shares",
+        json.encode(ShareReqP("dp-src.bin", "../etc/passwd", "1h", false, true)), hdr)
+    var hTtl = http.post(deskUrl() + "/api/v1/shares",
+        json.encode(ShareReqP("dp-src.bin", "bob", "injection;rm", false, true)), hdr)
+    var hDest = http.post(deskUrl() + "/api/v1/transfers",
+        json.encode(TransferReqP(link, "/etc")), hdr)
+    var hLink = http.post(deskUrl() + "/api/v1/transfers",
+        json.encode(TransferReqP("http://evil.example/x", "dp-x2.bin")), hdr)
+    var hostileOk = hPath.indexOf("PATH-NOT-FOUND") == 0
+        && hTo.indexOf("DESKTOP-BAD-REQUEST: malformed recipient") == 0
+        && hTtl.indexOf("DESKTOP-BAD-REQUEST: malformed ttl") == 0
+        && hDest.indexOf("DEST-INVALID") == 0
+        && hLink.indexOf("DESKTOP-BAD-REQUEST: not a kofshare link") == 0
+    println("hostileInputsRefused=" + hostileOk)
+    ok = ok && hostileOk
+
     // ── 12: events exist, are named, and carry NO secret material ──
     var evs = http.get(deskUrl() + "/api/v1/events?since=0", hdr)
     seen = seen + evs
@@ -405,7 +429,7 @@ main() {
     }
 
     if (ok) {
-        println("DESKTOP-PRIV-OK legs=16")
+        println("DESKTOP-PRIV-OK legs=17")
     } else {
         println("DESKTOP-PRIV-FAIL")
         throw "kofshare: DESKTOP-PRIV-FAIL"
