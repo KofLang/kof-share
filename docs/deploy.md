@@ -50,13 +50,16 @@ permanecem válidos — é a conexão que falhou).
 pode simplesmente repetir o `receive` — o link continua válido e o face
 estará de pé. O `share` do mesmo arquivo também refaz o face na mesma porta.
 
-**Estado:** o fix (esperar `SERVE-LISTENING <porta>` no log do face **e**
-socket aceitando antes de imprimir o link, mesma disciplina do
-`server --start`) foi escrito e testado em ocioso (`CHECK-OK`), mas **não
-foi validado sob carga** — o ambiente de execução da sessão de 2026-11-12
-matou os processos longos antes de a bateria completar, então ele foi
-**revertido por prudência** e a árvore voltou ao último estado 2x-verde.
-A correção é pequena e a causa está medida; falta apenas a validação.
+**Estado:** o fix da corrida de bind (esperar `SERVE-LISTENING <porta>` no
+log do face antes de imprimir o link) foi pousado e depois **revertido**
+(revert `17288b6` de `8907148`): a bateria com o fix na árvore (rc-run42)
+passou, mas a seguinte (rc-run43) falhou de novo na mesma perna
+(`CONNECTIVITY_FAILED direct=dead`) — o bind não é a (única) causa. O
+privcheck isolado passa com e sem o fix (`DESKTOP-PRIV-OK legs=17`), o que
+classifica a falha como **corrida de ciclo de vida do face no lane do
+daemon** (o face é filho do worker do job de share e pode morrer quando o
+worker termina) — investigação aberta, não uma regressão do fix. A mitigação
+operacional acima (repetir o `receive`) continua valendo.
 
 ## 3. Bootstrap administrativo
 
