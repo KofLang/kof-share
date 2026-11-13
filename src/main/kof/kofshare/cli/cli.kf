@@ -1562,6 +1562,23 @@ Int shareProduct(List<String> args) {
     faceArgs.add("--server")
     faceArgs.add(host + ":" + port)
     var sp = spawnDetachedCli("kofshare-face.log", faceArgs, "kofshare-face.pid")
+    // READINESS (measured: the link was printed while the detached face had
+    // NOT bound its port — ~17 ms in the idle case, seconds under load; the
+    // recipient's first dial then answers CONNECTIVITY_FAILED direct=dead
+    // because downAuto does not retry). The face's own SERVE-LISTENING
+    // marker is printed right after net.listen() returns, so waiting for it
+    // IS waiting for the bind. NO socket probe here: the face speaks a raw
+    // frame protocol (not HTTP) and an empty connect+close kills it with
+    // 'channel closed mid-frame' (measured red 2026-11-13).
+    var fr = 0
+    while (fr < 120) {
+        var flog = "" + File("kofshare-face.log").readText()
+        if (flog.indexOf("SERVE-LISTENING " + facePort) >= 0) {
+            break
+        }
+        time.sleep(250)
+        fr = fr + 1
+    }
     if (!raw) {
         println("")
         println("Link (copy and send):")
