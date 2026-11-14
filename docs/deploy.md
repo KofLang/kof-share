@@ -50,16 +50,19 @@ permanecem válidos — é a conexão que falhou).
 pode simplesmente repetir o `receive` — o link continua válido e o face
 estará de pé. O `share` do mesmo arquivo também refaz o face na mesma porta.
 
-**Estado:** o fix da corrida de bind (esperar `SERVE-LISTENING <porta>` no
-log do face antes de imprimir o link) foi pousado e depois **revertido**
-(revert `17288b6` de `8907148`): a bateria com o fix na árvore (rc-run42)
-passou, mas a seguinte (rc-run43) falhou de novo na mesma perna
-(`CONNECTIVITY_FAILED direct=dead`) — o bind não é a (única) causa. O
-privcheck isolado passa com e sem o fix (`DESKTOP-PRIV-OK legs=17`), o que
-classifica a falha como **corrida de ciclo de vida do face no lane do
-daemon** (o face é filho do worker do job de share e pode morrer quando o
-worker termina) — investigação aberta, não uma regressão do fix. A mitigação
-operacional acima (repetir o `receive`) continua valendo.
+**Estado (atualizado 2026-11-13):** o fix da corrida de bind foi pousado e
+**revertido** (`17288b6` de `8907148`) porque a evidência o refutou como
+causa: rc-run42 passou COM o fix, rc-run43 falhou COM o fix, e
+rc-run44+rc-run45 passaram 2x SEM o fix — a falha da leg 16 é
+**intermitente e independente do fix**. Investigação posterior (mesma
+data) com o caminho completo via daemon em processo real — share de
+arquivo para `bob2` → job DONE → receive como `bob2` → transfer DONE →
+bytes idênticos — **não reproduziu a falha em 5+ tentativas**; o daemon
+também sobreviveu a 30 conexões sem handshake consecutivas. A morte do
+daemon observada por vigilância de 0,2 s permanece sem explicação
+(suspeita: pressão de memória da máquina sob carga da bateria). A
+mitigação operacional (repetir o `receive`) continua valendo, e a
+bateria está 2x verde na árvore atual.
 
 ## 3. Bootstrap administrativo
 
