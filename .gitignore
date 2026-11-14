@@ -38,7 +38,12 @@ kofshare-desktop.conf
 kofshare-desktop.token
 kofshare-desktop.pid
 kofshare-desktop.events
+kofshare-desktop.jobs
+kofshare-desktop.credential
 kofshare-desktop*.log
 kofshare-plane-*.log
 kofshare-plane-*.pid
 kofshare-desktop-boot.log
+# quasi-atomic temp files (desktop jobs/events tables) — never commit
+kofshare-desktop.jobs.tmp
+kofshare-desktop.events.tmp

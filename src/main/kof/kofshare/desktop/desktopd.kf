@@ -224,7 +224,7 @@ void recordEvent(String type, String payload) {
         }
         i = i + 1
     }
-    File(dEventsFile()).writeText(keep + line)
+    atomicWriteText(dEventsFile(), keep + line)
 }
 
 // events after seq N, formatted as JSON array of {seq,type,ts,payload}
@@ -317,6 +317,23 @@ String dJobsFile() {
     return "kofshare-desktop.jobs"
 }
 
+// Quasi-atomic write (temp + rename), same discipline as controlSaveList on
+// the plane: a daemon killed mid-write (the intermittent death under load)
+// must never leave a truncated jobs/events table — a corrupt jobs file used
+// to crash every following route through json.decode in jobsRead.
+Bool atomicWriteText(String path, String text) {
+    var tmp = path + ".tmp"
+    var f = File(tmp)
+    if (!f.writeText(text)) {
+        return false
+    }
+    var old = File(path)
+    if (old.exists()) {
+        old.delete()
+    }
+    return f.moveTo(path)
+}
+
 List<JobRow> jobsRead() {
     var out = new List<JobRow>()
     var t = readOr(dJobsFile())
@@ -328,7 +345,7 @@ List<JobRow> jobsRead() {
 }
 
 void jobsWrite(List<JobRow> rows) {
-    File(dJobsFile()).writeText(json.encode(rows))
+    atomicWriteText(dJobsFile(), json.encode(rows))
 }
 
 // state-only transition: keeps the row's details (a transfer's dest is its
