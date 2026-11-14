@@ -198,7 +198,24 @@ Int readEventsSeq() {
         if (ln.length() > 0) {
             var bar = ln.indexOf("|")
             if (bar > 0) {
-                return math.parseInt(ln.substring(0, bar))
+                // Corrupt-history guard: a hand-edited or pre-atomic-write
+                // events file with a non-numeric prefix must not take down
+                // every route that records an event. Only digits accepted;
+                // anything else resets the sequence safely back to 0.
+                var head = ln.substring(0, bar)
+                var digits = true
+                var j = 0
+                while (j < head.length() && digits) {
+                    var ch = head.charAt(j)
+                    if (ch < 48 || ch > 57) {
+                        digits = false
+                    }
+                    j = j + 1
+                }
+                if (digits && head.length() > 0) {
+                    return math.parseInt(head)
+                }
+                return 0
             }
         }
         i = i - 1
