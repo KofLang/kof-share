@@ -965,10 +965,20 @@ Int runServe(List<String> args) {
             return 1
         }
         path = bp
-        port = math.parseInt(rest.get(2))
+        var pr2 = safePort(rest.get(2))
+        if (pr2 == 0 - 1) {
+            println("SERVE-ERR: port must be a number from 1 to 65535 (got \"" + rest.get(2) + "\")")
+            return 1
+        }
+        port = pr2
         i = 3
     } else {
-        port = math.parseInt(rest.get(1))
+        var pr1 = safePort(rest.get(1))
+        if (pr1 == 0 - 1) {
+            println("SERVE-ERR: port must be a number from 1 to 65535 (got \"" + rest.get(1) + "\")")
+            return 1
+        }
+        port = pr1
     }
     while (i < rest.size) {
         var a = argAt(rest, i)
@@ -1068,7 +1078,12 @@ Int runFetch(List<String> args) {
         return 1
     }
     var host = argAt(rest, 0)
-    var port = math.parseInt(argAt(rest, 1))
+    var portStr = argAt(rest, 1)
+    var port = safePort(portStr)
+    if (port == 0 - 1) {
+        println("FETCH-ERR: port must be a number from 1 to 65535 (got \"" + portStr + "\")")
+        return 1
+    }
     var dest = argAt(rest, 2)
     var resume = 0
     var key = defaultKey()
@@ -1145,9 +1160,14 @@ Int runRelay(List<String> args) {
         println("RELAY-ERR: usage: relay <port> <peerHost> <peerPort> [--tamper]")
         return 1
     }
-    var port = math.parseInt(argAt(rest, 0))
+    var relayPortStr = argAt(rest, 2)
+    var port = safePort(argAt(rest, 0))
     var peerHost = argAt(rest, 1)
-    var peerPort = math.parseInt(argAt(rest, 2))
+    var peerPort = safePort(relayPortStr)
+    if (port == 0 - 1 || peerPort == 0 - 1) {
+        println("RELAY-ERR: port and peerPort must be numbers from 1 to 65535 (got \"" + argAt(rest, 0) + "\", \"" + relayPortStr + "\")")
+        return 1
+    }
     var tamper = argAt(rest, 3) == "--tamper"
     println("RELAY-READY port=" + port + " peer=" + peerHost + ":" + peerPort + " tamper=" + tamper)
     if (tamper) {
@@ -1178,7 +1198,12 @@ Int runServer(List<String> args) {
                 detached = true
                 i = i + 1
             } else {
-                port = math.parseInt(a)
+                var parsedSrv = safePort(a)
+                if (parsedSrv == 0 - 1) {
+                    println("SERVER-ERR: port must be a number from 1 to 65535 (got \"" + a + "\")")
+                    return 1
+                }
+                port = parsedSrv
                 i = i + 1
             }
         }

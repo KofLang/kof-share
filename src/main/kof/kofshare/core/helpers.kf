@@ -301,6 +301,37 @@ Long parseTtlMs(String v) {
     return math.parseLong(digits) * mult
 }
 
+// Port parse guard: the raw JVM backend throws NumberFormatException on
+// non-numeric input (KOF-SAFE use requires a digits check BEFORE calling
+// math.parseInt). Returns the parsed port or -1 when the string is not a
+// valid decimal port (1–65535). Every caller prints a named human error
+// instead of a Java stack trace (the UX law of UXCHECK-OK).
+Int safePort(String s) {
+    if (!isDigitsStr(s)) {
+        return 0 - 1
+    }
+    var p = math.parseInt(s)
+    if (p < 1 || p > 65535) {
+        return 0 - 1
+    }
+    return p
+}
+
+Bool isDigitsStr(String s) {
+    if (s.length() == 0) {
+        return false
+    }
+    var i = 0
+    while (i < s.length()) {
+        var c = s.charAt(i)
+        if (c < 48 || c > 57) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
 // Field extraction from the machine lane's key:value lines (--raw precedent;
 // the desktop API's events reuse the same shapes, §3 discovery).
 String fieldOf(String msg, String key) {
