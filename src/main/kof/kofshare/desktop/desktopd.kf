@@ -259,17 +259,34 @@ String eventsJsonSince(Int since) {
                 var p2 = ln.indexOf("|", p1 + 1)
                 var p3 = ln.indexOf("|", p2 + 1)
                 if (p1 > 0 && p2 > p1 && p3 > p2) {
-                    var s = math.parseInt(ln.substring(0, p1))
-                    var ty = ln.substring(p1 + 1, p2)
-                    var ts = ln.substring(p2 + 1, p3)
-                    var pl = ln.substring(p3 + 1, ln.length())
-                    if (s > since) {
-                        if (!first) {
-                            out = out + ","
+                    // Same lenient law as readEventsSeq: a corrupted seq
+                    // (non-numeric prefix, e.g. from a truncated legacy
+                    // write) SKIPS the line instead of throwing — one bad
+                    // history line must never break the whole /api/v1/events
+                    // route (same reason eventsJsonSince guards p1/p2/p3).
+                    var head = ln.substring(0, p1)
+                    var digits = true
+                    var j = 0
+                    while (j < head.length() && digits) {
+                        var ch = head.charAt(j)
+                        if (ch < 48 || ch > 57) {
+                            digits = false
                         }
-                        out = out + "{\"seq\":" + s + ",\"type\":\"" + ty
-                            + "\",\"ts\":" + ts + ",\"payload\":" + pl + "}"
-                        first = false
+                        j = j + 1
+                    }
+                    if (digits) {
+                        var s = math.parseInt(head)
+                        var ty = ln.substring(p1 + 1, p2)
+                        var ts = ln.substring(p2 + 1, p3)
+                        var pl = ln.substring(p3 + 1, ln.length())
+                        if (s > since) {
+                            if (!first) {
+                                out = out + ","
+                            }
+                            out = out + "{\"seq\":" + s + ",\"type\":\"" + ty
+                                + "\",\"ts\":" + ts + ",\"payload\":" + pl + "}"
+                            first = false
+                        }
                     }
                 }
             }
