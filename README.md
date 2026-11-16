@@ -2,7 +2,9 @@
 
 Direct, digest-verified file & directory sharing for humans. **v2 = RELEASE**
 (cut 06/10; compiler pin `f2629e32d`, jar sha256 `0b1893b4…`; the full
-battery `RC-CHECK-OK steps=23` green on the cut tree). The wire never packs a tree, never fakes a transport, and never
+battery `RC-CHECK-OK steps=23` green on the cut tree; the battery has grown
+since — current gate `RC-CHECK-OK steps=34`, 2x-consecutive green, see
+Tests below). The wire never packs a tree, never fakes a transport, and never
 sees the recipient's disk layout. The control plane coordinates and carries
 zero file bytes; data flows device→device (DIRECT) or through a
 ciphertext-only relay.

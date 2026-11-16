@@ -181,3 +181,9 @@ evidence).
 post-cleanup; full `runrc` battery re-running with clean state — result
 recorded in STATUS.md the moment it lands (`RC-CHECK-OK steps=23` = the
 release gate; anything else = this branch does not merge as-is).
+
+> Addendum 16/11 (FASE 1 record above is HISTORY — the §23 gate was correct
+> at that commit): the release battery has grown with the product and the
+> current gate is `RC-CHECK-OK steps=34`, 2x-consecutive green on a clean
+> tree — proof lines accumulate in `STATUS.md` (`proof` field). Nothing
+> above is rewritten; the rows keep their original evidence.
