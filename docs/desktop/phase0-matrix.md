@@ -40,6 +40,9 @@ Delivered decision-free hardening + read-only events on the already-shipped
 F1 boundary. New golden `desktopapi/apicheck.kf` → **DESKTOP-API-OK legs=22**
 (RED-before-GREEN demonstrated: disabling the host/origin gate flips the
 `origin-refused` + `raw-forged-host-refused` legs to FAIL; restore → PASS).
+Addendum 16/11: legs=24 — two tolerance legs lock the corrupt-events law
+(planted junk + non-numeric seq in the events file are SKIPPED; the /events
+route answers and the daemon stays healthy).
 
 | Added | Class | Proof (leg) |
 |---|---|---|
