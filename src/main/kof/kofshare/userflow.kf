@@ -439,7 +439,11 @@ ShareGrant grantDecodeChild(String controlBase, String token, Int child) {
 // keeps serving.
 String serveDirLoop(String rootPath, Int port, String key) {
     var l = net.listen(port)
-    println("SERVE-LISTENING port=" + port + " dir=" + resourceName(rootPath))
+    // ONE readiness contract for both faces (file + dir): SERVE-LISTENING
+    // <port> [trailer]. The dir face previously printed "port=NNNN dir=…",
+    // which no readiness waiter could share with the file face — and the
+    // share verb's face-readiness wait needs ONE format to wait on.
+    println("SERVE-LISTENING " + port + " dir=" + resourceName(rootPath))
     var served = 0
     var guard = 0
     while (guard < 64) {

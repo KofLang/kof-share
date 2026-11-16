@@ -10,7 +10,7 @@ package kofshare.desktoppriv
 //   - identity authorization is imposed by the PLANE: a stranger's link
 //     attempt lands FAILED/REG035 with zero bytes on disk
 //   - revoke goes through the plane's owner law
-// DESKTOP-PRIV-OK legs=17. Ports 19455 owned here; 8799 is the daemon's own
+// DESKTOP-PRIV-OK legs=18. Ports 19455 owned here; 8799 is the daemon's own
 // conf contract (desktopcheck owns its lifecycle, this suite boots it fresh).
 
 import kof.crypto
@@ -409,6 +409,27 @@ main() {
         && postLo.indexOf("DESKTOP-NO-CREDENTIAL") >= 0))
     ok = ok && lo.indexOf("LOGOUT-OK") >= 0 && postLo.indexOf("DESKTOP-NO-CREDENTIAL") >= 0
 
+    // ── 15: corrupt/weak token file REGENERATES on boot (fail-closed):
+    // a 2-char token file must never boot the daemon with that weak secret
+    // (measured red before ensureDesktopToken existed — page served with
+    // 'ab'). The daemon is restarted here so ensureDesktopToken re-evaluates
+    // the file; the regenerated 32-hex token must authenticate and 'ab'
+    // must be refused on both /page and /api/v1/state.
+    deskOut(listOf("--stop"))
+    cliOut(listOf("stop"))
+    shell.run("sh", listOf("-c", "printf 'ab' > kofshare-desktop.token"))
+    deskOut(listOf("--start"))
+    var tokAfter = shell.run("sh", listOf("-c", "head -c 40 kofshare-desktop.token")).stdout.trim()
+    var regenerated = tokAfter.length() == 32
+    var weakRefused = http.post(deskUrl() + "/api/v1/login", "{\"bearer\":\"x\"}",
+        "X-Kof-Token: ab").indexOf("DESKTOP-LOCAL-AUTH") == 0
+    var newTokServes = http.get(deskUrl() + "/api/v1/health",
+        "X-Kof-Token: " + tokAfter).indexOf("HEALTH-OK") == 0
+    println("weakTokenRegenerated=" + regenerated)
+    println("weakTokenRefused=" + weakRefused)
+    println("newTokenServes=" + newTokServes)
+    ok = ok && regenerated && weakRefused && newTokServes
+
     deskOut(listOf("--stop"))
     cliOut(listOf("stop"))
     killPortNow(19455)
@@ -429,7 +450,7 @@ main() {
     }
 
     if (ok) {
-        println("DESKTOP-PRIV-OK legs=17")
+        println("DESKTOP-PRIV-OK legs=18")
     } else {
         println("DESKTOP-PRIV-FAIL")
         throw "kofshare: DESKTOP-PRIV-FAIL"

@@ -1560,10 +1560,6 @@ Int shareProduct(List<String> args) {
         return 1
     }
     var token = resp.split(" ")[2]
-    if (raw) {
-        println(resp)
-        println("SHARE-LINK " + linkBase + "/s/" + token)
-    }
     // ONE active offer per device: replace the previous face BEFORE binding
     // (share twice, serve the second — the port must not EADDRINUSE-fail
     // silently in nohup).
@@ -1587,6 +1583,31 @@ Int shareProduct(List<String> args) {
     faceArgs.add("--server")
     faceArgs.add(host + ":" + port)
     var sp = spawnDetachedCli("kofshare-face.log", faceArgs, "kofshare-face.pid")
+    // READINESS BEFORE THE MARKER: SHARE-LINK must mean the offer is
+    // DIALABLE, not merely minted. Measured red: the link was printed while
+    // the detached face had NOT bound its port (~17 ms idle, seconds under
+    // load) and downAuto does not retry — the recipient's first dial inside
+    // that window answered CONNECTIVITY_FAILED direct=dead (the daemon's
+    // job lane reads SHARE-LINK as job DONE and starts the transfer at
+    // once, which is why the battery's desktop leg raced here). The wait is
+    // the face's own SERVE-LISTENING <port> marker, printed right after
+    // net.listen() returns — ONE format now for the file face and the dir
+    // face. NO socket probe: the face speaks raw frames, not HTTP — an
+    // empty connect+close makes it die with 'channel closed mid-frame'
+    // (measured red 2026-11-13).
+    var fr = 0
+    while (fr < 120) {
+        var flog = "" + File("kofshare-face.log").readText()
+        if (flog.indexOf("SERVE-LISTENING " + facePort) >= 0) {
+            break
+        }
+        time.sleep(250)
+        fr = fr + 1
+    }
+    if (raw) {
+        println(resp)
+        println("SHARE-LINK " + linkBase + "/s/" + token)
+    }
     if (!raw) {
         println("")
         println("Link (copy and send):")

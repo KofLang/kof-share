@@ -337,8 +337,8 @@ main() {
         var f = File("kofshare-face.log")
         if (f.exists()) {
             var txt2 = f.readText()
-            // dir face prints `SERVE-LISTENING port=NNNN dir=…` (Track G),
-            // file face prints `SERVE-LISTENING NNNN` (A5) — accept both.
+            // unified face readiness (file + dir faces share ONE format:
+            // `SERVE-LISTENING <port> [trailer]`) — port match is the gate.
             faceReady2 = txt2 != null && txt2.indexOf("SERVE-LISTENING") >= 0
                 && txt2.indexOf("19431") >= 0
         }

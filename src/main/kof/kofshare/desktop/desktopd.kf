@@ -112,6 +112,33 @@ void writeDesktopToken() {
     shell.run("chmod", listOf("600", dTokenFile()))
 }
 
+// Fail-closed on a corrupt/weak token file: `randomHex(16)` emits 32 hex
+// chars, so anything shorter or non-hex is NOT a token this daemon minted
+// (measured red: a 2-char corrupted file booted the daemon and served the
+// page with that 2-char secret — brute-forceable). Regenerate on boot.
+Bool desktopTokenHealthy() {
+    var t = desktopToken()
+    if (t.length() != 32) {
+        return false
+    }
+    var i = 0
+    while (i < t.length()) {
+        var c = t.charAt(i)
+        var okHex = (c >= 48 && c <= 57) || (c >= 97 && c <= 102)
+        if (!okHex) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+void ensureDesktopToken() {
+    if (!File(dTokenFile()).exists() || !desktopTokenHealthy()) {
+        writeDesktopToken()
+    }
+}
+
 // request token = header x-kof-token (page JS sends it) — "" when absent.
 Bool tokenOk() {
     return headerText(header("x-kof-token")) == desktopToken() && desktopToken().length() > 0
@@ -695,9 +722,7 @@ record ShareReqD(String path, String to, String ttl, Bool once, Bool readOnly)
 record TransferReqD(String link, String dest)
 
 Int daemonServe() {
-    if (File(dTokenFile()).exists() == false) {
-        writeDesktopToken()
-    }
+    ensureDesktopToken()
     var app = web.app()
     app.get("/api/v1/health") {
         var g = boundaryOk()

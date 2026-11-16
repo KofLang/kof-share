@@ -329,7 +329,8 @@ main() {
     var shDir = cliOut(listOf("share", "ic-tree", "--server", "127.0.0.1:19440", "--face", "19442"))
     var dlink = linkOf(shDir)
     var dirShareOk = shDir.indexOf("Files: 3") >= 0 && dlink.length() > 40
-    var face2 = waitLog("kofshare-face.log", "SERVE-LISTENING port=19442")
+    // unified face readiness marker (file and dir faces share ONE format)
+    var face2 = waitLog("kofshare-face.log", "SERVE-LISTENING 19442")
     println("dirShare=" + (dirShareOk && face2))
     ok = ok && dirShareOk && face2
     var recDir = cliOut(listOf("receive", dlink, "ic-tree.recv"))
