@@ -424,8 +424,19 @@ main() {
     ok = ok && rootSymRefused
     shell.run("sh", listOf("-c", "rm -rf fc-outroot fc-target"))
 
-    // manifest tampering dies at the PLANE before insertion
-    var wrongHash = "0" + dh.substring(1, 64)
+    // manifest tampering dies at the PLANE before insertion. The wrong hash
+    // must be GUARANTEED different from the real one: pinning char 0 to a
+    // constant is not — the device key is re-minted every run (scratch law)
+    // so the child resourceIds and therefore dh VARY per run, and whenever
+    // dh[0] happens to be that constant (1/16 of runs) wrongHash == dh and
+    // the plane CORRECTLY accepts the offer (measured red rc-run58:
+    // tamperBody=OFFERED — a test bug, not a plane bug). Flip char 0 to a
+    // DIFFERENT digit instead.
+    var flip = "0"
+    if (dh.charAt(0) == 48) {
+        flip = "1"
+    }
+    var wrongHash = flip + dh.substring(1, 64)
     var badHash = signOffer(sk, "o-tamper", devId, "fc-docs", sorted.size, wrongHash)
     var tamper = http.post(base + "/offers", json.encode(OfferRequest("o-tamper", devId,
         "fc-docs", sorted.size, wrongHash, badHash,

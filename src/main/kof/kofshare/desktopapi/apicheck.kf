@@ -182,6 +182,24 @@ main(args: List<String>) {
     var evNext = http.get(deskUrl() + "/api/v1/events?since=" + lastSeq, hdr)
     step("events-cursor-empty", evNext == "[]", fails)
 
+    // tolerance: corrupt lines in the events FILE are SKIPPED, never kill
+    // the route (measured red: one bad history line made /events throw and
+    // every route that read it died; readEventsSeq + eventsJsonSince are
+    // lenient by law now). The /events route only READS, so planted junk
+    // survives until the next recordEvent rewrite — asserted in-window:
+    // a no-pipe junk line AND a non-numeric-seq line must be absent from
+    // the output (skipped, not emitted) while good rows survive, and the
+    // daemon must stay healthy after serving the poisoned history.
+    var evRaw = "" + File("kofshare-desktop.events").readText()
+    File("kofshare-desktop.events").writeText(evRaw
+        + "NOT-JSON-LINE{{{\nabc|CORRUPT|1|{\"x\":1}\n")
+    var evC = http.get(deskUrl() + "/api/v1/events?since=0", hdr)
+    step("events-corrupt-skipped", evC.indexOf("[") == 0
+        && evC.indexOf("CORRUPT") < 0 && evC.indexOf("NOT-JSON") < 0
+        && (evC.indexOf("DAEMON_STATE") >= 0 || evC.indexOf("PLANE_PRESENCE") >= 0), fails)
+    step("events-alive-after-corrupt",
+        http.get(deskUrl() + "/api/v1/health", hdr).indexOf("HEALTH-OK") == 0, fails)
+
     // token file 0600
     var perm = sh1("stat -c %a kofshare-desktop.token")
     var pln = perm.indexOf("\n")
@@ -219,7 +237,7 @@ main(args: List<String>) {
 
     cleanup()
     if (fails.size == 0) {
-        println("DESKTOP-API-OK legs=" + 22)
+        println("DESKTOP-API-OK legs=" + 24)
         return
     }
     println("DESKTOP-API-FAIL n=" + fails.size + " first=" + fails.get(0))

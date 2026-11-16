@@ -188,7 +188,7 @@ main() {
     File("kofshare-cli.config").writeText("jar=" + jar() + "\nworkdir=/home/mel/Documents/kof-share\n")
 
     var scratch = listOf("ux-src.bin", "ux-copy.bin", "ux-legacy.bin", "ux-legacy.down",
-        "ux-dir", "ux-dest", "ux-dest2", "kofshare-server.log", "kofshare-face.log",
+        "ux-dir", "ux-dest", "ux-dest2", "ux-raw.bin", "kofshare-server.log", "kofshare-face.log",
         "kofshare-server.pid", "kofshare-face.pid", "kofshare-app.pid", "kofshare-app.log",
         "server-control.apikey", "server-control.bearer", "server-control.ed25519",
         "server-registry.devices.json", "server-registry.offers.json",
@@ -382,11 +382,37 @@ main() {
     println("dirPerChildResume=" + dirResume)
     ok = ok && dirResume
 
-    // ── leg 7: --raw machine lane intact ──
+    // ── leg 7: --raw machine lane intact + THE MARKER MEANS DIALABLE ──
+    // Contract lock for the face-readiness fix: SHARE-LINK may only be
+    // printed AFTER the detached face has bound its port (the daemon's job
+    // lane and every recipient read the link as ready-to-dial; measured red
+    // before the fix: first dial inside the bind window answered
+    // CONNECTIVITY_FAILED direct=dead). Deterministic halves: (a) FRESH face
+    // log → share --raw → the log must ALREADY carry SERVE-LISTENING when
+    // the command returns (ordering, not timing); (b) an IMMEDIATE receive
+    // (no sleep, no readiness wait of our own) must transfer the bytes.
+    File("kofshare-face.log").delete()
     var rawOut = cliOut(listOf("share", "ux-src.bin", "--server", "127.0.0.1:19430", "--face", "19431", "--raw"))
     var rawOk = rawOut.indexOf("UP-OK") >= 0 && rawOut.indexOf("SHARED ") >= 0 && rawOut.indexOf("SHARE-LINK") >= 0
+    var rawLog = ""
+    var flog7 = File("kofshare-face.log")
+    if (flog7.exists()) {
+        rawLog = "" + flog7.readText()
+    }
+    var link7 = linkOf(rawOut)
+    var rec7 = ""
+    if (link7.length() > 40) {
+        rec7 = cliOut(listOf("receive", link7, "ux-raw.bin"))
+    }
+    var rawDialable = rawLog.indexOf("SERVE-LISTENING 19431") >= 0
+        && rec7.indexOf("DOWN-AUTO-OK") >= 0 && File("ux-raw.bin").exists()
+        && identical(File("ux-raw.bin").readBytes(), makeData(2600))
+    if (!rawDialable) {
+        println("DBG rawLog=" + cap(rawLog, 200) + " rec7=" + cap(rec7, 200))
+    }
     println("rawLane=" + rawOk)
-    ok = ok && rawOk
+    println("rawLinkDialable=" + rawDialable)
+    ok = ok && rawOk && rawDialable
 
     // ── leg 8: plane down ⇒ named marker, no stack ──
     var down = cliOut(listOf("receive", "http://127.0.0.1:19499/s/whatever", "ux-none2.bin"))
