@@ -50,19 +50,23 @@ permanecem válidos — é a conexão que falhou).
 pode simplesmente repetir o `receive` — o link continua válido e o face
 estará de pé. O `share` do mesmo arquivo também refaz o face na mesma porta.
 
-**Estado (atualizado 2026-11-13):** o fix da corrida de bind foi pousado e
-**revertido** (`17288b6` de `8907148`) porque a evidência o refutou como
-causa: rc-run42 passou COM o fix, rc-run43 falhou COM o fix, e
-rc-run44+rc-run45 passaram 2x SEM o fix — a falha da leg 16 é
-**intermitente e independente do fix**. Investigação posterior (mesma
-data) com o caminho completo via daemon em processo real — share de
-arquivo para `bob2` → job DONE → receive como `bob2` → transfer DONE →
-bytes idênticos — **não reproduziu a falha em 5+ tentativas**; o daemon
-também sobreviveu a 30 conexões sem handshake consecutivas. A morte do
-daemon observada por vigilância de 0,2 s permanece sem explicação
-(suspeita: pressão de memória da máquina sob carga da bateria). A
-mitigação operacional (repetir o `receive`) continua valendo, e a
-bateria está 2x verde na árvore atual.
+**Estado (resolvido 2026-11-16):** a investigação encontrou a causa real por
+leitura de código — o `share` imprimia `SHARE-LINK` (o marcador que o lane
+de jobs do daemon lê como DONE) **antes** de dar spawn no face, e o fix
+revertido `8907148` também sofria disso: sua espera entrava **depois** do
+print, então para o daemon ele era um NOP — por isso o rc-run43 falhou
+"idêntico com o fix" (trilha completa: rc-run42 passou COM o fix,
+rc-run43 falhou COM o fix, rc-run44+rc-run45 passaram 2x SEM o fix; a
+morte esporádica do daemon vista por vigilância nunca reproduziu em
+ocioso — suspeita registrada: pressão de memória sob carga). A correção
+real moveu o spawn do face + a espera de readiness para **antes** do
+`SHARE-LINK`, e unificou o marcador das duas faces (`serve` e `serve-dir`
+imprimem `SERVE-LISTENING <porta> [trailer]` — o dir antes imprimia
+`port=NNNN`, formato que nenhum waiter compartilhava). Prova:
+`DESKTOP-PRIV-OK legs=18` isolado com `dirViaDaemonAndBytes=true` +
+bateria `RC-CHECK-OK steps=34` 2x consecutivas (rc-run56+rc-run57) na
+árvore do fix, zero FAILs. A mitigação (repetir o `receive`) segue
+válida como conselho geral de rede.
 
 ## 3. Bootstrap administrativo
 
