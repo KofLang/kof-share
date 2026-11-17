@@ -175,13 +175,13 @@ src/main/kof/kofshare/
 | Domain/pure | goldens per module (`--check` legs 1–14) | ✅ |
 | Control plane | HTTP E2E (`HTTPCHECK`, `PERSIST-OK`, `RESTART-OK`) | ✅ |
 | Data plane | JVM+Script E2E (`USERCHECK`…`RELAY-OK`, `SECURE`) | ✅ |
-| Directories | `FOLDERCHECK-OK` (22 legs: inclui symlinkRefused/cleanTreeStillWalks/symlinkRootRefused no publish e alvo, planeRefusesManifests, mid-serve refusal com face viva, destSymlinkRefused/destOutsideUntouched, usesAreHonest, restartManifestSurvives, revocationKillsDir) | ✅ |
+| Directories | `FOLDERCHECK-OK` (23 legs: inclui symlinkRefused/cleanTreeStillWalks/symlinkRootRefused no publish e alvo, planeRefusesManifests, nonNumericChildRefused, mid-serve refusal com face viva, destSymlinkRefused/destOutsideUntouched, usesAreHonest, restartManifestSurvives, revocationKillsDir) | ✅ |
 | Recipient auth | `GRANTCHECK-OK` + `HTTPGRANT-OK` (15, incl. #20 policy coexistence) + `RECIPIENTAUTHCHECK-OK` (10, three identities) | ✅ |
 | Account isolation | `ACCOUNTISOLATIONCHECK-OK` (11: TOFU owner fence, AUTH004/AUTH005, admin lane, keyless v1 preserved) | ✅ |
 | Revocation | `REVOKECHECK-OK` (15: account/device/share, 6b pre-bytes blocked, 6c/6d fail-safe, non-retroactive, restart-surviving) | ✅ |
-| Deployment | `DEPLOYMENTCHECK-OK` (11: dir isolation, publicurl, backup-restore, fail-closed on ALL six registries, body caps) | ✅ |
+| Deployment | `DEPLOYMENTCHECK-OK` (12: dir isolation, publicurl, backup-restore, fail-closed on ALL six registries, body caps, bad plane conf + bad daemon conf refused by name) | ✅ |
 | Desktop boot | `DESKTOP-BOOT-OK` (21: lifecycle, 0600 token, state, page, stop/recovery) | ✅ |
-| Desktop API (safe) | `DESKTOP-API-OK` (24: host/origin/token boundary, events, raw-socket forged-Host proof, corrupt-history tolerance) | ✅ |
+| Desktop API (safe) | `DESKTOP-API-OK` (26: host/origin/token boundary, events, raw-socket forged-Host proof, corrupt-history tolerance, non-numeric cursor) | ✅ |
 | Desktop privileged | `DESKTOP-PRIV-OK` (18: login/shares/transfers/cancel/device, bearer `file:` lane, zero-leak scan, UP-ERR fast-fail + dir receive honest bytes, hostile inputs refused by name, weak-token regen on boot) | ✅ |
 | UX | `UXCHECK-OK` (20 legs: inclui 3b receive em pasta existente, 4b symlink dest, rawLinkDialable SHARE-LINK⇒dialable e 8b malformedFlags) | ✅ |
 | Full product | `INTEGRATIONCHECK-OK` (25 legs: inclui readOnlyGrant, onceAcrossRestart, sessionCompletedOnPlane) | ✅ |
