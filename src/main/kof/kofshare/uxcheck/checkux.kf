@@ -188,7 +188,8 @@ main() {
     File("kofshare-cli.config").writeText("jar=" + jar() + "\nworkdir=/home/mel/Documents/kof-share\n")
 
     var scratch = listOf("ux-src.bin", "ux-copy.bin", "ux-legacy.bin", "ux-legacy.down",
-        "ux-dir", "ux-dest", "ux-dest2", "ux-raw.bin", "kofshare-server.log", "kofshare-face.log",
+        "ux-dir", "ux-dest", "ux-dest2", "ux-raw.bin", "ux-none3.bin", "ux-none4.bin",
+        "ux-serve.log", "kofshare-server.log", "kofshare-face.log",
         "kofshare-server.pid", "kofshare-face.pid", "kofshare-app.pid", "kofshare-app.log",
         "server-control.apikey", "server-control.bearer", "server-control.ed25519",
         "server-registry.devices.json", "server-registry.offers.json",
@@ -420,6 +421,31 @@ main() {
         && down.indexOf("did not answer") >= 0
     println("planeDownHuman=" + downOk)
     ok = ok && downOk
+
+    // ── leg 8b: mistyped numeric flags refuse BY NAME, never a raw JVM error ──
+    // (same UX law class as leg 8; measured red 16/11: share --server/--face,
+    // receive/down --relay and serve-dir <port> leaked raw 'For input
+    // string' NumberFormatException stacks before the guard — parse now
+    // fails at the flag with a named <VERB>-ERR before any network/io.
+    // PRODUCT lanes (share/receive) must be stack-free; OPERATOR lanes
+    // (down/serve-dir) keep the documented throw style — the assertion
+    // there is the named line FIRST and no raw NumberFormatException.)
+    var m1 = cliOut(listOf("share", "ux-src.bin", "--server", "127.0.0.1:abc"))
+    var m2 = cliOut(listOf("share", "ux-src.bin", "--face", "abc"))
+    var m3 = cliOut(listOf("receive", "http://127.0.0.1:19430/s/none", "ux-none3.bin", "--relay", "h:abc"))
+    var m4 = cliOut(listOf("down", "127.0.0.1", "19430", "tok", "ux-none4.bin", "--relay", "h", "abc"))
+    var m5 = cliOut(listOf("serve-dir", "ux-dir", "abc"))
+    var mProd = m1 + m2 + m3
+    var mFlagsOk = m1.indexOf("SHARE-ERR") == 0 && m2.indexOf("SHARE-ERR") == 0
+        && m3.indexOf("RECEIVE-ERR") == 0
+        && mProd.indexOf("For input string") < 0 && mProd.indexOf("at java") < 0
+        && m4.indexOf("DOWN-ERR") == 0 && m5.indexOf("SERVE-ERR") == 0
+        && (m4 + m5).indexOf("For input string") < 0
+    if (!mFlagsOk) {
+        println("DBG m=" + cap(m1 + m2 + m3 + m4 + m5, 300))
+    }
+    println("malformedFlags=" + mFlagsOk)
+    ok = ok && mFlagsOk
 
     // ── leg 9: OPERATOR lane untouched (legacy up → legacy share → legacy down) ──
     File("ux-legacy.bin").writeBytes(makeData(1200))
