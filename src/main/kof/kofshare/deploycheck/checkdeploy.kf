@@ -11,7 +11,8 @@ package kofshare.deploycheck
 //     name (GRANT041), preventing silent downgrade to possession mode
 //   - body cap: payloads >65KB refused as REG042
 //   - bad port in config refused as SERVER-CONF-ERR
-// DEPLOYMENTCHECK-OK legs=11. Port 19456 owned here.
+//   - bad port= in the DESKTOP daemon's own conf refused as DESKTOP-CONF-ERR
+// DEPLOYMENTCHECK-OK legs=12. Port 19456 owned here.
 
 import kof.http
 import kof.json
@@ -29,6 +30,29 @@ String jar() {
 String cliCmd(String configPath, List<String> verbArgs) {
     var cmd = "cd /home/mel/Documents/kof-share && KOF_CONFIG=" + configPath
         + " java -jar " + jar() + " run src/main/kof/kofshare/cli/cli.kf"
+    for (var a in verbArgs) {
+        cmd = cmd + " " + a
+    }
+    var res = shell.run("sh", listOf("-c", cmd + " 2>&1"))
+    var out = ""
+    var lines = res.stdout.split("\n")
+    var i = 0
+    while (i < lines.size) {
+        var ln = lines[i]
+        if (ln.indexOf("L-05") < 0 && ln.indexOf("warning:") < 0) {
+            out = out + ln + "\n"
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// desktopd lifecycle verb, same convention as cliCmd (cwd = repo: the
+// daemon's detached boot resolves its entry relative to kofshare-cli.config
+// workdir, and its conf/token files live in the cwd by contract).
+String deskCmd(List<String> verbArgs) {
+    var cmd = "cd /home/mel/Documents/kof-share && java -jar " + jar()
+        + " run src/main/kof/kofshare/desktop/desktopd.kf"
     for (var a in verbArgs) {
         cmd = cmd + " " + a
     }
@@ -252,12 +276,49 @@ main() {
     println("badConfigRefused=" + confErrOk)
     ok = ok && confErrOk
 
+    // ── 10b: bad port= in the DESKTOP daemon's own conf is rejected by name
+    // (DESKTOP-CONF-ERR) and the daemon never boots on the ambiguous port
+    // (measured red: port=abc died in the --start verb with a raw
+    // NumberFormatException stack). The probe below proves nothing answered;
+    // --stop is refused the same way (shared lifecycle guard).
+    File("kofshare-desktop.conf").writeText("port=abc\nplane=http://127.0.0.1:" + port + "\n")
+    if (File("kofshare-desktop.token").exists()) {
+        File("kofshare-desktop.token").delete()
+    }
+    var deskBad = deskCmd(listOf("--start"))
+    var deskProbeDown = true
+    try {
+        var pc2 = net.connect("127.0.0.1", 8799)
+        pc2.close()
+        deskProbeDown = false
+    } catch (String e) {
+        deskProbeDown = true
+    }
+    var deskBadStop = deskCmd(listOf("--stop"))
+    var deskConfOk = deskBad.indexOf("DESKTOP-CONF-ERR") == 0
+        && deskBadStop.indexOf("DESKTOP-CONF-ERR") == 0 && deskProbeDown
+    if (!deskConfOk) {
+        println("DBG deskBad=" + deskBad + " deskStop=" + deskBadStop)
+    }
+    println("badDesktopConfRefused=" + deskConfOk)
+    ok = ok && deskConfOk
+    File("kofshare-desktop.conf").delete()
+    if (File("kofshare-desktop.token").exists()) {
+        File("kofshare-desktop.token").delete()
+    }
+    if (File("kofshare-desktop.pid").exists()) {
+        File("kofshare-desktop.pid").delete()
+    }
+    if (File("kofshare-desktop.log").exists()) {
+        File("kofshare-desktop.log").delete()
+    }
+
     // teardown
     killPort(port)
     shell.run("rm", listOf("-rf", dir1, dir2, conf1, conf2, confBad))
 
     if (ok) {
-        println("DEPLOYMENTCHECK-OK legs=11")
+        println("DEPLOYMENTCHECK-OK legs=12")
     } else {
         println("DEPLOYMENTCHECK-FAIL")
         throw "kofshare: DEPLOYMENTCHECK-FAIL"

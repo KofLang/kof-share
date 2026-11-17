@@ -182,6 +182,14 @@ main(args: List<String>) {
     var evNext = http.get(deskUrl() + "/api/v1/events?since=" + lastSeq, hdr)
     step("events-cursor-empty", evNext == "[]", fails)
 
+    // non-numeric ?since= is a NON-SELECTOR, never a crash (measured red:
+    // ?since=abc answered HTTP 500; the history cursor is a sequence, never
+    // user text — so it reads as [] while good cursors keep working).
+    var evBad = http.get(deskUrl() + "/api/v1/events?since=abc", hdr)
+    var evStill = http.get(deskUrl() + "/api/v1/events?since=0", hdr)
+    step("events-since-nonnumeric", evBad == "[]"
+        && evStill.indexOf("DAEMON_STATE") >= 0, fails)
+
     // tolerance: corrupt lines in the events FILE are SKIPPED, never kill
     // the route (measured red: one bad history line made /events throw and
     // every route that read it died; readEventsSeq + eventsJsonSince are
@@ -237,7 +245,7 @@ main(args: List<String>) {
 
     cleanup()
     if (fails.size == 0) {
-        println("DESKTOP-API-OK legs=" + 24)
+        println("DESKTOP-API-OK legs=" + 26)
         return
     }
     println("DESKTOP-API-FAIL n=" + fails.size + " first=" + fails.get(0))

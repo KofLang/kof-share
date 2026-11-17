@@ -54,10 +54,35 @@ String dLog() {
     return "kofshare-desktop.log"
 }
 
+// A malformed port= in the daemon's OWN conf must refuse BY NAME at the
+// lifecycle edge (measured red: port=abc died in the --start verb with a raw
+// NumberFormatException stack). Mirror the plane's SERVER-CONF-ERR law: the
+// daemon never boots — or reports — on an ambiguous port, because a silent
+// 8799 default would desync launchers probing the written port.
+Bool confPortBad() {
+    var p = selfConfigField2("port")
+    if (p.length() == 0) {
+        return false
+    }
+    if (!isDigitsStr(p)) {
+        return true
+    }
+    var v = math.parseInt(p)
+    return v < 1 || v > 65535
+}
+
+String confPortErr() {
+    return "DESKTOP-CONF-ERR: port in kofshare-desktop.conf must be a number from 1 to 65535 (got \""
+        + selfConfigField2("port") + "\")"
+}
+
 Int dPort() {
     var p = selfConfigField2("port")
-    if (p.length() > 0) {
-        return math.parseInt(p)
+    if (p.length() > 0 && isDigitsStr(p)) {
+        var v = math.parseInt(p)
+        if (v >= 1 && v <= 65535) {
+            return v
+        }
     }
     return 8799
 }
@@ -169,15 +194,22 @@ String boundaryOk() {
     return ""
 }
 
-// query() is called in the route closure (proven F1: /page does query("tok"))
-// and its nullable result is threaded here. Coalesce + parse live at top
-// level (no web-context call in this fn).
+// query() is called in the route closure (proven F1: /page does
+// query("tok")) and its nullable result is threaded here. Coalesce + parse
+// live at top level (no web-context call in this fn). Fail-closed on
+// non-numeric query input (measured red: ?since=abc made the route answer
+// HTTP 500): the history is a sequence, never user text — an undigitable
+// cursor selects NOTHING (returns the current head, so the output is [];
+// same lenient law as readEventsSeq, but on the OUTPUT side).
 Int sinceVal(String? q) {
     if (q == null) {
         return 0
     }
     if (q.length() == 0) {
         return 0
+    }
+    if (!isDigitsStr(q)) {
+        return readEventsSeq()
     }
     return math.parseInt(q)
 }
@@ -1017,6 +1049,10 @@ Int daemonServe() {
 }
 
 Int desktopStart() {
+    if (confPortBad()) {
+        println(confPortErr())
+        return 1
+    }
     if (healthNow("http://127.0.0.1:" + dPort())) {
         println("DESKTOP-START already=true port=" + dPort())
         return 0
@@ -1051,6 +1087,10 @@ Int desktopStart() {
 // owns dPort() by the kofshare-desktop.conf convention. Documented shape,
 // not a new invention.
 Int desktopStop() {
+    if (confPortBad()) {
+        println(confPortErr())
+        return 1
+    }
     stopHelper(dPidFile())
     freePort(dPort())
     File(dEventsFile()).delete()
@@ -1063,6 +1103,10 @@ Int desktopStop() {
 }
 
 Int desktopStatus() {
+    if (confPortBad()) {
+        println(confPortErr())
+        return 1
+    }
     if (healthNow("http://127.0.0.1:" + dPort())) {
         println("DESKTOP-STATUS up=true port=" + dPort())
         return 0
@@ -1072,6 +1116,10 @@ Int desktopStatus() {
 }
 
 Int desktopWindow() {
+    if (confPortBad()) {
+        println(confPortErr())
+        return 1
+    }
     if (!healthNow("http://127.0.0.1:" + dPort())) {
         var s = desktopStart()
         if (s != 0) {

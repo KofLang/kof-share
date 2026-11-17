@@ -467,6 +467,17 @@ main() {
     println("usesAreHonest=" + usesOk)
     ok = ok && usesOk
 
+    // non-numeric ?child= refuses BY NAME (measured red: ?child=abc leaked
+    // a raw 'For input string' handler error to ANY caller, authed or not —
+    // a fresh share funds the probe so no use is double-spent).
+    var tokN = tokenId(http.post(base + "/shares",
+        json.encode(ShareRequest(offerId, 0, 0, false, true)), auth))
+    var nonNumChild = http.get(base + "/s/" + tokN + "?child=abc", "")
+    var nonNumChildRefused = nonNumChild.indexOf("REG015") == 0
+        && nonNumChild.indexOf("For input string") < 0
+    println("nonNumericChildRefused=" + nonNumChildRefused)
+    ok = ok && nonNumChildRefused
+
     // restart: the plane dies, the manifest comes back identical
     sweepPorts()
     var clearP = portClear(19420)

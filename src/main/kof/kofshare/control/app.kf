@@ -1,5 +1,6 @@
 package kofshare.control
 
+import kofshare.core
 import kofshare.control.registry
 import kofshare.directory
 import kofshare.control.share
@@ -98,6 +99,13 @@ String handleGetShare(String token, String? childQuery, Map<String, ShareInfo> s
 String dirGrantBody(OfferInfo o, String childQuery, String addr, String perms) {
     if (childQuery.length() == 0) {
         return json.encode(dirGrantJson(o, perms, addr))
+    }
+    // Fail-closed on a non-numeric selector (measured red: ?child=abc leaked
+    // a raw 'For input string' handler error to ANY caller, authed or not).
+    // The child index is a manifest ordinal, never user text — anything but
+    // digits lands in the same REG015 bucket as the out-of-range index.
+    if (!isDigitsStr(childQuery)) {
+        return "REG015: directory child index is not a number"
     }
     var ci = math.parseInt(childQuery)
     var entriesG = dirEntriesFromJson(o.entriesJson)
