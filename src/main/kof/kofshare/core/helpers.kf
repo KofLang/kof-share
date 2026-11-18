@@ -298,7 +298,21 @@ Long parseTtlMs(String v) {
     if (digits.length() == 0) {
         return 0 - 0
     }
-    return math.parseLong(digits) * mult
+    // FAIL-CLOSED on overflow/parse hazards (measured red: a 23-digit
+    // --ttl leaked a raw NumberFormatException). parseLong itself accepts
+    // up to Long.MAX, and the suffix multiplication can wrap past it
+    // (silently minting an already-expired share) — a duration beyond
+    // Long.MAX/mult ms is not a duration, it is a typo. Sentinel is -1
+    // (every caller owns a zero default, so -1 can only come from here).
+    if (digits.length() > 18) {
+        return 0 - 1
+    }
+    var v0 = math.parseLong(digits)
+    var maxMs: Long = 9223372036854775807
+    if (v0 > maxMs / mult) {
+        return 0 - 1
+    }
+    return v0 * mult
 }
 
 // Port parse guard: the raw JVM backend throws NumberFormatException on

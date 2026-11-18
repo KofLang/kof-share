@@ -425,24 +425,29 @@ main() {
     // ── leg 8b: mistyped numeric flags refuse BY NAME, never a raw JVM error ──
     // (same UX law class as leg 8; measured red 16/11: share --server/--face,
     // receive/down --relay and serve-dir <port> leaked raw 'For input
-    // string' NumberFormatException stacks before the guard — parse now
-    // fails at the flag with a named <VERB>-ERR before any network/io.
-    // PRODUCT lanes (share/receive) must be stack-free; OPERATOR lanes
-    // (down/serve-dir) keep the documented throw style — the assertion
-    // there is the named line FIRST and no raw NumberFormatException.)
+    // string' NumberFormatException stacks before the guard; measured red
+    // 18/11: share --ttl with 23 digits did the same on BOTH lanes (product
+    // and legacy operator) via parseLong — parse now fails at the flag with
+    // a named <VERB>-ERR before any network/io. PRODUCT lanes
+    // (share/receive) must be stack-free; OPERATOR lanes (down/serve-dir,
+    // legacy share) keep the documented throw style — the assertion there
+    // is the named line FIRST and no raw NumberFormatException.)
     var m1 = cliOut(listOf("share", "ux-src.bin", "--server", "127.0.0.1:abc"))
     var m2 = cliOut(listOf("share", "ux-src.bin", "--face", "abc"))
     var m3 = cliOut(listOf("receive", "http://127.0.0.1:19430/s/none", "ux-none3.bin", "--relay", "h:abc"))
     var m4 = cliOut(listOf("down", "127.0.0.1", "19430", "tok", "ux-none4.bin", "--relay", "h", "abc"))
     var m5 = cliOut(listOf("serve-dir", "ux-dir", "abc"))
-    var mProd = m1 + m2 + m3
+    var m6 = cliOut(listOf("share", "ux-src.bin", "--ttl", "99999999999999999999999"))
+    var m7 = cliOut(listOf("share", "127.0.0.1", "19430", "off1", "--ttl", "99999999999999999999999"))
+    var mProd = m1 + m2 + m3 + m6
     var mFlagsOk = m1.indexOf("SHARE-ERR") == 0 && m2.indexOf("SHARE-ERR") == 0
-        && m3.indexOf("RECEIVE-ERR") == 0
+        && m3.indexOf("RECEIVE-ERR") == 0 && m6.indexOf("SHARE-ERR") == 0
         && mProd.indexOf("For input string") < 0 && mProd.indexOf("at java") < 0
         && m4.indexOf("DOWN-ERR") == 0 && m5.indexOf("SERVE-ERR") == 0
-        && (m4 + m5).indexOf("For input string") < 0
+        && m7.indexOf("SHARE-ERR") == 0
+        && (m4 + m5 + m7).indexOf("For input string") < 0
     if (!mFlagsOk) {
-        println("DBG m=" + cap(m1 + m2 + m3 + m4 + m5, 300))
+        println("DBG m=" + cap(m1 + m2 + m3 + m4 + m5 + m6 + m7, 300))
     }
     println("malformedFlags=" + mFlagsOk)
     ok = ok && mFlagsOk
