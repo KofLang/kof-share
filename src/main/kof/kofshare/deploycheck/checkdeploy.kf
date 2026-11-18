@@ -12,7 +12,8 @@ package kofshare.deploycheck
 //   - body cap: payloads >65KB refused as REG042
 //   - bad port in config refused as SERVER-CONF-ERR
 //   - bad port= in the DESKTOP daemon's own conf refused as DESKTOP-CONF-ERR
-// DEPLOYMENTCHECK-OK legs=12. Port 19456 owned here.
+//   - the leg-5 face is stopped and its port freed at teardown (no orphan)
+// DEPLOYMENTCHECK-OK legs=13. Port 19456 owned here.
 
 import kof.http
 import kof.json
@@ -94,6 +95,21 @@ Bool quickProbe(String base) {
             return true
         } catch (String e) {
             time.sleep(500)
+        }
+    }
+    return false
+}
+
+Bool portClear2(Int port) {
+    var t = 0
+    while (t < 40) {
+        t = t + 1
+        try {
+            var pr = net.listen(port)
+            pr.close()
+            return true
+        } catch (String e) {
+            time.sleep(250)
         }
     }
     return false
@@ -314,11 +330,30 @@ main() {
     }
 
     // teardown
+    // the leg-5 `share --raw` left a detached face on 18400 (pidfile in
+    // the cwd by the cli convention) — the battery's orphan sweep owns
+    // helper ports only when they are IN the way; the face owns its
+    // pidfile law (stopHelper) and this suite self-cleans. Measured red:
+    // a face from an older battery run was found serving 18400 hours later.
+    // `stopHelper` reads the pidfile and deletes it; then the freed port
+    // is asserted bindable (LEG, not silent cleanup).
+    stopHelper("kofshare-face.pid")
+    freePort(18400)
+    if (File("kofshare-face.log").exists()) {
+        File("kofshare-face.log").delete()
+    }
+    var faceGone = portClear2(18400)
+    println("faceStoppedAtTeardown=" + faceGone)
+    ok = ok && faceGone
+    File("kofshare-server.pid").delete()
+    if (File("kofshare-server.log").exists()) {
+        File("kofshare-server.log").delete()
+    }
     killPort(port)
     shell.run("rm", listOf("-rf", dir1, dir2, conf1, conf2, confBad))
 
     if (ok) {
-        println("DEPLOYMENTCHECK-OK legs=12")
+        println("DEPLOYMENTCHECK-OK legs=13")
     } else {
         println("DEPLOYMENTCHECK-FAIL")
         throw "kofshare: DEPLOYMENTCHECK-FAIL"
