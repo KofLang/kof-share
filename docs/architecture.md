@@ -179,7 +179,7 @@ src/main/kof/kofshare/
 | Recipient auth | `GRANTCHECK-OK` + `HTTPGRANT-OK` (15, incl. #20 policy coexistence) + `RECIPIENTAUTHCHECK-OK` (10, three identities) | ✅ |
 | Account isolation | `ACCOUNTISOLATIONCHECK-OK` (11: TOFU owner fence, AUTH004/AUTH005, admin lane, keyless v1 preserved) | ✅ |
 | Revocation | `REVOKECHECK-OK` (15: account/device/share, 6b pre-bytes blocked, 6c/6d fail-safe, non-retroactive, restart-surviving) | ✅ |
-| Deployment | `DEPLOYMENTCHECK-OK` (12: dir isolation, publicurl, backup-restore, fail-closed on ALL six registries, body caps, bad plane conf + bad daemon conf refused by name) | ✅ |
+| Deployment | `DEPLOYMENTCHECK-OK` (13: dir isolation, publicurl, backup-restore, fail-closed on ALL six registries, body caps, bad plane conf + bad daemon conf refused by name, face stopped at teardown) | ✅ |
 | Desktop boot | `DESKTOP-BOOT-OK` (21: lifecycle, 0600 token, state, page, stop/recovery) | ✅ |
 | Desktop API (safe) | `DESKTOP-API-OK` (26: host/origin/token boundary, events, raw-socket forged-Host proof, corrupt-history tolerance, non-numeric cursor) | ✅ |
 | Desktop privileged | `DESKTOP-PRIV-OK` (18: login/shares/transfers/cancel/device, bearer `file:` lane, zero-leak scan, UP-ERR fast-fail + dir receive honest bytes, hostile inputs refused by name, weak-token regen on boot) | ✅ |
